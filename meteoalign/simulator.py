@@ -223,6 +223,20 @@ def _local_vectors_from_altaz(alt_deg: np.ndarray, az_deg: np.ndarray) -> np.nda
     )
 
 
+def _project_vectors_onto_camera_basis(
+    vectors: np.ndarray,
+    basis: tuple[np.ndarray, np.ndarray, np.ndarray],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    right, up, forward = basis
+    x = vectors[:, 0]
+    y = vectors[:, 1]
+    z = vectors[:, 2]
+    cam_x = x * right[0] + y * right[1] + z * right[2]
+    cam_y = x * up[0] + y * up[1] + z * up[2]
+    cam_z = x * forward[0] + y * forward[1] + z * forward[2]
+    return cam_x.astype(np.float64), cam_y.astype(np.float64), cam_z.astype(np.float64)
+
+
 def _normalize(vector: np.ndarray) -> np.ndarray:
     norm = float(np.linalg.norm(vector))
     if norm <= 1e-12:
@@ -334,20 +348,21 @@ def _project_altaz_points_rectilinear(
     basis: tuple[np.ndarray, np.ndarray, np.ndarray],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     vectors = _local_vectors_from_altaz(alt_deg, az_deg)
-    right, up, forward = basis
-    cam_x = vectors @ right
-    cam_y = vectors @ up
-    cam_z = vectors @ forward
+    cam_x, cam_y, cam_z = _project_vectors_onto_camera_basis(vectors, basis)
 
-    x_mm = camera.focal_length_mm * cam_x / cam_z
-    y_mm = camera.focal_length_mm * cam_y / cam_z
-    x_px = camera.image_width_px * 0.5 + (x_mm / camera.sensor_width_mm) * camera.image_width_px
-    y_px = camera.image_height_px * 0.5 - (y_mm / camera.sensor_height_mm) * camera.image_height_px
+    finite_depth = np.isfinite(cam_x) & np.isfinite(cam_y) & np.isfinite(cam_z) & (cam_z > 1e-6)
+    x_px = np.full_like(cam_z, np.nan, dtype=np.float64)
+    y_px = np.full_like(cam_z, np.nan, dtype=np.float64)
+    if np.any(finite_depth):
+        x_mm = camera.focal_length_mm * cam_x[finite_depth] / cam_z[finite_depth]
+        y_mm = camera.focal_length_mm * cam_y[finite_depth] / cam_z[finite_depth]
+        x_px[finite_depth] = camera.image_width_px * 0.5 + (x_mm / camera.sensor_width_mm) * camera.image_width_px
+        y_px[finite_depth] = camera.image_height_px * 0.5 - (y_mm / camera.sensor_height_mm) * camera.image_height_px
 
     margin_x = camera.image_width_px * 2.0
     margin_y = camera.image_height_px * 2.0
     valid = (
-        (cam_z > 1e-6)
+        finite_depth
         & np.isfinite(x_px)
         & np.isfinite(y_px)
         & (x_px >= -margin_x)
@@ -393,10 +408,7 @@ def _project_altaz_points_fisheye(
     basis: tuple[np.ndarray, np.ndarray, np.ndarray],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     vectors = _local_vectors_from_altaz(alt_deg, az_deg)
-    right, up, forward = basis
-    cam_x = vectors @ right
-    cam_y = vectors @ up
-    cam_z = vectors @ forward
+    cam_x, cam_y, cam_z = _project_vectors_onto_camera_basis(vectors, basis)
 
     theta = np.arccos(np.clip(cam_z, -1.0, 1.0))
     theta_max = np.deg2rad(camera.fisheye_fov_deg * 0.5)
