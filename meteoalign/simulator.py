@@ -34,6 +34,20 @@ iers.conf.auto_max_age = None
 iers.conf.iers_degraded_accuracy = "warn"
 
 
+RECTILINEAR_LENS_MODEL = "rectilinear"
+FISHEYE_EQUIDISTANT = "fisheye_equidistant"
+FISHEYE_EQUISOLID = "fisheye_equisolid"
+FISHEYE_STEREOGRAPHIC = "fisheye_stereographic"
+FISHEYE_ORTHOGRAPHIC = "fisheye_orthographic"
+FISHEYE_LENS_MODELS = {
+    FISHEYE_EQUIDISTANT,
+    FISHEYE_EQUISOLID,
+    FISHEYE_STEREOGRAPHIC,
+    FISHEYE_ORTHOGRAPHIC,
+}
+SUPPORTED_LENS_MODELS = {RECTILINEAR_LENS_MODEL, *FISHEYE_LENS_MODELS}
+
+
 @dataclass(frozen=True)
 class ObserverSettings:
     observation_time_utc: datetime
@@ -49,6 +63,8 @@ class CameraSettings:
     image_width_px: int
     image_height_px: int
     focal_length_mm: float
+    lens_model: str = RECTILINEAR_LENS_MODEL
+    fisheye_fov_deg: float = 180.0
 
 
 @dataclass(frozen=True)
@@ -95,6 +111,7 @@ class HorizontalStarCatalog:
 class ProjectedStarMap:
     width: int
     height: int
+    source_name: str
     x_px: np.ndarray
     y_px: np.ndarray
     radius_px: np.ndarray
@@ -124,11 +141,32 @@ class ProjectedStarMap:
         return int(np.count_nonzero(self.above_horizon))
 
 
+@dataclass(frozen=True)
+class ReferenceStar:
+    index: int
+    star_id: str
+    name: str
+    display_name: str
+    common_name: str
+    ra_deg: float
+    dec_deg: float
+    mag_v: float
+    sim_x: float
+    sim_y: float
+    alt_deg: float
+    az_deg: float
+
+
 def horizontal_fov_deg(camera: CameraSettings) -> float:
+    if camera.lens_model in FISHEYE_LENS_MODELS:
+        return float(camera.fisheye_fov_deg)
     return float(np.degrees(2.0 * np.arctan(camera.sensor_width_mm / (2.0 * camera.focal_length_mm))))
 
 
 def vertical_fov_deg(camera: CameraSettings) -> float:
+    if camera.lens_model in FISHEYE_LENS_MODELS:
+        aspect_scale = camera.image_height_px / max(float(camera.image_width_px), 1.0)
+        return float(camera.fisheye_fov_deg * min(aspect_scale, 1.0))
     return float(np.degrees(2.0 * np.arctan(camera.sensor_height_mm / (2.0 * camera.focal_length_mm))))
 
 
@@ -178,9 +216,9 @@ def _local_vectors_from_altaz(alt_deg: np.ndarray, az_deg: np.ndarray) -> np.nda
     cos_alt = np.cos(alt)
     return np.column_stack(
         (
-            cos_alt * np.sin(az),  # east
-            cos_alt * np.cos(az),  # north
-            np.sin(alt),  # up
+            cos_alt * np.sin(az),  # 东
+            cos_alt * np.cos(az),  # 北
+            np.sin(alt),  # 天顶方向
         )
     )
 
@@ -282,6 +320,19 @@ def _project_altaz_points(
     camera: CameraSettings,
     basis: tuple[np.ndarray, np.ndarray, np.ndarray],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if camera.lens_model == RECTILINEAR_LENS_MODEL:
+        return _project_altaz_points_rectilinear(alt_deg, az_deg, camera, basis)
+    if camera.lens_model in FISHEYE_LENS_MODELS:
+        return _project_altaz_points_fisheye(alt_deg, az_deg, camera, basis)
+    raise ValueError(f"Unsupported lens model: {camera.lens_model}")
+
+
+def _project_altaz_points_rectilinear(
+    alt_deg: np.ndarray,
+    az_deg: np.ndarray,
+    camera: CameraSettings,
+    basis: tuple[np.ndarray, np.ndarray, np.ndarray],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     vectors = _local_vectors_from_altaz(alt_deg, az_deg)
     right, up, forward = basis
     cam_x = vectors @ right
@@ -303,6 +354,73 @@ def _project_altaz_points(
         & (x_px <= camera.image_width_px + margin_x)
         & (y_px >= -margin_y)
         & (y_px <= camera.image_height_px + margin_y)
+    )
+    return x_px.astype(np.float64), y_px.astype(np.float64), valid
+
+
+def _fisheye_radius_ratio(theta: np.ndarray, theta_max: float, lens_model: str) -> np.ndarray:
+    if theta_max <= 0.0:
+        raise ValueError("Fisheye FOV must be positive")
+
+    if lens_model == FISHEYE_EQUIDISTANT:
+        return theta / theta_max
+    if lens_model == FISHEYE_EQUISOLID:
+        denominator = np.sin(theta_max / 2.0)
+        if abs(float(denominator)) <= 1e-12:
+            raise ValueError("Fisheye FOV is too small")
+        return np.sin(theta / 2.0) / denominator
+    if lens_model == FISHEYE_STEREOGRAPHIC:
+        if theta_max >= np.pi / 2.0 - 1e-8:
+            raise ValueError("Stereographic fisheye FOV must be below 180 degrees")
+        denominator = np.tan(theta_max / 2.0)
+        if not np.isfinite(denominator) or abs(float(denominator)) <= 1e-12:
+            raise ValueError("Stereographic fisheye FOV is invalid")
+        return np.tan(theta / 2.0) / denominator
+    if lens_model == FISHEYE_ORTHOGRAPHIC:
+        if theta_max > np.pi / 2.0 + 1e-8:
+            raise ValueError("Orthographic fisheye FOV cannot exceed 180 degrees")
+        denominator = np.sin(theta_max)
+        if abs(float(denominator)) <= 1e-12:
+            raise ValueError("Fisheye FOV is too small")
+        return np.sin(theta) / denominator
+    raise ValueError(f"Unsupported fisheye lens model: {lens_model}")
+
+
+def _project_altaz_points_fisheye(
+    alt_deg: np.ndarray,
+    az_deg: np.ndarray,
+    camera: CameraSettings,
+    basis: tuple[np.ndarray, np.ndarray, np.ndarray],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    vectors = _local_vectors_from_altaz(alt_deg, az_deg)
+    right, up, forward = basis
+    cam_x = vectors @ right
+    cam_y = vectors @ up
+    cam_z = vectors @ forward
+
+    theta = np.arccos(np.clip(cam_z, -1.0, 1.0))
+    theta_max = np.deg2rad(camera.fisheye_fov_deg * 0.5)
+    rho = _fisheye_radius_ratio(theta, theta_max, camera.lens_model)
+    r_limit = min(camera.image_width_px, camera.image_height_px) * 0.5 - 0.5
+    r_px = r_limit * rho
+
+    plane_norm = np.hypot(cam_x, cam_y)
+    unit_x = np.divide(cam_x, plane_norm, out=np.zeros_like(cam_x), where=plane_norm > 1e-12)
+    unit_y = np.divide(cam_y, plane_norm, out=np.zeros_like(cam_y), where=plane_norm > 1e-12)
+    x_px = camera.image_width_px * 0.5 + unit_x * r_px
+    y_px = camera.image_height_px * 0.5 - unit_y * r_px
+
+    margin = r_limit * 0.1
+    valid = (
+        (theta <= theta_max + 1e-9)
+        & np.isfinite(r_px)
+        & np.isfinite(x_px)
+        & np.isfinite(y_px)
+        & (r_px <= r_limit + margin)
+        & (x_px >= -margin)
+        & (x_px <= camera.image_width_px + margin)
+        & (y_px >= -margin)
+        & (y_px <= camera.image_height_px + margin)
     )
     return x_px.astype(np.float64), y_px.astype(np.float64), valid
 
@@ -389,6 +507,10 @@ def project_horizontal_catalog(
         raise ValueError("Image dimensions must be positive")
     if camera.focal_length_mm <= 0:
         raise ValueError("Focal length must be positive")
+    if camera.lens_model not in SUPPORTED_LENS_MODELS:
+        raise ValueError(f"Unsupported lens model: {camera.lens_model}")
+    if camera.lens_model in FISHEYE_LENS_MODELS and not (1.0 <= camera.fisheye_fov_deg <= 300.0):
+        raise ValueError("Fisheye FOV must be between 1 and 300 degrees")
 
     basis = _camera_basis(view)
 
@@ -423,6 +545,7 @@ def project_horizontal_catalog(
     return ProjectedStarMap(
         width=camera.image_width_px,
         height=camera.image_height_px,
+        source_name=horizontal_catalog.source_name,
         x_px=x_px[inside].astype(np.float64),
         y_px=y_px[inside].astype(np.float64),
         radius_px=radius,
@@ -459,3 +582,74 @@ def project_catalog(
         view=view,
         visible_mag_limit=visible_mag_limit,
     )
+
+
+def _reference_star_name(star_map: ProjectedStarMap, index: int) -> tuple[str, str, str]:
+    display_name = str(star_map.display_names[index]).strip()
+    common_name = str(star_map.common_names[index]).strip()
+    star_id = str(star_map.star_ids[index]).strip()
+    name = common_name or display_name or star_id
+    return name, display_name, common_name
+
+
+def select_reference_stars(
+    star_map: ProjectedStarMap,
+    max_count: int = 12,
+    edge_margin_ratio: float = 0.05,
+    min_distance_ratio: float = 0.06,
+) -> tuple[ReferenceStar, ...]:
+    if max_count <= 0 or len(star_map) == 0:
+        return ()
+
+    width = float(star_map.width)
+    height = float(star_map.height)
+    min_dimension = min(width, height)
+    edge_margin = max(18.0, min_dimension * edge_margin_ratio)
+    min_distance = max(32.0, min_dimension * min_distance_ratio)
+
+    candidate_mask = (
+        star_map.above_horizon
+        & np.isfinite(star_map.x_px)
+        & np.isfinite(star_map.y_px)
+        & (star_map.x_px >= edge_margin)
+        & (star_map.x_px <= width - edge_margin)
+        & (star_map.y_px >= edge_margin)
+        & (star_map.y_px <= height - edge_margin)
+    )
+    candidate_indices = np.flatnonzero(candidate_mask)
+    if candidate_indices.size == 0:
+        return ()
+
+    sorted_indices = candidate_indices[np.argsort(star_map.mag_v[candidate_indices], kind="stable")]
+    selected: list[int] = []
+    selected_positions: list[tuple[float, float]] = []
+    for candidate_index in sorted_indices:
+        x_value = float(star_map.x_px[candidate_index])
+        y_value = float(star_map.y_px[candidate_index])
+        if any(np.hypot(x_value - old_x, y_value - old_y) < min_distance for old_x, old_y in selected_positions):
+            continue
+        selected.append(int(candidate_index))
+        selected_positions.append((x_value, y_value))
+        if len(selected) >= max_count:
+            break
+
+    reference_stars: list[ReferenceStar] = []
+    for output_index, star_index in enumerate(selected, start=1):
+        name, display_name, common_name = _reference_star_name(star_map, star_index)
+        reference_stars.append(
+            ReferenceStar(
+                index=output_index,
+                star_id=str(star_map.star_ids[star_index]),
+                name=name,
+                display_name=display_name,
+                common_name=common_name,
+                ra_deg=float(star_map.ra_deg[star_index]),
+                dec_deg=float(star_map.dec_deg[star_index]),
+                mag_v=float(star_map.mag_v[star_index]),
+                sim_x=float(star_map.x_px[star_index]),
+                sim_y=float(star_map.y_px[star_index]),
+                alt_deg=float(star_map.alt_deg[star_index]),
+                az_deg=float(star_map.az_deg[star_index]),
+            )
+        )
+    return tuple(reference_stars)

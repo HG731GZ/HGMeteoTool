@@ -3,7 +3,7 @@ from __future__ import annotations
 from PyQt5.QtCore import QPointF, QRectF, Qt
 from PyQt5.QtGui import QColor, QFont, QImage, QPainter, QPen, QPolygonF
 
-from .simulator import ProjectedStarMap
+from .simulator import ProjectedStarMap, ReferenceStar
 
 
 DIRECTION_LABEL_FONT_SIZE_PT = 16
@@ -11,7 +11,12 @@ STAR_NAME_FONT_SIZE_PT = 11
 
 
 class StarMapRenderer:
-    def render(self, star_map: ProjectedStarMap, common_name_mag_limit: float = 1.0) -> QImage:
+    def render(
+        self,
+        star_map: ProjectedStarMap,
+        common_name_mag_limit: float = 1.0,
+        reference_stars: tuple[ReferenceStar, ...] = (),
+    ) -> QImage:
         image = QImage(star_map.width, star_map.height, QImage.Format_ARGB32_Premultiplied)
         image.fill(QColor(0, 0, 0))
 
@@ -32,6 +37,7 @@ class StarMapRenderer:
             painter.drawEllipse(QRectF(center.x() - radius, center.y() - radius, radius * 2.0, radius * 2.0))
 
         self._draw_star_names(painter, star_map, common_name_mag_limit)
+        self._draw_reference_stars(painter, star_map, reference_stars)
         self._draw_direction_labels(painter, star_map)
         painter.end()
         return image
@@ -76,6 +82,54 @@ class StarMapRenderer:
             painter.drawText(point, name)
             painter.setPen(QPen(QColor(red, green, blue, alpha), 1.0))
             painter.drawText(point, name)
+
+    def _draw_reference_stars(
+        self,
+        painter: QPainter,
+        star_map: ProjectedStarMap,
+        reference_stars: tuple[ReferenceStar, ...],
+    ) -> None:
+        if not reference_stars:
+            return
+
+        number_font = QFont()
+        number_font.setPointSize(15)
+        number_font.setBold(True)
+
+        for reference_star in reference_stars:
+            x_value = float(reference_star.sim_x)
+            y_value = float(reference_star.sim_y)
+            marker_radius = 17.0
+            marker_rect = QRectF(
+                x_value - marker_radius,
+                y_value - marker_radius,
+                marker_radius * 2.0,
+                marker_radius * 2.0,
+            )
+
+            painter.setBrush(Qt.NoBrush)
+            painter.setPen(QPen(QColor(0, 0, 0, 230), 5.0))
+            painter.drawEllipse(marker_rect)
+            painter.setPen(QPen(QColor(255, 230, 80, 255), 2.4))
+            painter.drawEllipse(marker_rect)
+
+            painter.setFont(number_font)
+            metrics = painter.fontMetrics()
+            number_text = str(reference_star.index)
+            label_width = metrics.horizontalAdvance(number_text) + 12.0
+            label_height = metrics.height() + 8.0
+            preferred_x = x_value + marker_radius + 8.0
+            if preferred_x + label_width > star_map.width - 4.0:
+                preferred_x = x_value - marker_radius - label_width - 8.0
+            label_x = min(max(preferred_x, 4.0), max(4.0, star_map.width - label_width - 4.0))
+            label_y = min(max(y_value - label_height / 2.0, 4.0), max(4.0, star_map.height - label_height - 4.0))
+            label_rect = QRectF(label_x, label_y, label_width, label_height)
+
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(0, 0, 0, 170))
+            painter.drawRoundedRect(label_rect, 4.0, 4.0)
+            painter.setPen(QPen(QColor(255, 240, 130, 255), 1.0))
+            painter.drawText(label_rect, Qt.AlignCenter, number_text)
 
     def _draw_direction_labels(self, painter: QPainter, star_map: ProjectedStarMap) -> None:
         if not star_map.direction_labels:
