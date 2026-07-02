@@ -32,6 +32,14 @@ Use this for wide-angle and medium-wide images when the BSC is too sparse.
 - Local data file: `catalog/hipparcos_i239/hip_main.dat`
 - Local ReadMe: `catalog/hipparcos_i239/ReadMe`
 
+## IAU Catalog of Star Names (CSN)
+
+Use this to add IAU-approved English display names for bright stars in the
+render window.
+
+- Catalog page: https://exopla.net/star-names/modern-iau-star-names/
+- Local HTML snapshot: `catalog/iau_csn/modern_iau_star_names.html`
+
 ## Hipparcos New Reduction
 
 This is a useful alternative to the original Hipparcos main catalog.

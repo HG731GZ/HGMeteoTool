@@ -11,7 +11,7 @@ STAR_NAME_FONT_SIZE_PT = 11
 
 
 class StarMapRenderer:
-    def render(self, star_map: ProjectedStarMap) -> QImage:
+    def render(self, star_map: ProjectedStarMap, common_name_mag_limit: float = 1.0) -> QImage:
         image = QImage(star_map.width, star_map.height, QImage.Format_ARGB32_Premultiplied)
         image.fill(QColor(0, 0, 0))
 
@@ -31,7 +31,7 @@ class StarMapRenderer:
             center = QPointF(float(star_map.x_px[index]), float(star_map.y_px[index]))
             painter.drawEllipse(QRectF(center.x() - radius, center.y() - radius, radius * 2.0, radius * 2.0))
 
-        self._draw_star_names(painter, star_map)
+        self._draw_star_names(painter, star_map, common_name_mag_limit)
         self._draw_direction_labels(painter, star_map)
         painter.end()
         return image
@@ -52,7 +52,7 @@ class StarMapRenderer:
             polygon = QPolygonF([QPointF(x_value, y_value) for x_value, y_value in line.points])
             painter.drawPolyline(polygon)
 
-    def _draw_star_names(self, painter: QPainter, star_map: ProjectedStarMap) -> None:
+    def _draw_star_names(self, painter: QPainter, star_map: ProjectedStarMap, common_name_mag_limit: float) -> None:
         font = QFont()
         font.setPointSize(STAR_NAME_FONT_SIZE_PT)
         font.setBold(True)
@@ -61,7 +61,7 @@ class StarMapRenderer:
 
         for index, common_name in enumerate(star_map.common_names):
             name = str(common_name).strip()
-            if not name or float(star_map.mag_v[index]) > 1.0:
+            if not name or float(star_map.mag_v[index]) > common_name_mag_limit:
                 continue
 
             red, green, blue = (int(value) for value in star_map.star_rgb[index])

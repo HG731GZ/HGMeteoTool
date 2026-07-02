@@ -65,6 +65,8 @@ class MainWindow(QMainWindow):
         self.ui.spinBoxImageHeight.setValue(1280)
         self.ui.doubleSpinBoxFocalLength.setValue(24.0)
         self.ui.doubleSpinBoxMagLimit.setValue(6.5)
+        self.ui.horizontalSliderCommonNameLimit.setValue(10)
+        self._update_common_name_limit_label()
         self.ui.doubleSpinBoxAz.setValue(0.0)
         self.ui.doubleSpinBoxAlt.setValue(20.0)
         self.ui.doubleSpinBoxRoll.setValue(0.0)
@@ -82,6 +84,7 @@ class MainWindow(QMainWindow):
             self.ui.spinBoxImageHeight,
             self.ui.doubleSpinBoxFocalLength,
             self.ui.doubleSpinBoxMagLimit,
+            self.ui.horizontalSliderCommonNameLimit,
             self.ui.doubleSpinBoxAz,
             self.ui.doubleSpinBoxAlt,
             self.ui.doubleSpinBoxRoll,
@@ -91,10 +94,17 @@ class MainWindow(QMainWindow):
                 widget.valueChanged.connect(self.schedule_render)
             elif hasattr(widget, "dateTimeChanged"):
                 widget.dateTimeChanged.connect(self.schedule_render)
+        self.ui.horizontalSliderCommonNameLimit.valueChanged.connect(self._update_common_name_limit_label)
         self.ui.pushButtonRender.clicked.connect(lambda: self.render_now())
 
     def schedule_render(self, *unused, delay_ms: int = 120) -> None:  # type: ignore[no-untyped-def]
         self.render_timer.start(delay_ms)
+
+    def _common_name_mag_limit(self) -> float:
+        return self.ui.horizontalSliderCommonNameLimit.value() / 10.0
+
+    def _update_common_name_limit_label(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        self.ui.labelCommonNameLimitValue.setText(f"{self._common_name_mag_limit():.1f} mag")
 
     def _observer_settings(self) -> ObserverSettings:
         local_dt = self.ui.dateTimeEditObservation.dateTime().toPyDateTime()
@@ -151,7 +161,8 @@ class MainWindow(QMainWindow):
                 view=self._view_settings(),
                 visible_mag_limit=mag_limit,
             )
-            image = self.renderer.render(star_map)
+            common_name_mag_limit = self._common_name_mag_limit()
+            image = self.renderer.render(star_map, common_name_mag_limit=common_name_mag_limit)
             render_size = (star_map.width, star_map.height)
             should_fit = self._last_render_size != render_size or self.pixmap_item.pixmap().isNull()
             self.pixmap_item.setPos(0, 0)
@@ -162,10 +173,11 @@ class MainWindow(QMainWindow):
                 self.fit_star_map()
             self.ui.statusbar.showMessage(
                 "星表: {catalog_count}  视野内: {visible_count}  地平线上: {above_count}  "
-                "Az: {az:.2f} deg  Alt: {alt:.2f} deg".format(
+                "俗名: <= {name_limit:.1f} mag  Az: {az:.2f} deg  Alt: {alt:.2f} deg".format(
                     catalog_count=star_map.catalog_count,
                     visible_count=len(star_map),
                     above_count=star_map.above_horizon_count,
+                    name_limit=common_name_mag_limit,
                     az=self.ui.doubleSpinBoxAz.value(),
                     alt=self.ui.doubleSpinBoxAlt.value(),
                 )

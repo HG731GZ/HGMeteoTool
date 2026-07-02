@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import gzip
+import re
 from dataclasses import dataclass
+from functools import lru_cache
+from html.parser import HTMLParser
 from pathlib import Path
 
 import numpy as np
@@ -43,6 +46,10 @@ def project_root() -> Path:
 
 def default_yale_bsc_path() -> Path:
     return project_root() / "catalog" / "yale_bsc" / "catalog.gz"
+
+
+def default_iau_csn_path() -> Path:
+    return project_root() / "catalog" / "iau_csn" / "modern_iau_star_names.html"
 
 
 def _parse_int(text: str) -> int | None:
@@ -93,11 +100,97 @@ BRIGHT_STAR_COMMON_NAMES = {
 }
 
 
-def load_yale_bsc(path: Path | None = None, mag_limit: float | None = 6.5) -> StarCatalog:
-    """Load the Yale Bright Star Catalog fixed-width file.
+class _IauCsnTableParser(HTMLParser):
+    """只抓取 IAU CSN 主表中的单元格文本。"""
 
-    Phase 1 extracts HR id, display name, J2000 RA/Dec, Johnson V magnitude,
-    B-V color index, spectral type, and a small common-name compatibility map.
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.rows: list[tuple[str, ...]] = []
+        self._in_target_table = False
+        self._table_depth = 0
+        self._current_row: list[str] | None = None
+        self._current_cell: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attrs_dict = dict(attrs)
+        if tag == "table" and attrs_dict.get("id") == "table_1":
+            self._in_target_table = True
+            self._table_depth = 1
+            return
+
+        if not self._in_target_table:
+            return
+
+        if tag == "table":
+            self._table_depth += 1
+        elif tag == "tr":
+            self._current_row = []
+        elif tag in {"td", "th"} and self._current_row is not None:
+            self._current_cell = []
+        elif tag in {"br", "p", "div"} and self._current_cell is not None:
+            self._current_cell.append(" ")
+
+    def handle_data(self, data: str) -> None:
+        if self._current_cell is not None:
+            self._current_cell.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if not self._in_target_table:
+            return
+
+        if tag in {"td", "th"} and self._current_cell is not None and self._current_row is not None:
+            self._current_row.append(" ".join("".join(self._current_cell).split()))
+            self._current_cell = None
+        elif tag == "tr" and self._current_row is not None:
+            if self._current_row:
+                self.rows.append(tuple(self._current_row))
+            self._current_row = None
+        elif tag == "table":
+            self._table_depth -= 1
+            if self._table_depth <= 0:
+                self._in_target_table = False
+
+
+def _extract_hr_id(text: str) -> int | None:
+    match = re.search(r"\bHR\s*(\d+)\b", text, flags=re.IGNORECASE)
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
+@lru_cache(maxsize=4)
+def _load_iau_star_names_by_hr_cached(path_text: str) -> dict[int, str]:
+    path = Path(path_text)
+    if not path.exists():
+        return {}
+
+    parser = _IauCsnTableParser()
+    parser.feed(path.read_text(encoding="utf-8", errors="replace"))
+
+    names: dict[int, str] = {}
+    for row in parser.rows:
+        if len(row) < 16 or row[0] == "proper names":
+            continue
+
+        hr = _extract_hr_id(row[2])
+        display_name = row[5].strip() or row[0].strip()
+        if hr is not None and display_name and hr not in names:
+            names[hr] = display_name
+
+    if parser.rows and not names:
+        raise ValueError(f"未能从 IAU CSN 表解析出 HR 星名：{path}")
+    return names
+
+
+def load_iau_star_names_by_hr(path: Path | None = None) -> dict[int, str]:
+    return dict(_load_iau_star_names_by_hr_cached(str(path or default_iau_csn_path())))
+
+
+def load_yale_bsc(path: Path | None = None, mag_limit: float | None = 6.5) -> StarCatalog:
+    """加载 Yale Bright Star Catalog 固定宽度星表。
+
+    这里提取 HR 编号、显示名、J2000 赤经赤纬、V 星等、B-V 色指数和光谱型。
+    本地 IAU CSN 只用于补全 common_names 显示字段，不参与坐标、星等或后续解算。
     """
 
     catalog_path = path or default_yale_bsc_path()
@@ -115,6 +208,7 @@ def load_yale_bsc(path: Path | None = None, mag_limit: float | None = 6.5) -> St
     color_values: list[float] = []
     spectral_types: list[str] = []
     common_names: list[str] = []
+    iau_display_names_by_hr = load_iau_star_names_by_hr()
 
     with gzip.open(catalog_path, "rt", encoding="latin-1") as handle:
         for raw_line in handle:
@@ -163,7 +257,7 @@ def load_yale_bsc(path: Path | None = None, mag_limit: float | None = 6.5) -> St
             mag_values.append(mag_v)
             color_values.append(np.nan if color_index is None else color_index)
             spectral_types.append(spectral_type)
-            common_names.append(BRIGHT_STAR_COMMON_NAMES.get(hr, ""))
+            common_names.append(iau_display_names_by_hr.get(hr) or BRIGHT_STAR_COMMON_NAMES.get(hr, ""))
 
     if not star_ids:
         raise ValueError(f"No usable stars loaded from {catalog_path}")

@@ -6,22 +6,13 @@ from pathlib import Path
 from PyQt5.QtCore import QObject, QThread, Qt, pyqtSignal
 from PyQt5.QtWidgets import QDialog, QMessageBox
 
-from scripts.download_catalogs import CATALOG_FILES, default_catalog_dir, download_file, file_is_complete
+from .catalog_sources import CATALOG_FILES, default_catalog_dir, download_file, incomplete_catalog_files
 
 from .ui.ui_catalog_download_dialog import Ui_CatalogDownloadDialog
 
 
 def incomplete_catalog_labels(catalog_dir: Path | None = None) -> list[str]:
-    base_dir = catalog_dir or default_catalog_dir()
-    if not base_dir.exists() or not base_dir.is_dir():
-        return [item.label for item in CATALOG_FILES]
-
-    incomplete: list[str] = []
-    for item in CATALOG_FILES:
-        target = base_dir / item.relative_path
-        if not file_is_complete(target, item.expected_size):
-            incomplete.append(item.label)
-    return incomplete
+    return [item.label for item in incomplete_catalog_files(catalog_dir)]
 
 
 def catalog_is_complete(catalog_dir: Path | None = None) -> bool:
