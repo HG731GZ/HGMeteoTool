@@ -1,0 +1,43 @@
+# Python runtime artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+*.spec
+
+# Local environments
+.venv/
+venv/
+env/
+*.env
+
+# IDE and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Codex/agent workspace metadata, not project source
+.git/
+.agents/
+.codex/
+
+# Local generated outputs
+reference_star_map.png
+reference_star_list.json
+/pytest.ini
+/Phase1进度汇报.md
+/分步规划.md
+/总体方案.md
+/tests/
+/catalog/hipparcos_i239/
+/catalog/yale_bsc/

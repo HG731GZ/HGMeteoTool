@@ -1,0 +1,27 @@
+name: hgastro
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      - PyQt5==5.15.11
+      - pyqtgraph==0.14.0
+      - numpy==2.2.6
+      - scipy==1.15.3
+      - astropy==6.1.7
+      - opencv-python-headless==5.0.0.93
+      - photutils==2.0.2
+      - pandas==2.3.3
+      - pyarrow==24.0.0
+      - pillow==12.3.0
+      - sep==1.4.1
+      - gwcs==0.24.0
+      - asdf==5.3.1
+      - PyYAML==6.0.3
+      - pytest==9.1.1
+      - pyinstaller==6.21.0
+variables:
+  PYTHONNOUSERSITE: "1"
+  PYTHONPATH: ""
