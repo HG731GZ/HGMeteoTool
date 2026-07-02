@@ -7,6 +7,7 @@ from PyQt5.QtCore import QDateTime, QEvent, QPoint, QTimer, Qt
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import QApplication, QGraphicsPixmapItem, QGraphicsScene, QMainWindow
 
+from .catalog_download import ensure_catalogs_ready_or_handle
 from .catalog import load_default_catalog
 from .renderer import StarMapRenderer
 from .simulator import (
@@ -221,6 +222,9 @@ def main(argv: list[str] | None = None) -> int:
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(argv or sys.argv)
+    if not ensure_catalogs_ready_or_handle():
+        return 0
+
     window = MainWindow()
     window.show()
     return int(app.exec_())
