@@ -11,6 +11,7 @@ from PyQt5.QtWidgets import QApplication, QGraphicsPixmapItem, QGraphicsScene, Q
 from .catalog_download import ensure_catalogs_ready_or_handle
 from .catalog import load_default_catalog, project_root
 from .config import StarMapUiConfig, load_star_map_ui_config
+from .milky_way import MilkyWayCatalog, load_milky_way
 from .reference import build_reference_payload, save_reference_outputs
 from .renderer import StarMapRenderer
 from .simulator import (
@@ -19,12 +20,14 @@ from .simulator import (
     FISHEYE_EQUISOLID,
     FISHEYE_ORTHOGRAPHIC,
     FISHEYE_STEREOGRAPHIC,
+    HorizontalMilkyWayCatalog,
     HorizontalStarCatalog,
     ObserverSettings,
     ProjectedStarMap,
     RECTILINEAR_LENS_MODEL,
     ViewSettings,
     compute_horizontal_catalog,
+    compute_horizontal_milky_way,
     horizontal_fov_deg,
     project_horizontal_catalog,
     select_reference_stars,
@@ -51,6 +54,7 @@ class MainWindow(QMainWindow):
         self._apply_ui_font_config(self.ui_config)
 
         self.catalog = load_default_catalog(mag_limit=None)
+        self.milky_way_catalog: MilkyWayCatalog = load_milky_way()
         self.renderer = StarMapRenderer(self.ui_config)
         self.scene = QGraphicsScene(self)
         self.pixmap_item = QGraphicsPixmapItem()
@@ -65,6 +69,8 @@ class MainWindow(QMainWindow):
         self.last_drag_pos: QPoint | None = None
         self._horizontal_cache_key: tuple[object, ...] | None = None
         self._horizontal_cache: HorizontalStarCatalog | None = None
+        self._milky_way_cache_key: tuple[object, ...] | None = None
+        self._milky_way_cache: HorizontalMilkyWayCatalog | None = None
         self._last_render_size: tuple[int, int] | None = None
 
         self._init_defaults()
@@ -215,17 +221,34 @@ class MainWindow(QMainWindow):
             self._horizontal_cache_key = cache_key
         return self._horizontal_cache
 
+    def _get_horizontal_milky_way(self, observer: ObserverSettings) -> HorizontalMilkyWayCatalog:
+        cache_key = (
+            int(observer.observation_time_utc.timestamp()),
+            round(observer.latitude_deg, 8),
+            round(observer.longitude_deg, 8),
+            round(observer.elevation_m, 3),
+        )
+        if self._milky_way_cache_key != cache_key or self._milky_way_cache is None:
+            self._milky_way_cache = compute_horizontal_milky_way(
+                milky_way=self.milky_way_catalog,
+                observer=observer,
+            )
+            self._milky_way_cache_key = cache_key
+        return self._milky_way_cache
+
     def _build_projected_star_map(self) -> tuple[ObserverSettings, CameraSettings, ViewSettings, float, ProjectedStarMap]:
         observer = self._observer_settings()
         camera = self._camera_settings()
         view = self._view_settings()
         mag_limit = self.ui.doubleSpinBoxMagLimit.value()
         horizontal_catalog = self._get_horizontal_catalog(observer, mag_limit)
+        horizontal_milky_way = self._get_horizontal_milky_way(observer)
         star_map = project_horizontal_catalog(
             horizontal_catalog=horizontal_catalog,
             camera=camera,
             view=view,
             visible_mag_limit=mag_limit,
+            horizontal_milky_way=horizontal_milky_way,
         )
         return observer, camera, view, mag_limit, star_map
 
@@ -247,10 +270,11 @@ class MainWindow(QMainWindow):
             self._display_star_map_image(star_map, image)
             self.ui.statusbar.showMessage(
                 "星表: {catalog_count}  视野内: {visible_count}  地平线上: {above_count}  "
-                "俗名: <= {name_limit:.1f} mag  镜头: {lens_name}  Az: {az:.2f} deg  Alt: {alt:.2f} deg".format(
+                "银河面: {mw_count}  俗名: <= {name_limit:.1f} mag  镜头: {lens_name}  Az: {az:.2f} deg  Alt: {alt:.2f} deg".format(
                     catalog_count=star_map.catalog_count,
                     visible_count=len(star_map),
                     above_count=star_map.above_horizon_count,
+                    mw_count=len(star_map.milky_way_polygons),
                     name_limit=common_name_mag_limit,
                     lens_name=self.ui.comboBoxLensModel.currentText(),
                     az=view.center_az_deg,

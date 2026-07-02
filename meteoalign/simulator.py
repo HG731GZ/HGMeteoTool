@@ -27,6 +27,7 @@ from astropy.time import Time
 from astropy.utils import iers
 
 from .catalog import StarCatalog
+from .milky_way import MilkyWayCatalog
 
 
 iers.conf.auto_download = False
@@ -108,6 +109,32 @@ class HorizontalStarCatalog:
 
 
 @dataclass(frozen=True)
+class HorizontalMilkyWayRing:
+    alt_deg: np.ndarray
+    az_deg: np.ndarray
+
+
+@dataclass(frozen=True)
+class HorizontalMilkyWayPolygon:
+    rings: tuple[HorizontalMilkyWayRing, ...]
+
+
+@dataclass(frozen=True)
+class HorizontalMilkyWayCatalog:
+    source_name: str
+    polygons: tuple[HorizontalMilkyWayPolygon, ...]
+
+    @property
+    def point_count(self) -> int:
+        return int(sum(ring.alt_deg.size for polygon in self.polygons for ring in polygon.rings))
+
+
+@dataclass(frozen=True)
+class ProjectedMilkyWayPolygon:
+    rings: tuple[tuple[tuple[float, float], ...], ...]
+
+
+@dataclass(frozen=True)
 class ProjectedStarMap:
     width: int
     height: int
@@ -132,6 +159,7 @@ class ProjectedStarMap:
     grid_lines: tuple[ProjectedGridLine, ...]
     direction_labels: tuple[ProjectedLabel, ...]
     catalog_count: int
+    milky_way_polygons: tuple[ProjectedMilkyWayPolygon, ...] = ()
 
     def __len__(self) -> int:
         return int(self.x_px.size)
@@ -176,16 +204,24 @@ def _ensure_aware_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
-def compute_altaz(catalog: StarCatalog, observer: ObserverSettings) -> tuple[np.ndarray, np.ndarray]:
+def compute_altaz_from_radec(
+    ra_deg: np.ndarray,
+    dec_deg: np.ndarray,
+    observer: ObserverSettings,
+) -> tuple[np.ndarray, np.ndarray]:
     obstime = Time(_ensure_aware_utc(observer.observation_time_utc))
     location = EarthLocation.from_geodetic(
         lon=observer.longitude_deg * u.deg,
         lat=observer.latitude_deg * u.deg,
         height=observer.elevation_m * u.m,
     )
-    sky_coords = SkyCoord(ra=catalog.ra_deg * u.deg, dec=catalog.dec_deg * u.deg, frame="icrs")
+    sky_coords = SkyCoord(ra=ra_deg * u.deg, dec=dec_deg * u.deg, frame="icrs")
     altaz = sky_coords.transform_to(AltAz(obstime=obstime, location=location))
     return altaz.alt.degree.astype(np.float64), altaz.az.degree.astype(np.float64)
+
+
+def compute_altaz(catalog: StarCatalog, observer: ObserverSettings) -> tuple[np.ndarray, np.ndarray]:
+    return compute_altaz_from_radec(catalog.ra_deg, catalog.dec_deg, observer)
 
 
 def compute_horizontal_catalog(
@@ -208,6 +244,42 @@ def compute_horizontal_catalog(
         alt_deg=alt_deg,
         az_deg=az_deg,
     )
+
+
+def compute_horizontal_milky_way(
+    milky_way: MilkyWayCatalog,
+    observer: ObserverSettings,
+) -> HorizontalMilkyWayCatalog:
+    rings = [ring for polygon in milky_way.polygons for ring in polygon.rings]
+    if not rings:
+        return HorizontalMilkyWayCatalog(source_name=milky_way.source_name, polygons=())
+
+    ring_lengths = [ring.ra_deg.size for ring in rings]
+    all_ra = np.concatenate([ring.ra_deg for ring in rings])
+    all_dec = np.concatenate([ring.dec_deg for ring in rings])
+    all_alt, all_az = compute_altaz_from_radec(all_ra, all_dec, observer)
+
+    horizontal_rings: list[HorizontalMilkyWayRing] = []
+    offset = 0
+    for length in ring_lengths:
+        next_offset = offset + length
+        horizontal_rings.append(
+            HorizontalMilkyWayRing(
+                alt_deg=all_alt[offset:next_offset],
+                az_deg=all_az[offset:next_offset],
+            )
+        )
+        offset = next_offset
+
+    polygons: list[HorizontalMilkyWayPolygon] = []
+    ring_offset = 0
+    for polygon in milky_way.polygons:
+        polygon_rings = tuple(horizontal_rings[ring_offset : ring_offset + len(polygon.rings)])
+        ring_offset += len(polygon.rings)
+        if polygon_rings:
+            polygons.append(HorizontalMilkyWayPolygon(rings=polygon_rings))
+
+    return HorizontalMilkyWayCatalog(source_name=milky_way.source_name, polygons=tuple(polygons))
 
 
 def _local_vectors_from_altaz(alt_deg: np.ndarray, az_deg: np.ndarray) -> np.ndarray:
@@ -507,11 +579,44 @@ def _build_horizontal_grid(
 
     return tuple(grid_lines), tuple(labels)
 
+
+def _project_milky_way_polygons(
+    horizontal_milky_way: HorizontalMilkyWayCatalog | None,
+    camera: CameraSettings,
+    basis: tuple[np.ndarray, np.ndarray, np.ndarray],
+) -> tuple[ProjectedMilkyWayPolygon, ...]:
+    if horizontal_milky_way is None:
+        return ()
+
+    projected_polygons: list[ProjectedMilkyWayPolygon] = []
+    for polygon in horizontal_milky_way.polygons:
+        projected_rings: list[tuple[tuple[float, float], ...]] = []
+        for ring in polygon.rings:
+            x_px, y_px, valid = _project_altaz_points(
+                alt_deg=ring.alt_deg,
+                az_deg=ring.az_deg,
+                camera=camera,
+                basis=basis,
+            )
+            points = tuple(
+                (float(x_value), float(y_value))
+                for x_value, y_value, is_valid in zip(x_px, y_px, valid)
+                if is_valid
+            )
+            if len(points) >= 3:
+                projected_rings.append(points)
+        if projected_rings:
+            projected_polygons.append(ProjectedMilkyWayPolygon(rings=tuple(projected_rings)))
+
+    return tuple(projected_polygons)
+
+
 def project_horizontal_catalog(
     horizontal_catalog: HorizontalStarCatalog,
     camera: CameraSettings,
     view: ViewSettings,
     visible_mag_limit: float = 6.5,
+    horizontal_milky_way: HorizontalMilkyWayCatalog | None = None,
 ) -> ProjectedStarMap:
     if camera.sensor_width_mm <= 0 or camera.sensor_height_mm <= 0:
         raise ValueError("Sensor dimensions must be positive")
@@ -552,6 +657,7 @@ def project_horizontal_catalog(
     )
     above_horizon = horizontal_catalog.alt_deg[inside] >= 0.0
     alpha = np.where(above_horizon, 255, 128).astype(np.uint8)
+    milky_way_polygons = _project_milky_way_polygons(horizontal_milky_way, camera=camera, basis=basis)
     grid_lines, direction_labels = _build_horizontal_grid(camera=camera, basis=basis)
 
     return ProjectedStarMap(
@@ -578,6 +684,7 @@ def project_horizontal_catalog(
         grid_lines=grid_lines,
         direction_labels=direction_labels,
         catalog_count=len(horizontal_catalog),
+        milky_way_polygons=milky_way_polygons,
     )
 
 def project_catalog(

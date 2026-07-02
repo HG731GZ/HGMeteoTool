@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PyQt5.QtCore import QPointF, QRectF, Qt
-from PyQt5.QtGui import QColor, QFont, QImage, QPainter, QPen, QPolygonF
+from PyQt5.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPolygonF
 
 from .config import StarMapUiConfig
 from .simulator import ProjectedStarMap, ReferenceStar
@@ -23,6 +23,7 @@ class StarMapRenderer:
         painter = QPainter(image)
         painter.setRenderHint(QPainter.Antialiasing, True)
 
+        self._draw_milky_way(painter, star_map)
         self._draw_grid(painter, star_map)
         painter.setPen(Qt.NoPen)
 
@@ -42,6 +43,28 @@ class StarMapRenderer:
         self._draw_direction_labels(painter, star_map)
         painter.end()
         return image
+
+    def _draw_milky_way(self, painter: QPainter, star_map: ProjectedStarMap) -> None:
+        if not star_map.milky_way_polygons:
+            return
+
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(165, 165, 165, 52))
+        for polygon in star_map.milky_way_polygons:
+            path = QPainterPath()
+            path.setFillRule(Qt.OddEvenFill)
+            has_ring = False
+            for ring in polygon.rings:
+                if len(ring) < 3:
+                    continue
+                first_x, first_y = ring[0]
+                path.moveTo(first_x, first_y)
+                for x_value, y_value in ring[1:]:
+                    path.lineTo(x_value, y_value)
+                path.closeSubpath()
+                has_ring = True
+            if has_ring:
+                painter.drawPath(path)
 
     def _draw_grid(self, painter: QPainter, star_map: ProjectedStarMap) -> None:
         painter.setBrush(Qt.NoBrush)

@@ -55,6 +55,17 @@ CATALOG_FILES = (
             "Sirius",
         ),
     ),
+    CatalogFile(
+        label="d3-celestial Milky Way GeoJSON",
+        url="https://cdn.jsdelivr.net/npm/d3-celestial@0.7.35/data/mw.json",
+        relative_path=Path("d3_celestial/mw.json"),
+        expected_size=534_254,
+        required_text=(
+            '"FeatureCollection"',
+            '"MultiPolygon"',
+            '"ol1"',
+        ),
+    ),
 )
 
 

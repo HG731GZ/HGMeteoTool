@@ -40,6 +40,17 @@ render window.
 - Catalog page: https://exopla.net/star-names/modern-iau-star-names/
 - Local HTML snapshot: `catalog/iau_csn/modern_iau_star_names.html`
 
+## d3-celestial Milky Way GeoJSON
+
+Use this to render the Milky Way as a semi-transparent band in the simulated
+camera view.
+
+- Project: https://github.com/ofrohn/d3-celestial
+- Versioned data file: https://cdn.jsdelivr.net/npm/d3-celestial@0.7.35/data/mw.json
+- Source data note: d3-celestial documents `mw.json` as Milky Way outlines in
+  five brightness steps, converted to GeoJSON J2000 coordinates.
+- Local data file: `catalog/d3_celestial/mw.json`
+
 ## Hipparcos New Reduction
 
 This is a useful alternative to the original Hipparcos main catalog.
