@@ -5,11 +5,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from PyQt5.QtCore import QDateTime, QEvent, QPoint, QTimer, Qt
-from PyQt5.QtGui import QPixmap
+from PyQt5.QtGui import QFont, QPixmap
 from PyQt5.QtWidgets import QApplication, QGraphicsPixmapItem, QGraphicsScene, QMainWindow, QMessageBox
 
 from .catalog_download import ensure_catalogs_ready_or_handle
 from .catalog import load_default_catalog, project_root
+from .config import StarMapUiConfig, load_star_map_ui_config
 from .reference import build_reference_payload, save_reference_outputs
 from .renderer import StarMapRenderer
 from .simulator import (
@@ -46,9 +47,11 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
+        self.ui_config = load_star_map_ui_config()
+        self._apply_ui_font_config(self.ui_config)
 
         self.catalog = load_default_catalog(mag_limit=None)
-        self.renderer = StarMapRenderer()
+        self.renderer = StarMapRenderer(self.ui_config)
         self.scene = QGraphicsScene(self)
         self.pixmap_item = QGraphicsPixmapItem()
         self.scene.addItem(self.pixmap_item)
@@ -67,6 +70,16 @@ class MainWindow(QMainWindow):
         self._init_defaults()
         self._connect_inputs()
         self.schedule_render(delay_ms=0)
+
+    def _apply_ui_font_config(self, ui_config: StarMapUiConfig) -> None:
+        controls_font = QFont(self.font())
+        controls_font.setPointSize(ui_config.controls_font_size_pt)
+        self.setFont(controls_font)
+        self.ui.centralwidget.setFont(controls_font)
+
+        status_font = QFont(self.ui.statusbar.font())
+        status_font.setPointSize(ui_config.status_bar_font_size_pt)
+        self.ui.statusbar.setFont(status_font)
 
     def _init_defaults(self) -> None:
         self.ui.dateTimeEditObservation.setDateTime(QDateTime.currentDateTime())
