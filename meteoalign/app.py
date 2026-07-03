@@ -93,9 +93,9 @@ class MainWindow(QMainWindow):
         if utc_offset is None:
             utc_offset = timedelta(hours=8)
         self.ui.doubleSpinBoxUtcOffset.setValue(utc_offset.total_seconds() / 3600.0)
-        self.ui.doubleSpinBoxLatitude.setValue(40.0)
-        self.ui.doubleSpinBoxLongitude.setValue(116.0)
-        self.ui.doubleSpinBoxElevation.setValue(50.0)
+        self.ui.doubleSpinBoxLatitude.setValue(self.ui_config.default_latitude_deg)
+        self.ui.doubleSpinBoxLongitude.setValue(self.ui_config.default_longitude_deg)
+        self.ui.doubleSpinBoxElevation.setValue(self.ui_config.default_elevation_m)
         self.ui.doubleSpinBoxSensorWidth.setValue(36.0)
         self.ui.doubleSpinBoxSensorHeight.setValue(24.0)
         self.ui.spinBoxImageWidth.setValue(1920)

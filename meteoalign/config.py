@@ -12,6 +12,9 @@ class StarMapUiConfig:
     direction_label_font_size_pt: int = 16
     star_name_font_size_pt: int = 11
     reference_label_font_size_pt: int = 15
+    default_latitude_deg: float = 40.0
+    default_longitude_deg: float = 116.0
+    default_elevation_m: float = 50.0
 
 
 def default_config_path() -> Path:
@@ -25,6 +28,15 @@ def _read_int(config: dict[str, object], key: str, default_value: int, minimum: 
     except (TypeError, ValueError):
         return default_value
     return min(max(int_value, minimum), maximum)
+
+
+def _read_float(config: dict[str, object], key: str, default_value: float, minimum: float, maximum: float) -> float:
+    value = config.get(key, default_value)
+    try:
+        float_value = float(value)
+    except (TypeError, ValueError):
+        return default_value
+    return min(max(float_value, minimum), maximum)
 
 
 def load_star_map_ui_config(path: Path | None = None) -> StarMapUiConfig:
@@ -45,4 +57,7 @@ def load_star_map_ui_config(path: Path | None = None) -> StarMapUiConfig:
         direction_label_font_size_pt=_read_int(raw_config, "direction_label_font_size_pt", 16, 6, 48),
         star_name_font_size_pt=_read_int(raw_config, "star_name_font_size_pt", 11, 6, 48),
         reference_label_font_size_pt=_read_int(raw_config, "reference_label_font_size_pt", 15, 6, 64),
+        default_latitude_deg=_read_float(raw_config, "default_latitude_deg", 40.0, -90.0, 90.0),
+        default_longitude_deg=_read_float(raw_config, "default_longitude_deg", 116.0, -180.0, 180.0),
+        default_elevation_m=_read_float(raw_config, "default_elevation_m", 50.0, -500.0, 9000.0),
     )

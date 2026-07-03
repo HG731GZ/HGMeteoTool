@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -47,6 +48,7 @@ FISHEYE_LENS_MODELS = {
     FISHEYE_ORTHOGRAPHIC,
 }
 SUPPORTED_LENS_MODELS = {RECTILINEAR_LENS_MODEL, *FISHEYE_LENS_MODELS}
+Point2D = tuple[float, float]
 
 
 @dataclass(frozen=True)
@@ -530,6 +532,113 @@ def _split_projected_line(
     return lines
 
 
+def _clean_polygon_points(points: list[Point2D]) -> list[Point2D]:
+    if len(points) < 2:
+        return points
+
+    cleaned: list[Point2D] = []
+    for point in points:
+        is_new_point = not cleaned or abs(cleaned[-1][0] - point[0]) > 1e-6 or abs(cleaned[-1][1] - point[1]) > 1e-6
+        if is_new_point:
+            cleaned.append(point)
+    is_closed = (
+        len(cleaned) >= 2
+        and abs(cleaned[0][0] - cleaned[-1][0]) <= 1e-6
+        and abs(cleaned[0][1] - cleaned[-1][1]) <= 1e-6
+    )
+    if is_closed:
+        cleaned.pop()
+    return cleaned
+
+
+def _clip_polygon_edge(
+    points: list[Point2D],
+    is_inside: Callable[[Point2D], bool],
+    intersect: Callable[[Point2D, Point2D], Point2D],
+) -> list[Point2D]:
+    if not points:
+        return []
+
+    clipped: list[Point2D] = []
+    previous = points[-1]
+    previous_inside = bool(is_inside(previous))
+    for current in points:
+        current_inside = bool(is_inside(current))
+        if current_inside:
+            if not previous_inside:
+                clipped.append(intersect(previous, current))
+            clipped.append(current)
+        elif previous_inside:
+            clipped.append(intersect(previous, current))
+        previous = current
+        previous_inside = current_inside
+    return _clean_polygon_points(clipped)
+
+
+def _polygon_area_px(points: tuple[Point2D, ...]) -> float:
+    if len(points) < 3:
+        return 0.0
+    x_values = np.asarray([point[0] for point in points], dtype=np.float64)
+    y_values = np.asarray([point[1] for point in points], dtype=np.float64)
+    return float(0.5 * abs(np.dot(x_values, np.roll(y_values, -1)) - np.dot(y_values, np.roll(x_values, -1))))
+
+
+def _clip_polygon_to_image_rect(
+    points: tuple[Point2D, ...],
+    width_px: int,
+    height_px: int,
+) -> tuple[Point2D, ...]:
+    # 对银河面片做屏幕空间裁剪，避免越过画面边缘时整块消失。
+    clipped = _clean_polygon_points(list(points))
+    if len(clipped) < 3:
+        return ()
+
+    left = 0.0
+    top = 0.0
+    right = float(width_px - 1)
+    bottom = float(height_px - 1)
+
+    def intersect_vertical(x_edge: float, start: Point2D, end: Point2D) -> Point2D:
+        dx = end[0] - start[0]
+        if abs(dx) <= 1e-12:
+            return x_edge, end[1]
+        t = (x_edge - start[0]) / dx
+        return x_edge, start[1] + t * (end[1] - start[1])
+
+    def intersect_horizontal(y_edge: float, start: Point2D, end: Point2D) -> Point2D:
+        dy = end[1] - start[1]
+        if abs(dy) <= 1e-12:
+            return end[0], y_edge
+        t = (y_edge - start[1]) / dy
+        return start[0] + t * (end[0] - start[0]), y_edge
+
+    clipped = _clip_polygon_edge(
+        clipped,
+        lambda point: point[0] >= left,
+        lambda start, end: intersect_vertical(left, start, end),
+    )
+    clipped = _clip_polygon_edge(
+        clipped,
+        lambda point: point[0] <= right,
+        lambda start, end: intersect_vertical(right, start, end),
+    )
+    clipped = _clip_polygon_edge(
+        clipped,
+        lambda point: point[1] >= top,
+        lambda start, end: intersect_horizontal(top, start, end),
+    )
+    clipped = _clip_polygon_edge(
+        clipped,
+        lambda point: point[1] <= bottom,
+        lambda start, end: intersect_horizontal(bottom, start, end),
+    )
+
+    result = tuple(clipped)
+    if len(result) < 3 or _polygon_area_px(result) <= 1e-4:
+        return ()
+    return result
+
+
 def _build_horizontal_grid(
     camera: CameraSettings,
     basis: tuple[np.ndarray, np.ndarray, np.ndarray],
@@ -598,13 +707,17 @@ def _project_milky_way_polygons(
                 camera=camera,
                 basis=basis,
             )
-            points = tuple(
-                (float(x_value), float(y_value))
-                for x_value, y_value, is_valid in zip(x_px, y_px, valid)
-                if is_valid
-            )
-            if len(points) >= 3:
-                projected_rings.append(points)
+            # 银河使用面填充渲染，必须先保证环在镜头投影上连续有效。
+            # 画面外的部分随后会裁剪掉，不能因为碰到图像边界就丢弃整块面片。
+            projectable = np.isfinite(x_px) & np.isfinite(y_px)
+            if camera.lens_model in FISHEYE_LENS_MODELS:
+                projectable &= valid
+            if not bool(np.all(projectable)):
+                continue
+            points = tuple((float(x_value), float(y_value)) for x_value, y_value in zip(x_px, y_px))
+            clipped_points = _clip_polygon_to_image_rect(points, camera.image_width_px, camera.image_height_px)
+            if len(clipped_points) >= 3:
+                projected_rings.append(clipped_points)
         if projected_rings:
             projected_polygons.append(ProjectedMilkyWayPolygon(rings=tuple(projected_rings)))
 

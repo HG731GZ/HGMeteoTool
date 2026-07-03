@@ -3,5 +3,8 @@
   "status_bar_font_size_pt": 10,
   "direction_label_font_size_pt": 16,
   "star_name_font_size_pt": 14,
-  "reference_label_font_size_pt": 15
+  "reference_label_font_size_pt": 15,
+  "default_latitude_deg": 40.0,
+  "default_longitude_deg": 116.0,
+  "default_elevation_m": 200.0
 }
