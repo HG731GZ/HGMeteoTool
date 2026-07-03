@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .simulator import CameraSettings, ObserverSettings, ProjectedStarMap, ReferenceStar, ViewSettings
@@ -14,13 +14,17 @@ def build_reference_payload(
     camera: CameraSettings,
     view: ViewSettings,
     visible_mag_limit: float,
-    common_name_mag_limit: float,
+    utc_offset_hours: float = 0.0,
+    reference_label_mode: str = "fixed_count",
+    reference_mag_limit: float | None = None,
     generated_at_utc: datetime | None = None,
 ) -> dict[str, object]:
     generated_time = generated_at_utc or datetime.now(timezone.utc)
     if generated_time.tzinfo is None:
         generated_time = generated_time.replace(tzinfo=timezone.utc)
     generated_time = generated_time.astimezone(timezone.utc)
+    local_timezone = timezone(timedelta(hours=utc_offset_hours))
+    observation_time_local = observer.observation_time_utc.astimezone(local_timezone)
 
     return {
         "format": "meteoalign_phase1_reference",
@@ -34,6 +38,8 @@ def build_reference_payload(
         },
         "observer": {
             "observation_time_utc": observer.observation_time_utc.astimezone(timezone.utc).isoformat(),
+            "observation_time_local": observation_time_local.isoformat(),
+            "utc_offset_hours": utc_offset_hours,
             "latitude_deg": observer.latitude_deg,
             "longitude_deg": observer.longitude_deg,
             "elevation_m": observer.elevation_m,
@@ -54,7 +60,8 @@ def build_reference_payload(
         },
         "render": {
             "visible_mag_limit": visible_mag_limit,
-            "common_name_mag_limit": common_name_mag_limit,
+            "reference_label_mode": reference_label_mode,
+            "reference_mag_limit": reference_mag_limit,
             "reference_star_count": len(reference_stars),
         },
         "stars": [

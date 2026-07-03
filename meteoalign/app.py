@@ -1,21 +1,26 @@
 from __future__ import annotations
 
+import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from PyQt5.QtCore import QDateTime, QEvent, QObject, QPoint, QRectF, QThread, QTimer, Qt, pyqtSignal
-from PyQt5.QtGui import QFont, QImage, QPixmap
+from PyQt5.QtGui import QColor, QBrush, QCursor, QFont, QImage, QPainter, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
     QFileDialog,
+    QGraphicsEllipseItem,
     QGraphicsItem,
     QGraphicsPixmapItem,
     QGraphicsScene,
+    QGraphicsSimpleTextItem,
     QGraphicsView,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressDialog,
+    QTableWidgetItem,
 )
 
 from .catalog_download import ensure_catalogs_ready_or_handle
@@ -33,6 +38,7 @@ from .simulator import (
     HorizontalStarCatalog,
     ObserverSettings,
     ProjectedStarMap,
+    ReferenceStar,
     RECTILINEAR_LENS_MODEL,
     ViewSettings,
     compute_horizontal_catalog,
@@ -42,6 +48,7 @@ from .simulator import (
     select_reference_stars,
     vertical_fov_deg,
 )
+from .star_fitting import FittedStarPosition, fit_star_position
 from .ui.ui_main_window import Ui_MainWindow
 
 
@@ -50,10 +57,18 @@ LENS_MODELS = (
     FISHEYE_EQUIDISTANT,
     FISHEYE_EQUISOLID,
 )
+REFERENCE_LABEL_MODE_FIXED_COUNT = "fixed_count"
+REFERENCE_LABEL_MODE_FIXED_MAG_LIMIT = "fixed_mag_limit"
+REFERENCE_LABEL_MODES = (
+    REFERENCE_LABEL_MODE_FIXED_COUNT,
+    REFERENCE_LABEL_MODE_FIXED_MAG_LIMIT,
+)
 PREVIEW_LONG_SIDE_PX = 1920
 REAL_IMAGE_MAX_ZOOM_SCALE = 2.0
 IMAGE_VIEW_ZOOM_IN_FACTOR = 1.25
 IMAGE_VIEW_ZOOM_OUT_FACTOR = 0.8
+STAR_PICK_CIRCLE_STEP_PX = 10
+MIN_PSF_RADIUS_PX = 4
 
 
 class GraphicsImageItem(QGraphicsItem):
@@ -146,6 +161,11 @@ class MainWindow(QMainWindow):
         self._image_import_progress: QProgressDialog | None = None
         self._real_image_zoom_max_scale = REAL_IMAGE_MAX_ZOOM_SCALE
         self._syncing_camera_dimensions = False
+        self._active_star_pair_row: int | None = None
+        self._star_pick_cursor: QCursor | None = None
+        self._star_pick_circle_diameter_px = self.ui_config.star_pick_circle_default_diameter_px
+        self._star_pick_previous_drag_mode = self.ui.realImageView.dragMode()
+        self._star_pair_annotations: dict[str, tuple[QGraphicsEllipseItem, QGraphicsSimpleTextItem]] = {}
 
         self._init_defaults()
         self._connect_inputs()
@@ -178,13 +198,14 @@ class MainWindow(QMainWindow):
         self.ui.comboBoxLensModel.setCurrentIndex(0)
         self.ui.doubleSpinBoxFisheyeFov.setValue(180.0)
         self.ui.doubleSpinBoxMagLimit.setValue(6.5)
-        self.ui.horizontalSliderCommonNameLimit.setValue(10)
-        self._update_common_name_limit_label()
         self.ui.doubleSpinBoxAz.setValue(0.0)
         self.ui.doubleSpinBoxAlt.setValue(20.0)
         self.ui.doubleSpinBoxRoll.setValue(0.0)
+        self.ui.comboBoxReferenceLabelMode.setCurrentIndex(0)
         self.ui.spinBoxReferenceStarCount.setValue(12)
+        self.ui.doubleSpinBoxReferenceMagLimit.setValue(3.0)
         self._reset_imported_image_labels()
+        self._update_reference_label_controls()
         self._update_lens_model_controls()
 
     def _connect_inputs(self) -> None:
@@ -197,10 +218,10 @@ class MainWindow(QMainWindow):
             self.ui.doubleSpinBoxFocalLength,
             self.ui.doubleSpinBoxFisheyeFov,
             self.ui.doubleSpinBoxMagLimit,
-            self.ui.horizontalSliderCommonNameLimit,
             self.ui.doubleSpinBoxAz,
             self.ui.doubleSpinBoxAlt,
             self.ui.doubleSpinBoxRoll,
+            self.ui.doubleSpinBoxReferenceMagLimit,
         )
         for widget in widgets:
             if hasattr(widget, "valueChanged"):
@@ -212,7 +233,7 @@ class MainWindow(QMainWindow):
         self.ui.spinBoxImageWidth.valueChanged.connect(self._handle_image_width_changed)
         self.ui.spinBoxImageHeight.valueChanged.connect(self._handle_image_height_changed)
         self.ui.comboBoxLensModel.currentIndexChanged.connect(self._handle_lens_model_changed)
-        self.ui.horizontalSliderCommonNameLimit.valueChanged.connect(self._update_common_name_limit_label)
+        self.ui.comboBoxReferenceLabelMode.currentIndexChanged.connect(self._handle_reference_label_mode_changed)
         self.ui.spinBoxReferenceStarCount.valueChanged.connect(self.schedule_render)
         self.ui.pushButtonSwapOrientation.clicked.connect(self._swap_camera_orientation)
         self.ui.pushButtonRender.clicked.connect(lambda: self.render_now())
@@ -222,6 +243,11 @@ class MainWindow(QMainWindow):
         self.ui.actionImportSingleImage.triggered.connect(self.import_single_image)
         self.ui.actionImportImageSequence.triggered.connect(self.show_sequence_import_placeholder)
         self.ui.tabWidgetMain.currentChanged.connect(self._handle_tab_changed)
+        self.ui.tableWidgetStarPairs.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.ui.tableWidgetStarPairs.customContextMenuRequested.connect(self._show_star_pair_context_menu)
+        self.ui.tableWidgetStarPairs.itemChanged.connect(self._handle_star_pair_item_changed)
+        self.ui.tableWidgetStarPairs.installEventFilter(self)
+        self.ui.pushButtonImportReferenceJson.clicked.connect(self.import_reference_json)
 
     def _reset_imported_image_labels(self) -> None:
         self.ui.labelImportedImagePath.setText("未导入")
@@ -230,6 +256,415 @@ class MainWindow(QMainWindow):
     def _update_imported_image_labels(self, preview: ImagePreview) -> None:
         self.ui.labelImportedImagePath.setText(str(preview.path))
         self.ui.labelImportedImageSize.setText(f"{preview.original_width} x {preview.original_height} px")
+
+    def _collect_star_pair_positions(self) -> dict[str, str]:
+        positions: dict[str, str] = {}
+        table = self.ui.tableWidgetStarPairs
+        for row in range(table.rowCount()):
+            name_item = table.item(row, 1)
+            position_item = table.item(row, 2)
+            if name_item is None or position_item is None:
+                continue
+            star_id = str(name_item.data(Qt.UserRole) or "")
+            position_text = position_item.text().strip()
+            if star_id and position_text:
+                positions[star_id] = position_text
+        return positions
+
+    def _read_only_table_item(self, text: str) -> QTableWidgetItem:
+        item = QTableWidgetItem(text)
+        item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+        return item
+
+    def _update_star_pair_table(self, reference_stars: tuple[ReferenceStar, ...]) -> None:
+        table = self.ui.tableWidgetStarPairs
+        saved_positions = self._collect_star_pair_positions()
+        table.blockSignals(True)
+        table.setRowCount(len(reference_stars))
+        for row, star in enumerate(reference_stars):
+            star_id = star.star_id.strip()
+            star_name = star.common_name.strip() or star_id
+
+            index_item = self._read_only_table_item(str(star.index))
+            name_item = self._read_only_table_item(star_name)
+            name_item.setData(Qt.UserRole, star_id)
+            position_item = QTableWidgetItem(saved_positions.get(star_id, ""))
+            position_item.setData(Qt.UserRole, star_id)
+
+            table.setItem(row, 0, index_item)
+            table.setItem(row, 1, name_item)
+            table.setItem(row, 2, position_item)
+        table.blockSignals(False)
+        table.resizeColumnToContents(0)
+        table.resizeColumnToContents(1)
+        self._sync_star_pair_annotations_to_table()
+        self._refresh_star_pair_table_styles()
+        self._restore_star_pair_annotations_from_table()
+
+    def _handle_star_pair_item_changed(self, item: QTableWidgetItem) -> None:
+        if item.column() != 2:
+            return
+        star_id = self._star_pair_star_id(item.row())
+        if star_id and not item.text().strip():
+            self._remove_star_pair_annotation(star_id)
+        self._refresh_star_pair_row_style(item.row())
+
+    def _star_pair_star_id(self, row: int) -> str:
+        name_item = self.ui.tableWidgetStarPairs.item(row, 1)
+        if name_item is None:
+            return ""
+        return str(name_item.data(Qt.UserRole) or "")
+
+    def _star_pair_position_text(self, row: int) -> str:
+        position_item = self.ui.tableWidgetStarPairs.item(row, 2)
+        if position_item is None:
+            return ""
+        return position_item.text().strip()
+
+    def _parse_star_pair_position_text(self, row: int) -> tuple[float, float] | None:
+        position_text = self._star_pair_position_text(row)
+        if not position_text:
+            return None
+        normalized_text = position_text.replace("，", ",")
+        parts = [part.strip() for part in normalized_text.split(",")]
+        if len(parts) != 2:
+            return None
+        try:
+            return float(parts[0]), float(parts[1])
+        except ValueError:
+            return None
+
+    def _star_pair_label(self, row: int) -> str:
+        index_item = self.ui.tableWidgetStarPairs.item(row, 0)
+        index_text = index_item.text() if index_item is not None else str(row + 1)
+        star_name = self._star_pair_name(row)
+        return f"{index_text}. {star_name}" if star_name else index_text
+
+    def _refresh_star_pair_table_styles(self) -> None:
+        for row in range(self.ui.tableWidgetStarPairs.rowCount()):
+            self._refresh_star_pair_row_style(row)
+
+    def _refresh_star_pair_row_style(self, row: int) -> None:
+        if row < 0 or row >= self.ui.tableWidgetStarPairs.rowCount():
+            return
+        table = self.ui.tableWidgetStarPairs
+        if self._active_star_pair_row == row:
+            background = QColor(255, 242, 153)
+        elif self._star_pair_position_text(row):
+            background = QColor(210, 244, 214)
+        else:
+            background = QColor(255, 255, 255)
+
+        signals_were_blocked = table.blockSignals(True)
+        for column in range(table.columnCount()):
+            item = table.item(row, column)
+            if item is not None:
+                item.setBackground(QBrush(background))
+        table.blockSignals(signals_were_blocked)
+
+    def _create_star_pick_cursor(self) -> QCursor:
+        if self._star_pick_cursor is not None:
+            return self._star_pick_cursor
+
+        diameter = self._star_pick_circle_diameter_px + 1
+        radius = self._star_pick_circle_diameter_px // 2
+        pixmap = QPixmap(diameter, diameter)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setPen(QPen(QColor(255, 220, 80), 2))
+        painter.drawEllipse(1, 1, diameter - 3, diameter - 3)
+        painter.setPen(QPen(QColor(20, 20, 20), 1))
+        painter.drawPoint(radius, radius)
+        painter.end()
+
+        self._star_pick_cursor = QCursor(pixmap, radius, radius)
+        return self._star_pick_cursor
+
+    def _set_star_pick_circle_diameter(self, diameter_px: int, show_status: bool = True) -> None:
+        minimum = self.ui_config.star_pick_circle_min_diameter_px
+        maximum = self.ui_config.star_pick_circle_max_diameter_px
+        new_diameter = min(max(int(diameter_px), minimum), maximum)
+        if new_diameter == self._star_pick_circle_diameter_px:
+            if show_status and self._active_star_pair_row is not None:
+                self.ui.statusbar.showMessage(
+                    f"选星圈直径已到边界：{new_diameter} px。左键确认，右键取消。"
+                )
+            return
+
+        self._star_pick_circle_diameter_px = new_diameter
+        self._star_pick_cursor = None
+        if self._active_star_pair_row is not None:
+            self.ui.realImageView.viewport().setCursor(self._create_star_pick_cursor())
+            if show_status:
+                self.ui.statusbar.showMessage(
+                    f"选星圈直径：{new_diameter} px。左键确认，右键取消，Ctrl+滚轮 / Ctrl+加减继续缩放。"
+                )
+
+    def _adjust_star_pick_circle_diameter(self, step_count: int) -> None:
+        if step_count == 0:
+            return
+        self._set_star_pick_circle_diameter(
+            self._star_pick_circle_diameter_px + step_count * STAR_PICK_CIRCLE_STEP_PX
+        )
+
+    def _star_pick_circle_image_radius_px(self, viewport_pos: QPoint) -> int:
+        scene_center = self.ui.realImageView.mapToScene(viewport_pos)
+        screen_radius = max(1, self._star_pick_circle_diameter_px // 2)
+        scene_edge = self.ui.realImageView.mapToScene(viewport_pos + QPoint(screen_radius, 0))
+        image_radius = ((scene_edge.x() - scene_center.x()) ** 2 + (scene_edge.y() - scene_center.y()) ** 2) ** 0.5
+        return max(MIN_PSF_RADIUS_PX, int(round(image_radius)))
+
+    def _star_pick_psf_radius_px(self, viewport_pos: QPoint) -> int:
+        circle_radius = self._star_pick_circle_image_radius_px(viewport_pos)
+        psf_radius = circle_radius * self.ui_config.star_pick_psf_radius_scale
+        bounded_radius = min(psf_radius, float(self.ui_config.star_pick_psf_max_radius_px))
+        return max(MIN_PSF_RADIUS_PX, int(round(bounded_radius)))
+
+    def _show_star_pick_status_hint(self, row: int) -> None:
+        self.ui.statusbar.showMessage(
+            "正在点选 {label}；左键确认，右键取消，Ctrl+滚轮 / Ctrl+加减缩放选星圈。"
+            "当前选星圈直径：{diameter} px，PSF半径比例：{scale:.2f}，上限：{max_radius} px。".format(
+                label=self._star_pair_label(row),
+                diameter=self._star_pick_circle_diameter_px,
+                scale=self.ui_config.star_pick_psf_radius_scale,
+                max_radius=self.ui_config.star_pick_psf_max_radius_px,
+            )
+        )
+
+    def _clear_star_pair_annotations(self) -> None:
+        for ellipse_item, label_item in self._star_pair_annotations.values():
+            self.real_image_scene.removeItem(ellipse_item)
+            self.real_image_scene.removeItem(label_item)
+        self._star_pair_annotations.clear()
+
+    def _remove_star_pair_annotation(self, star_id: str) -> None:
+        items = self._star_pair_annotations.pop(star_id, None)
+        if items is None:
+            return
+        ellipse_item, label_item = items
+        self.real_image_scene.removeItem(ellipse_item)
+        self.real_image_scene.removeItem(label_item)
+
+    def _sync_star_pair_annotations_to_table(self) -> None:
+        valid_star_ids: set[str] = set()
+        for row in range(self.ui.tableWidgetStarPairs.rowCount()):
+            star_id = self._star_pair_star_id(row)
+            if not star_id:
+                continue
+            valid_star_ids.add(star_id)
+            items = self._star_pair_annotations.get(star_id)
+            if items is not None:
+                _ellipse_item, label_item = items
+                label_item.setText(self._star_pair_label(row))
+
+        for star_id in tuple(self._star_pair_annotations):
+            if star_id not in valid_star_ids:
+                self._remove_star_pair_annotation(star_id)
+
+    def _restore_star_pair_annotations_from_table(self) -> None:
+        if self.current_image_preview is None:
+            return
+        for row in range(self.ui.tableWidgetStarPairs.rowCount()):
+            position = self._parse_star_pair_position_text(row)
+            if position is None:
+                continue
+            image_x, image_y = position
+            if not (0.0 <= image_x < self.current_image_preview.image.width()):
+                continue
+            if not (0.0 <= image_y < self.current_image_preview.image.height()):
+                continue
+            fitted_position = FittedStarPosition(
+                x=image_x,
+                y=image_y,
+                amplitude=0.0,
+                background=0.0,
+                sigma_x=0.0,
+                sigma_y=0.0,
+            )
+            self._add_or_update_star_pair_annotation(
+                row,
+                fitted_position,
+                image_radius_px=self.ui_config.star_pick_psf_max_radius_px,
+            )
+
+    def _add_or_update_star_pair_annotation(
+        self,
+        row: int,
+        fitted_position: FittedStarPosition,
+        image_radius_px: int,
+    ) -> None:
+        star_id = self._star_pair_star_id(row)
+        if not star_id:
+            return
+
+        self._remove_star_pair_annotation(star_id)
+        radius = max(float(image_radius_px), 1.0)
+        ellipse_item = QGraphicsEllipseItem(
+            fitted_position.x - radius,
+            fitted_position.y - radius,
+            radius * 2.0,
+            radius * 2.0,
+        )
+        marker_pen = QPen(QColor(255, 220, 80), 2)
+        marker_pen.setCosmetic(True)
+        ellipse_item.setPen(marker_pen)
+        ellipse_item.setBrush(QBrush(Qt.NoBrush))
+        ellipse_item.setZValue(20.0)
+
+        label_item = QGraphicsSimpleTextItem(self._star_pair_label(row))
+        label_font = QFont(self.font())
+        label_font.setPointSize(self.ui_config.star_name_font_size_pt)
+        label_item.setFont(label_font)
+        label_item.setBrush(QBrush(QColor(255, 220, 80)))
+        label_item.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+        label_item.setPos(fitted_position.x + radius, fitted_position.y - radius)
+        label_item.setZValue(21.0)
+
+        self.real_image_scene.addItem(ellipse_item)
+        self.real_image_scene.addItem(label_item)
+        self._star_pair_annotations[star_id] = (ellipse_item, label_item)
+
+    def _show_star_pair_context_menu(self, point: QPoint) -> None:
+        table = self.ui.tableWidgetStarPairs
+        row = table.rowAt(point.y())
+        if row < 0:
+            return
+
+        table.selectRow(row)
+        menu = QMenu(self)
+        pick_action = menu.addAction("点选位置")
+        pick_action.setEnabled(self.current_image_preview is not None)
+        clear_action = None
+        if self._star_pair_position_text(row):
+            clear_action = menu.addAction("清除配对")
+        selected_action = menu.exec_(table.viewport().mapToGlobal(point))
+        if selected_action is pick_action:
+            self._enter_star_pick_mode(row)
+        elif clear_action is not None and selected_action is clear_action:
+            self._clear_star_pair_position(row)
+
+    def _enter_star_pick_mode(self, row: int) -> None:
+        if self.current_image_preview is None:
+            QMessageBox.information(self, "尚未导入图像", "请先导入真实图像，再点选星点位置。")
+            return
+        if row < 0 or row >= self.ui.tableWidgetStarPairs.rowCount():
+            return
+
+        self._active_star_pair_row = row
+        self._star_pick_previous_drag_mode = self.ui.realImageView.dragMode()
+        self.ui.realImageView.setDragMode(QGraphicsView.NoDrag)
+        self.ui.realImageView.viewport().setFocusPolicy(Qt.StrongFocus)
+        self.ui.realImageView.viewport().setFocus()
+        self.ui.realImageView.viewport().setMouseTracking(True)
+        self.ui.realImageView.viewport().setCursor(self._create_star_pick_cursor())
+        self._refresh_star_pair_table_styles()
+        self._show_star_pick_status_hint(row)
+
+    def _leave_star_pick_mode(self) -> None:
+        self._active_star_pair_row = None
+        self.ui.realImageView.setDragMode(self._star_pick_previous_drag_mode)
+        self.ui.realImageView.viewport().unsetCursor()
+        self._refresh_star_pair_table_styles()
+
+    def _star_pair_name(self, row: int) -> str:
+        item = self.ui.tableWidgetStarPairs.item(row, 1)
+        if item is None:
+            return ""
+        return item.text()
+
+    def _set_star_pair_position(self, row: int, fitted_position: FittedStarPosition) -> None:
+        table = self.ui.tableWidgetStarPairs
+        if row < 0 or row >= table.rowCount():
+            return
+
+        position_item = table.item(row, 2)
+        if position_item is None:
+            position_item = QTableWidgetItem()
+            table.setItem(row, 2, position_item)
+        name_item = table.item(row, 1)
+        if name_item is not None:
+            position_item.setData(Qt.UserRole, name_item.data(Qt.UserRole))
+        position_item.setText(f"{fitted_position.x:.2f}, {fitted_position.y:.2f}")
+        table.selectRow(row)
+        self._refresh_star_pair_row_style(row)
+
+    def _clear_star_pair_positions(self) -> None:
+        table = self.ui.tableWidgetStarPairs
+        table.blockSignals(True)
+        for row in range(table.rowCount()):
+            position_item = table.item(row, 2)
+            if position_item is not None:
+                position_item.setText("")
+        table.blockSignals(False)
+        self._clear_star_pair_annotations()
+        self._refresh_star_pair_table_styles()
+
+    def _clear_star_pair_position(self, row: int) -> None:
+        table = self.ui.tableWidgetStarPairs
+        if row < 0 or row >= table.rowCount():
+            return
+        star_label = self._star_pair_label(row)
+        star_id = self._star_pair_star_id(row)
+        position_item = table.item(row, 2)
+        if position_item is not None:
+            signals_were_blocked = table.blockSignals(True)
+            position_item.setText("")
+            table.blockSignals(signals_were_blocked)
+        if star_id:
+            self._remove_star_pair_annotation(star_id)
+        self._refresh_star_pair_row_style(row)
+        self.ui.statusbar.showMessage(f"已清除 {star_label} 的真实图像配对。右键该行可重新点选位置。")
+
+    def _clear_selected_star_pair_positions(self) -> bool:
+        rows = sorted({index.row() for index in self.ui.tableWidgetStarPairs.selectedIndexes()})
+        if not rows:
+            return False
+        for row in rows:
+            self._clear_star_pair_position(row)
+        return True
+
+    def _handle_real_image_pick_click(self, viewport_pos: QPoint) -> None:
+        if self._active_star_pair_row is None or self.current_image_preview is None:
+            return
+
+        image = self.current_image_preview.image
+        scene_pos = self.ui.realImageView.mapToScene(viewport_pos)
+        image_x = float(scene_pos.x())
+        image_y = float(scene_pos.y())
+        if not (0.0 <= image_x < image.width() and 0.0 <= image_y < image.height()):
+            self.ui.statusbar.showMessage("点击位置不在真实图像范围内，请重新点选。")
+            return
+
+        image_radius_px = self._star_pick_psf_radius_px(viewport_pos)
+        try:
+            fitted_position = fit_star_position(
+                image,
+                click_x=image_x,
+                click_y=image_y,
+                radius_px=image_radius_px,
+            )
+        except Exception as exc:  # noqa: BLE001 - 交互式点选需要把拟合失败原因直接反馈给用户。
+            self.ui.statusbar.showMessage(f"PSF 拟合失败: {exc}")
+            QMessageBox.warning(self, "PSF 拟合失败", str(exc))
+            return
+
+        row = self._active_star_pair_row
+        star_name = self._star_pair_name(row)
+        self._set_star_pair_position(row, fitted_position)
+        self._add_or_update_star_pair_annotation(row, fitted_position, image_radius_px)
+        self._leave_star_pick_mode()
+        self.ui.statusbar.showMessage(
+            "已记录 {name} 的图像坐标: x={x:.2f}, y={y:.2f}；拟合窗口半径 {radius} px，"
+            "PSF sigma=({sigma_x:.2f}, {sigma_y:.2f}) px。右键配对表行可继续点选。".format(
+                name=star_name,
+                x=fitted_position.x,
+                y=fitted_position.y,
+                radius=image_radius_px,
+                sigma_x=fitted_position.sigma_x,
+                sigma_y=fitted_position.sigma_y,
+            )
+        )
 
     def import_single_image(self) -> None:
         if self._image_import_thread is not None:
@@ -305,7 +740,7 @@ class MainWindow(QMainWindow):
         self._display_real_image_preview(preview)
         self.ui.tabWidgetMain.setCurrentWidget(self.ui.tabReferenceImage)
         self.ui.statusbar.showMessage(
-            "已导入图像: {path}  原始: {width} x {height} px".format(
+            "已导入图像: {path}  原始: {width} x {height} px。右键配对表行选择“点选位置”。".format(
                 path=preview.path,
                 width=preview.original_width,
                 height=preview.original_height,
@@ -338,11 +773,34 @@ class MainWindow(QMainWindow):
     def schedule_render(self, *unused, delay_ms: int = 120) -> None:  # type: ignore[no-untyped-def]
         self.render_timer.start(delay_ms)
 
-    def _common_name_mag_limit(self) -> float:
-        return self.ui.horizontalSliderCommonNameLimit.value() / 10.0
+    def _reference_label_mode(self) -> str:
+        index = self.ui.comboBoxReferenceLabelMode.currentIndex()
+        if index < 0 or index >= len(REFERENCE_LABEL_MODES):
+            return REFERENCE_LABEL_MODE_FIXED_COUNT
+        return REFERENCE_LABEL_MODES[index]
 
-    def _update_common_name_limit_label(self, *unused) -> None:  # type: ignore[no-untyped-def]
-        self.ui.labelCommonNameLimitValue.setText(f"{self._common_name_mag_limit():.1f} mag")
+    def _update_reference_label_controls(self) -> None:
+        is_fixed_count = self._reference_label_mode() == REFERENCE_LABEL_MODE_FIXED_COUNT
+        self.ui.labelReferenceStarCount.setEnabled(is_fixed_count)
+        self.ui.spinBoxReferenceStarCount.setEnabled(is_fixed_count)
+        self.ui.labelReferenceMagLimit.setEnabled(not is_fixed_count)
+        self.ui.doubleSpinBoxReferenceMagLimit.setEnabled(not is_fixed_count)
+
+    def _handle_reference_label_mode_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        self._update_reference_label_controls()
+        self.schedule_render()
+
+    def _select_current_reference_stars(self, star_map: ProjectedStarMap) -> tuple[ReferenceStar, ...]:
+        if self._reference_label_mode() == REFERENCE_LABEL_MODE_FIXED_MAG_LIMIT:
+            return select_reference_stars(
+                star_map=star_map,
+                max_count=None,
+                mag_limit=self.ui.doubleSpinBoxReferenceMagLimit.value(),
+            )
+        return select_reference_stars(
+            star_map=star_map,
+            max_count=self.ui.spinBoxReferenceStarCount.value(),
+        )
 
     def _sensor_aspect_ratio(self) -> float:
         sensor_height = max(self.ui.doubleSpinBoxSensorHeight.value(), 1e-6)
@@ -553,37 +1011,45 @@ class MainWindow(QMainWindow):
             self.fit_reference_map()
 
     def _display_real_image_preview(self, preview: ImagePreview) -> None:
+        self._clear_star_pair_annotations()
         self.real_image_item.setPos(0, 0)
         self.real_image_item.set_image(preview.image)
         self.real_image_scene.setSceneRect(0, 0, preview.image.width(), preview.image.height())
+        self._restore_star_pair_annotations_from_table()
         self.fit_real_image()
 
     def render_now(self) -> None:
         try:
             _observer, _camera, view, _mag_limit, star_map = self._build_projected_star_map()
-            common_name_mag_limit = self._common_name_mag_limit()
-            image = self.renderer.render(star_map, common_name_mag_limit=common_name_mag_limit)
-            self._display_star_map_image(star_map, image)
-            reference_stars = select_reference_stars(
-                star_map=star_map,
-                max_count=self.ui.spinBoxReferenceStarCount.value(),
+            reference_stars = self._select_current_reference_stars(star_map)
+            image = self.renderer.render(
+                star_map,
+                reference_stars=reference_stars,
+                draw_common_names=False,
+                number_reference_stars=False,
             )
+            self._display_star_map_image(star_map, image)
+            self._update_star_pair_table(reference_stars)
             reference_image = self.renderer.render(
                 star_map,
-                common_name_mag_limit=common_name_mag_limit,
                 reference_stars=reference_stars,
+                draw_common_names=False,
             )
             self._display_reference_map_image(star_map, reference_image)
+            if self._reference_label_mode() == REFERENCE_LABEL_MODE_FIXED_MAG_LIMIT:
+                reference_mode_text = f"标注星等 <= {self.ui.doubleSpinBoxReferenceMagLimit.value():.1f} mag"
+            else:
+                reference_mode_text = f"标注星数 {self.ui.spinBoxReferenceStarCount.value()} 颗"
             self.ui.statusbar.showMessage(
                 "星表: {catalog_count}  视野内: {visible_count}  地平线上: {above_count}  "
-                "银河面: {mw_count}  参考星: {reference_count}  俗名: <= {name_limit:.1f} mag  "
+                "银河面: {mw_count}  参考星: {reference_count} ({reference_mode})  "
                 "镜头: {lens_name}  Az: {az:.2f} deg  Alt: {alt:.2f} deg".format(
                     catalog_count=star_map.catalog_count,
                     visible_count=len(star_map),
                     above_count=star_map.above_horizon_count,
                     mw_count=len(star_map.milky_way_polygons),
                     reference_count=len(reference_stars),
-                    name_limit=common_name_mag_limit,
+                    reference_mode=reference_mode_text,
                     lens_name=self.ui.comboBoxLensModel.currentText(),
                     az=view.center_az_deg,
                     alt=view.center_alt_deg,
@@ -596,24 +1062,173 @@ class MainWindow(QMainWindow):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         return project_root() / "outputs" / f"reference_{timestamp}"
 
+    def import_reference_json(self) -> None:
+        default_dir = project_root() / "outputs"
+        if not default_dir.exists():
+            default_dir = project_root()
+        file_path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "导入预览 JSON",
+            str(default_dir),
+            "MeteoAlign 参考图 JSON (*.json);;JSON 文件 (*.json);;所有文件 (*)",
+        )
+        if not file_path:
+            return
+        self.load_reference_json(file_path)
+
+    def load_reference_json(self, file_path: str | Path) -> None:
+        json_path = Path(file_path)
+        try:
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            self._apply_reference_payload(payload, json_path)
+        except Exception as exc:  # noqa: BLE001 - 导入入口需要把 JSON/字段错误以对话框提示。
+            self.ui.statusbar.showMessage(f"导入预览 JSON 失败: {exc}")
+            QMessageBox.critical(self, "导入预览 JSON 失败", str(exc))
+
+    def _payload_section(self, payload: dict[str, object], section_name: str) -> dict[str, object]:
+        section = payload.get(section_name)
+        if not isinstance(section, dict):
+            raise ValueError(f"JSON 缺少 {section_name} 字段。")
+        return section
+
+    def _payload_float(self, section: dict[str, object], key: str) -> float:
+        try:
+            return float(section[key])
+        except KeyError as exc:
+            raise ValueError(f"JSON 缺少 {key} 字段。") from exc
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"JSON 中 {key} 字段不是有效数字。") from exc
+
+    def _payload_int(self, section: dict[str, object], key: str) -> int:
+        try:
+            return int(section[key])
+        except KeyError as exc:
+            raise ValueError(f"JSON 缺少 {key} 字段。") from exc
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"JSON 中 {key} 字段不是有效整数。") from exc
+
+    def _payload_optional_float(self, section: dict[str, object], key: str, default_value: float) -> float:
+        if key not in section or section.get(key) is None:
+            return default_value
+        try:
+            return float(section[key])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"JSON 中 {key} 字段不是有效数字。") from exc
+
+    def _payload_datetime_utc(self, section: dict[str, object], key: str) -> datetime:
+        raw_value = section.get(key)
+        if not isinstance(raw_value, str):
+            raise ValueError(f"JSON 缺少 {key} 字段。")
+        try:
+            parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(f"JSON 中 {key} 字段不是有效 ISO 时间。") from exc
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    def _apply_reference_payload(self, payload: object, source_path: Path) -> None:
+        if not isinstance(payload, dict):
+            raise ValueError("JSON 根对象必须是字典。")
+        if payload.get("format") != "meteoalign_phase1_reference":
+            raise ValueError("当前只支持 MeteoAlign 导出的参考图 JSON。")
+
+        observer = self._payload_section(payload, "observer")
+        camera = self._payload_section(payload, "camera")
+        view = self._payload_section(payload, "view")
+        render = self._payload_section(payload, "render")
+
+        observation_time_utc = self._payload_datetime_utc(observer, "observation_time_utc")
+        utc_offset_hours = self._payload_optional_float(observer, "utc_offset_hours", 0.0)
+        utc_offset_hours = min(
+            max(utc_offset_hours, self.ui.doubleSpinBoxUtcOffset.minimum()),
+            self.ui.doubleSpinBoxUtcOffset.maximum(),
+        )
+        local_observation_time = observation_time_utc.astimezone(timezone(timedelta(hours=utc_offset_hours)))
+        local_datetime_text = local_observation_time.strftime("%Y-%m-%d %H:%M:%S")
+        qt_observation_time = QDateTime.fromString(local_datetime_text, "yyyy-MM-dd HH:mm:ss")
+        if not qt_observation_time.isValid():
+            raise ValueError("JSON 中的观测时间无法转换为界面时间。")
+
+        widgets_to_block = (
+            self.ui.dateTimeEditObservation,
+            self.ui.doubleSpinBoxUtcOffset,
+            self.ui.doubleSpinBoxLatitude,
+            self.ui.doubleSpinBoxLongitude,
+            self.ui.doubleSpinBoxElevation,
+            self.ui.doubleSpinBoxSensorWidth,
+            self.ui.doubleSpinBoxSensorHeight,
+            self.ui.spinBoxImageWidth,
+            self.ui.spinBoxImageHeight,
+            self.ui.doubleSpinBoxFocalLength,
+            self.ui.comboBoxLensModel,
+            self.ui.doubleSpinBoxFisheyeFov,
+            self.ui.doubleSpinBoxMagLimit,
+            self.ui.doubleSpinBoxAz,
+            self.ui.doubleSpinBoxAlt,
+            self.ui.doubleSpinBoxRoll,
+            self.ui.comboBoxReferenceLabelMode,
+            self.ui.spinBoxReferenceStarCount,
+            self.ui.doubleSpinBoxReferenceMagLimit,
+        )
+        previous_signal_states = [widget.blockSignals(True) for widget in widgets_to_block]
+        previous_syncing = self._syncing_camera_dimensions
+        self._syncing_camera_dimensions = True
+        try:
+            self.ui.dateTimeEditObservation.setDateTime(qt_observation_time)
+            self.ui.doubleSpinBoxUtcOffset.setValue(utc_offset_hours)
+            self.ui.doubleSpinBoxLatitude.setValue(self._payload_float(observer, "latitude_deg"))
+            self.ui.doubleSpinBoxLongitude.setValue(self._payload_float(observer, "longitude_deg"))
+            self.ui.doubleSpinBoxElevation.setValue(self._payload_float(observer, "elevation_m"))
+
+            self.ui.doubleSpinBoxSensorWidth.setValue(self._payload_float(camera, "sensor_width_mm"))
+            self.ui.doubleSpinBoxSensorHeight.setValue(self._payload_float(camera, "sensor_height_mm"))
+            self.ui.spinBoxImageWidth.setValue(self._payload_int(camera, "image_width_px"))
+            self.ui.spinBoxImageHeight.setValue(self._payload_int(camera, "image_height_px"))
+            self.ui.doubleSpinBoxFocalLength.setValue(self._payload_float(camera, "focal_length_mm"))
+            lens_model = str(camera.get("lens_model", RECTILINEAR_LENS_MODEL))
+            lens_index = LENS_MODELS.index(lens_model) if lens_model in LENS_MODELS else 0
+            self.ui.comboBoxLensModel.setCurrentIndex(lens_index)
+            self.ui.doubleSpinBoxFisheyeFov.setValue(self._payload_float(camera, "fisheye_fov_deg"))
+
+            self.ui.doubleSpinBoxAz.setValue(self._payload_float(view, "center_az_deg"))
+            self.ui.doubleSpinBoxAlt.setValue(self._payload_float(view, "center_alt_deg"))
+            self.ui.doubleSpinBoxRoll.setValue(self._payload_float(view, "roll_deg"))
+
+            self.ui.doubleSpinBoxMagLimit.setValue(self._payload_float(render, "visible_mag_limit"))
+            reference_label_mode = str(render.get("reference_label_mode", REFERENCE_LABEL_MODE_FIXED_COUNT))
+            if reference_label_mode not in REFERENCE_LABEL_MODES:
+                reference_label_mode = REFERENCE_LABEL_MODE_FIXED_COUNT
+            self.ui.comboBoxReferenceLabelMode.setCurrentIndex(REFERENCE_LABEL_MODES.index(reference_label_mode))
+            self.ui.spinBoxReferenceStarCount.setValue(self._payload_int(render, "reference_star_count"))
+            self.ui.doubleSpinBoxReferenceMagLimit.setValue(
+                self._payload_optional_float(render, "reference_mag_limit", self.ui.doubleSpinBoxReferenceMagLimit.value())
+            )
+        finally:
+            self._syncing_camera_dimensions = previous_syncing
+            for widget, was_blocked in zip(widgets_to_block, previous_signal_states):
+                widget.blockSignals(was_blocked)
+
+        self._update_reference_label_controls()
+        self._update_lens_model_controls()
+        self.ui.tabWidgetMain.setCurrentWidget(self.ui.tabSimulator)
+        self.render_now()
+        self.ui.statusbar.showMessage(f"已导入预览 JSON 并恢复星空模拟参数: {source_path}")
+
     def export_reference_map(self) -> None:
         try:
             output_camera = self._output_camera_settings()
             observer, camera, view, mag_limit, star_map = self._build_projected_star_map(camera=output_camera)
-            reference_stars = select_reference_stars(
-                star_map=star_map,
-                max_count=self.ui.spinBoxReferenceStarCount.value(),
-            )
+            reference_stars = self._select_current_reference_stars(star_map)
             if not reference_stars:
                 QMessageBox.warning(self, "无法生成参考图", "当前视野内没有可用的地平线上参考星。")
                 return
 
-            common_name_mag_limit = self._common_name_mag_limit()
             image = self.renderer.render(
                 star_map,
-                common_name_mag_limit=common_name_mag_limit,
                 reference_stars=reference_stars,
                 element_scale=self._render_element_scale(camera),
+                draw_common_names=False,
             )
             payload = build_reference_payload(
                 star_map=star_map,
@@ -622,7 +1237,9 @@ class MainWindow(QMainWindow):
                 camera=camera,
                 view=view,
                 visible_mag_limit=mag_limit,
-                common_name_mag_limit=common_name_mag_limit,
+                utc_offset_hours=self.ui.doubleSpinBoxUtcOffset.value(),
+                reference_label_mode=self._reference_label_mode(),
+                reference_mag_limit=self.ui.doubleSpinBoxReferenceMagLimit.value(),
             )
             image_path, json_path = save_reference_outputs(image, payload, self._next_reference_output_dir())
             self.render_now()
@@ -664,6 +1281,9 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self.fit_all_graphics_views)
 
     def eventFilter(self, watched, event) -> bool:  # type: ignore[no-untyped-def]
+        if watched is self.ui.tableWidgetStarPairs and event.type() == QEvent.KeyPress:
+            if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+                return self._clear_selected_star_pair_positions()
         if watched is self.ui.starMapView.viewport():
             if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
                 self.drag_start = event.pos()
@@ -689,10 +1309,52 @@ class MainWindow(QMainWindow):
         if watched is self.ui.referenceImageView.viewport() and event.type() == QEvent.Wheel:
             self._apply_graphics_view_zoom(self.ui.referenceImageView, event.angleDelta().y())
             return True
-        if watched is self.ui.realImageView.viewport() and event.type() == QEvent.Wheel:
-            self._apply_graphics_view_zoom(self.ui.realImageView, event.angleDelta().y())
-            return True
+        if watched is self.ui.realImageView.viewport():
+            if self._active_star_pair_row is not None:
+                if event.type() in (QEvent.Enter, QEvent.MouseMove):
+                    self.ui.realImageView.viewport().setCursor(self._create_star_pick_cursor())
+                    self._show_star_pick_status_hint(self._active_star_pair_row)
+                if event.type() == QEvent.Leave:
+                    self.ui.realImageView.viewport().unsetCursor()
+                if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+                    self._handle_real_image_pick_click(event.pos())
+                    return True
+                if event.type() == QEvent.MouseButtonPress and event.button() == Qt.RightButton:
+                    self._leave_star_pick_mode()
+                    self.ui.statusbar.showMessage("已取消当前星点位置点选。")
+                    return True
+                if event.type() == QEvent.Wheel and event.modifiers() & Qt.ControlModifier:
+                    wheel_delta = event.angleDelta().y()
+                    if wheel_delta == 0:
+                        return True
+                    wheel_steps = int(wheel_delta / 120)
+                    if wheel_steps == 0:
+                        wheel_steps = 1 if wheel_delta > 0 else -1
+                    self._adjust_star_pick_circle_diameter(wheel_steps)
+                    return True
+                if event.type() == QEvent.KeyPress and self._handle_star_pick_key_press(event):
+                    return True
+            if event.type() == QEvent.Wheel:
+                self._apply_graphics_view_zoom(self.ui.realImageView, event.angleDelta().y())
+                return True
         return super().eventFilter(watched, event)
+
+    def keyPressEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        if self._handle_star_pick_key_press(event):
+            return
+        super().keyPressEvent(event)
+
+    def _handle_star_pick_key_press(self, event) -> bool:  # type: ignore[no-untyped-def]
+        if self._active_star_pair_row is None or not (event.modifiers() & Qt.ControlModifier):
+            return False
+        key = event.key()
+        if key in (Qt.Key_Plus, Qt.Key_Equal):
+            self._adjust_star_pick_circle_diameter(1)
+            return True
+        if key in (Qt.Key_Minus, Qt.Key_Underscore):
+            self._adjust_star_pick_circle_diameter(-1)
+            return True
+        return False
 
     def _apply_graphics_view_zoom(self, view: QGraphicsView, wheel_delta: int) -> None:
         if wheel_delta == 0:

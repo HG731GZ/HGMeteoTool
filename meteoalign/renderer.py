@@ -14,9 +14,10 @@ class StarMapRenderer:
     def render(
         self,
         star_map: ProjectedStarMap,
-        common_name_mag_limit: float = 1.0,
         reference_stars: tuple[ReferenceStar, ...] = (),
         element_scale: float = 1.0,
+        draw_common_names: bool = True,
+        number_reference_stars: bool = True,
     ) -> QImage:
         element_scale = max(float(element_scale), 0.05)
         image = QImage(star_map.width, star_map.height, QImage.Format_ARGB32_Premultiplied)
@@ -41,9 +42,12 @@ class StarMapRenderer:
 
         self._draw_horizon_shadow(painter, star_map)
         self._draw_grid(painter, star_map, element_scale)
-        if not reference_stars:
-            self._draw_star_names(painter, star_map, common_name_mag_limit, element_scale)
-        self._draw_reference_stars(painter, star_map, reference_stars, element_scale)
+        if reference_stars and number_reference_stars:
+            self._draw_reference_stars(painter, star_map, reference_stars, element_scale)
+        elif reference_stars:
+            self._draw_reference_star_names(painter, star_map, reference_stars, element_scale)
+        elif draw_common_names:
+            self._draw_star_names(painter, star_map, element_scale)
         self._draw_direction_labels(painter, star_map, element_scale)
         painter.end()
         return image
@@ -110,7 +114,6 @@ class StarMapRenderer:
         self,
         painter: QPainter,
         star_map: ProjectedStarMap,
-        common_name_mag_limit: float,
         element_scale: float,
     ) -> None:
         font = QFont()
@@ -123,7 +126,7 @@ class StarMapRenderer:
 
         for index, common_name in enumerate(star_map.common_names):
             name = str(common_name).strip()
-            if not name or float(star_map.mag_v[index]) > common_name_mag_limit:
+            if not name:
                 continue
 
             red, green, blue = (int(value) for value in star_map.star_rgb[index])
@@ -143,6 +146,43 @@ class StarMapRenderer:
             painter.setPen(QPen(QColor(0, 0, 0, 220), 3.0 * element_scale))
             painter.drawText(point, name)
             painter.setPen(QPen(QColor(red, green, blue, alpha), 1.0 * element_scale))
+            painter.drawText(point, name)
+
+    def _draw_reference_star_names(
+        self,
+        painter: QPainter,
+        star_map: ProjectedStarMap,
+        reference_stars: tuple[ReferenceStar, ...],
+        element_scale: float,
+    ) -> None:
+        font = QFont()
+        font.setPointSizeF(self.ui_config.star_name_font_size_pt * element_scale)
+        font.setBold(True)
+        painter.setFont(font)
+        metrics = painter.fontMetrics()
+        offset_px = 8.0 * element_scale
+        edge_padding_px = 4.0 * element_scale
+
+        for reference_star in reference_stars:
+            name = reference_star.common_name.strip() or reference_star.name.strip()
+            if not name:
+                continue
+
+            text_width = metrics.horizontalAdvance(name)
+            text_height = metrics.height()
+            x_value = min(
+                max(float(reference_star.sim_x) + offset_px, edge_padding_px),
+                star_map.width - text_width - edge_padding_px,
+            )
+            y_value = min(
+                max(float(reference_star.sim_y) - offset_px, text_height + edge_padding_px),
+                star_map.height - edge_padding_px,
+            )
+            point = QPointF(x_value, y_value)
+
+            painter.setPen(QPen(QColor(0, 0, 0, 220), 3.0 * element_scale))
+            painter.drawText(point, name)
+            painter.setPen(QPen(QColor(255, 240, 130, 245), 1.0 * element_scale))
             painter.drawText(point, name)
 
     def _draw_reference_stars(

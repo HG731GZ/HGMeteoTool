@@ -4,6 +4,11 @@
   "direction_label_font_size_pt": 16,
   "star_name_font_size_pt": 14,
   "reference_label_font_size_pt": 15,
+  "star_pick_circle_default_diameter_px": 50,
+  "star_pick_circle_min_diameter_px": 20,
+  "star_pick_circle_max_diameter_px": 200,
+  "star_pick_psf_radius_scale": 0.4,
+  "star_pick_psf_max_radius_px": 40,
   "default_latitude_deg": 40.0,
   "default_longitude_deg": 116.0,
   "default_elevation_m": 200.0

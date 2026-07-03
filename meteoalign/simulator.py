@@ -914,11 +914,14 @@ def _reference_star_name(star_map: ProjectedStarMap, index: int) -> tuple[str, s
 
 def select_reference_stars(
     star_map: ProjectedStarMap,
-    max_count: int = 12,
+    max_count: int | None = 12,
+    mag_limit: float | None = None,
     edge_margin_ratio: float = 0.05,
     min_distance_ratio: float = 0.06,
 ) -> tuple[ReferenceStar, ...]:
-    if max_count <= 0 or len(star_map) == 0:
+    if len(star_map) == 0:
+        return ()
+    if max_count is not None and max_count <= 0:
         return ()
 
     width = float(star_map.width)
@@ -936,6 +939,9 @@ def select_reference_stars(
         & (star_map.y_px >= edge_margin)
         & (star_map.y_px <= height - edge_margin)
     )
+    if mag_limit is not None:
+        candidate_mask &= star_map.mag_v <= float(mag_limit)
+
     candidate_indices = np.flatnonzero(candidate_mask)
     if candidate_indices.size == 0:
         return ()
@@ -950,7 +956,7 @@ def select_reference_stars(
             continue
         selected.append(int(candidate_index))
         selected_positions.append((x_value, y_value))
-        if len(selected) >= max_count:
+        if max_count is not None and len(selected) >= max_count:
             break
 
     reference_stars: list[ReferenceStar] = []
