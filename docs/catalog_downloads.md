@@ -51,6 +51,15 @@ camera view.
   five brightness steps, converted to GeoJSON J2000 coordinates.
 - Local data file: `catalog/d3_celestial/mw.json`
 
+## JPL DE440s Solar System Ephemeris
+
+Use this to render the Moon and the naked-eye planets with the same observation
+time and location as the star map.
+
+- Kernel directory: https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/
+- BSP file: https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de440s.bsp
+- Local data file: `catalog/de440s.bsp`
+
 ## Hipparcos New Reduction
 
 This is a useful alternative to the original Hipparcos main catalog.

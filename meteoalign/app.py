@@ -35,6 +35,7 @@ from .simulator import (
     FISHEYE_EQUIDISTANT,
     FISHEYE_EQUISOLID,
     HorizontalMilkyWayCatalog,
+    HorizontalSolarSystemCatalog,
     HorizontalStarCatalog,
     ObserverSettings,
     ProjectedStarMap,
@@ -43,6 +44,7 @@ from .simulator import (
     ViewSettings,
     compute_horizontal_catalog,
     compute_horizontal_milky_way,
+    compute_horizontal_solar_system,
     horizontal_fov_deg,
     project_horizontal_catalog,
     select_reference_stars,
@@ -153,6 +155,8 @@ class MainWindow(QMainWindow):
         self._horizontal_cache: HorizontalStarCatalog | None = None
         self._milky_way_cache_key: tuple[object, ...] | None = None
         self._milky_way_cache: HorizontalMilkyWayCatalog | None = None
+        self._solar_system_cache_key: tuple[object, ...] | None = None
+        self._solar_system_cache: HorizontalSolarSystemCatalog | None = None
         self._last_render_size: tuple[int, int] | None = None
         self._last_reference_render_size: tuple[int, int] | None = None
         self.current_image_preview: ImagePreview | None = None
@@ -971,6 +975,18 @@ class MainWindow(QMainWindow):
             self._milky_way_cache_key = cache_key
         return self._milky_way_cache
 
+    def _get_horizontal_solar_system(self, observer: ObserverSettings) -> HorizontalSolarSystemCatalog:
+        cache_key = (
+            int(observer.observation_time_utc.timestamp()),
+            round(observer.latitude_deg, 8),
+            round(observer.longitude_deg, 8),
+            round(observer.elevation_m, 3),
+        )
+        if self._solar_system_cache_key != cache_key or self._solar_system_cache is None:
+            self._solar_system_cache = compute_horizontal_solar_system(observer)
+            self._solar_system_cache_key = cache_key
+        return self._solar_system_cache
+
     def _build_projected_star_map(
         self,
         camera: CameraSettings | None = None,
@@ -981,12 +997,14 @@ class MainWindow(QMainWindow):
         mag_limit = self.ui.doubleSpinBoxMagLimit.value()
         horizontal_catalog = self._get_horizontal_catalog(observer, mag_limit)
         horizontal_milky_way = self._get_horizontal_milky_way(observer)
+        horizontal_solar_system = self._get_horizontal_solar_system(observer)
         star_map = project_horizontal_catalog(
             horizontal_catalog=horizontal_catalog,
             camera=camera,
             view=view,
             visible_mag_limit=mag_limit,
             horizontal_milky_way=horizontal_milky_way,
+            horizontal_solar_system=horizontal_solar_system,
         )
         return observer, camera, view, mag_limit, star_map
 
@@ -1042,12 +1060,13 @@ class MainWindow(QMainWindow):
                 reference_mode_text = f"标注星数 {self.ui.spinBoxReferenceStarCount.value()} 颗"
             self.ui.statusbar.showMessage(
                 "星表: {catalog_count}  视野内: {visible_count}  地平线上: {above_count}  "
-                "银河面: {mw_count}  参考星: {reference_count} ({reference_mode})  "
+                "银河面: {mw_count}  太阳系: {solar_count}  参考星: {reference_count} ({reference_mode})  "
                 "镜头: {lens_name}  Az: {az:.2f} deg  Alt: {alt:.2f} deg".format(
                     catalog_count=star_map.catalog_count,
                     visible_count=len(star_map),
                     above_count=star_map.above_horizon_count,
                     mw_count=len(star_map.milky_way_polygons),
+                    solar_count=len(star_map.solar_system_objects),
                     reference_count=len(reference_stars),
                     reference_mode=reference_mode_text,
                     lens_name=self.ui.comboBoxLensModel.currentText(),

@@ -66,6 +66,13 @@ CATALOG_FILES = (
             '"ol1"',
         ),
     ),
+    CatalogFile(
+        label="JPL DE440s Solar System Ephemeris",
+        url="https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de440s.bsp",
+        relative_path=Path("de440s.bsp"),
+        expected_size=32_726_016,
+        minimum_size=30_000_000,
+    ),
 )
 
 

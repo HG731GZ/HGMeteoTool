@@ -43,5 +43,6 @@ reference_star_list.json
 /tests/
 /catalog/iau_csn/
 /catalog/d3_celestial/
+/catalog/de440s.bsp
 /outputs/
 /testimages/

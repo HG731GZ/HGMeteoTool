@@ -5,6 +5,7 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 
 _ASTROPY_ROOT = Path(os.environ.get("METEOALIGN_ASTROPY_CACHE", Path(tempfile.gettempdir()) / "meteoalign_astropy"))
@@ -26,8 +27,9 @@ from astropy import units as u
 from astropy.coordinates import AltAz, EarthLocation, SkyCoord
 from astropy.time import Time
 from astropy.utils import iers
+from skyfield.api import Loader, load_file, wgs84
 
-from .catalog import StarCatalog
+from .catalog import StarCatalog, project_root
 from .milky_way import MilkyWayCatalog
 
 
@@ -45,6 +47,75 @@ FISHEYE_LENS_MODELS = {
 }
 SUPPORTED_LENS_MODELS = {RECTILINEAR_LENS_MODEL, *FISHEYE_LENS_MODELS}
 Point2D = tuple[float, float]
+
+
+@dataclass(frozen=True)
+class SolarSystemObjectSpec:
+    object_id: str
+    display_name: str
+    kernel_name: str
+    mag_v: float
+    color_rgb: tuple[int, int, int]
+    radius_px: float
+    reference_allowed: bool
+
+
+SOLAR_SYSTEM_OBJECT_SPECS = (
+    SolarSystemObjectSpec(
+        object_id="mercury",
+        display_name="水星",
+        kernel_name="mercury barycenter",
+        mag_v=-0.4,
+        color_rgb=(205, 200, 185),
+        radius_px=3.5,
+        reference_allowed=True,
+    ),
+    SolarSystemObjectSpec(
+        object_id="venus",
+        display_name="金星",
+        kernel_name="venus barycenter",
+        mag_v=-4.0,
+        color_rgb=(255, 238, 185),
+        radius_px=5.2,
+        reference_allowed=True,
+    ),
+    SolarSystemObjectSpec(
+        object_id="mars",
+        display_name="火星",
+        kernel_name="mars barycenter",
+        mag_v=-1.0,
+        color_rgb=(255, 128, 92),
+        radius_px=4.2,
+        reference_allowed=True,
+    ),
+    SolarSystemObjectSpec(
+        object_id="jupiter",
+        display_name="木星",
+        kernel_name="jupiter barycenter",
+        mag_v=-2.5,
+        color_rgb=(255, 214, 165),
+        radius_px=5.5,
+        reference_allowed=True,
+    ),
+    SolarSystemObjectSpec(
+        object_id="saturn",
+        display_name="土星",
+        kernel_name="saturn barycenter",
+        mag_v=0.5,
+        color_rgb=(255, 226, 160),
+        radius_px=4.8,
+        reference_allowed=True,
+    ),
+    SolarSystemObjectSpec(
+        object_id="moon",
+        display_name="月亮",
+        kernel_name="moon",
+        mag_v=-12.0,
+        color_rgb=(220, 220, 215),
+        radius_px=8.5,
+        reference_allowed=False,
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -107,6 +178,25 @@ class HorizontalStarCatalog:
 
 
 @dataclass(frozen=True)
+class HorizontalSolarSystemCatalog:
+    source_name: str
+    object_ids: np.ndarray
+    display_names: np.ndarray
+    kernel_names: np.ndarray
+    ra_deg: np.ndarray
+    dec_deg: np.ndarray
+    mag_v: np.ndarray
+    alt_deg: np.ndarray
+    az_deg: np.ndarray
+    color_rgb: np.ndarray
+    radius_px: np.ndarray
+    reference_allowed: np.ndarray
+
+    def __len__(self) -> int:
+        return int(self.ra_deg.size)
+
+
+@dataclass(frozen=True)
 class HorizontalMilkyWayRing:
     alt_deg: np.ndarray
     az_deg: np.ndarray
@@ -141,6 +231,25 @@ class ProjectedFillRect:
 
 
 @dataclass(frozen=True)
+class ProjectedSolarSystemObject:
+    object_id: str
+    display_name: str
+    kernel_name: str
+    ra_deg: float
+    dec_deg: float
+    mag_v: float
+    sim_x: float
+    sim_y: float
+    alt_deg: float
+    az_deg: float
+    radius_px: float
+    color_rgb: tuple[int, int, int]
+    alpha: int
+    above_horizon: bool
+    reference_allowed: bool
+
+
+@dataclass(frozen=True)
 class ProjectedStarMap:
     width: int
     height: int
@@ -169,6 +278,7 @@ class ProjectedStarMap:
     sky_circle_radius_px: float | None = None
     horizon_shadow_rects: tuple[ProjectedFillRect, ...] = ()
     milky_way_polygons: tuple[ProjectedMilkyWayPolygon, ...] = ()
+    solar_system_objects: tuple[ProjectedSolarSystemObject, ...] = ()
 
     def __len__(self) -> int:
         return int(self.x_px.size)
@@ -192,6 +302,7 @@ class ReferenceStar:
     sim_y: float
     alt_deg: float
     az_deg: float
+    object_type: str = "star"
 
 
 def horizontal_fov_deg(camera: CameraSettings) -> float:
@@ -211,6 +322,27 @@ def _ensure_aware_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def default_solar_system_ephemeris_path() -> Path:
+    return project_root() / "catalog" / "de440s.bsp"
+
+
+@lru_cache(maxsize=1)
+def _skyfield_timescale():
+    # Skyfield 的时间尺度文件放进临时缓存根目录，避免写入系统或用户配置目录。
+    loader = Loader(str(_ASTROPY_ROOT / "skyfield"))
+    return loader.timescale()
+
+
+@lru_cache(maxsize=4)
+def _load_solar_system_ephemeris(path_text: str):
+    path = Path(path_text)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"未找到 JPL DE440s 星历文件：{path}。请运行 scripts/download_catalogs.py 下载。"
+        )
+    return load_file(str(path))
 
 
 def compute_altaz_from_radec(
@@ -252,6 +384,65 @@ def compute_horizontal_catalog(
         common_names=limited_catalog.common_names,
         alt_deg=alt_deg,
         az_deg=az_deg,
+    )
+
+
+def compute_horizontal_solar_system(
+    observer: ObserverSettings,
+    ephemeris_path: Path | None = None,
+) -> HorizontalSolarSystemCatalog:
+    ephemeris_file = (ephemeris_path or default_solar_system_ephemeris_path()).resolve()
+    ephemeris = _load_solar_system_ephemeris(str(ephemeris_file))
+    time = _skyfield_timescale().from_datetime(_ensure_aware_utc(observer.observation_time_utc))
+    location = wgs84.latlon(
+        latitude_degrees=observer.latitude_deg,
+        longitude_degrees=observer.longitude_deg,
+        elevation_m=observer.elevation_m,
+    )
+    observer_position = ephemeris["earth"] + location
+
+    object_ids: list[str] = []
+    display_names: list[str] = []
+    kernel_names: list[str] = []
+    ra_values: list[float] = []
+    dec_values: list[float] = []
+    mag_values: list[float] = []
+    alt_values: list[float] = []
+    az_values: list[float] = []
+    color_values: list[tuple[int, int, int]] = []
+    radius_values: list[float] = []
+    reference_flags: list[bool] = []
+
+    for spec in SOLAR_SYSTEM_OBJECT_SPECS:
+        target = ephemeris[spec.kernel_name]
+        apparent = observer_position.at(time).observe(target).apparent()
+        ra, dec, _distance = apparent.radec(epoch="date")
+        alt, az, _altaz_distance = apparent.altaz()
+        object_ids.append(f"solar_system:{spec.object_id}")
+        display_names.append(spec.display_name)
+        kernel_names.append(spec.kernel_name)
+        ra_values.append(float(ra.hours * 15.0) % 360.0)
+        dec_values.append(float(dec.degrees))
+        mag_values.append(spec.mag_v)
+        alt_values.append(float(alt.degrees))
+        az_values.append(float(az.degrees) % 360.0)
+        color_values.append(spec.color_rgb)
+        radius_values.append(spec.radius_px)
+        reference_flags.append(spec.reference_allowed)
+
+    return HorizontalSolarSystemCatalog(
+        source_name=f"JPL DE440s ({ephemeris_file.name})",
+        object_ids=np.asarray(object_ids, dtype="<U32"),
+        display_names=np.asarray(display_names, dtype="<U8"),
+        kernel_names=np.asarray(kernel_names, dtype="<U32"),
+        ra_deg=np.asarray(ra_values, dtype=np.float64),
+        dec_deg=np.asarray(dec_values, dtype=np.float64),
+        mag_v=np.asarray(mag_values, dtype=np.float64),
+        alt_deg=np.asarray(alt_values, dtype=np.float64),
+        az_deg=np.asarray(az_values, dtype=np.float64),
+        color_rgb=np.asarray(color_values, dtype=np.uint8),
+        radius_px=np.asarray(radius_values, dtype=np.float64),
+        reference_allowed=np.asarray(reference_flags, dtype=bool),
     )
 
 
@@ -805,12 +996,67 @@ def _project_milky_way_polygons(
     return tuple(projected_polygons)
 
 
+def _project_solar_system_objects(
+    horizontal_solar_system: HorizontalSolarSystemCatalog | None,
+    camera: CameraSettings,
+    basis: tuple[np.ndarray, np.ndarray, np.ndarray],
+) -> tuple[ProjectedSolarSystemObject, ...]:
+    if horizontal_solar_system is None or len(horizontal_solar_system) == 0:
+        return ()
+
+    x_px, y_px, valid_projection = _project_altaz_points(
+        horizontal_solar_system.alt_deg,
+        horizontal_solar_system.az_deg,
+        camera=camera,
+        basis=basis,
+    )
+    inside = (
+        valid_projection
+        & np.isfinite(x_px)
+        & np.isfinite(y_px)
+        & (x_px >= 0.0)
+        & (x_px <= camera.image_width_px - 1)
+        & (y_px >= 0.0)
+        & (y_px <= camera.image_height_px - 1)
+    )
+
+    projected_objects: list[ProjectedSolarSystemObject] = []
+    for index in np.flatnonzero(inside):
+        above_horizon = bool(horizontal_solar_system.alt_deg[index] >= 0.0)
+        color = (
+            int(horizontal_solar_system.color_rgb[index, 0]),
+            int(horizontal_solar_system.color_rgb[index, 1]),
+            int(horizontal_solar_system.color_rgb[index, 2]),
+        )
+        projected_objects.append(
+            ProjectedSolarSystemObject(
+                object_id=str(horizontal_solar_system.object_ids[index]),
+                display_name=str(horizontal_solar_system.display_names[index]),
+                kernel_name=str(horizontal_solar_system.kernel_names[index]),
+                ra_deg=float(horizontal_solar_system.ra_deg[index]),
+                dec_deg=float(horizontal_solar_system.dec_deg[index]),
+                mag_v=float(horizontal_solar_system.mag_v[index]),
+                sim_x=float(x_px[index]),
+                sim_y=float(y_px[index]),
+                alt_deg=float(horizontal_solar_system.alt_deg[index]),
+                az_deg=float(horizontal_solar_system.az_deg[index]),
+                radius_px=float(horizontal_solar_system.radius_px[index]),
+                color_rgb=color,
+                alpha=255 if above_horizon else 128,
+                above_horizon=above_horizon,
+                reference_allowed=bool(horizontal_solar_system.reference_allowed[index]),
+            )
+        )
+    return tuple(projected_objects)
+
+
 def project_horizontal_catalog(
     horizontal_catalog: HorizontalStarCatalog,
     camera: CameraSettings,
     view: ViewSettings,
     visible_mag_limit: float = 6.5,
     horizontal_milky_way: HorizontalMilkyWayCatalog | None = None,
+    horizontal_solar_system: HorizontalSolarSystemCatalog | None = None,
 ) -> ProjectedStarMap:
     if camera.sensor_width_mm <= 0 or camera.sensor_height_mm <= 0:
         raise ValueError("Sensor dimensions must be positive")
@@ -852,6 +1098,7 @@ def project_horizontal_catalog(
     above_horizon = horizontal_catalog.alt_deg[inside] >= 0.0
     alpha = np.where(above_horizon, 255, 128).astype(np.uint8)
     milky_way_polygons = _project_milky_way_polygons(horizontal_milky_way, camera=camera, basis=basis)
+    solar_system_objects = _project_solar_system_objects(horizontal_solar_system, camera=camera, basis=basis)
     grid_lines, direction_labels = _build_horizontal_grid(camera=camera, basis=basis)
     horizon_shadow_rects = _build_horizon_shadow_rects(camera=camera, basis=basis)
     sky_circle_radius_px = None
@@ -886,7 +1133,9 @@ def project_horizontal_catalog(
         sky_circle_radius_px=sky_circle_radius_px,
         horizon_shadow_rects=horizon_shadow_rects,
         milky_way_polygons=milky_way_polygons,
+        solar_system_objects=solar_system_objects,
     )
+
 
 def project_catalog(
     catalog: StarCatalog,
@@ -919,10 +1168,13 @@ def select_reference_stars(
     edge_margin_ratio: float = 0.05,
     min_distance_ratio: float = 0.06,
 ) -> tuple[ReferenceStar, ...]:
-    if len(star_map) == 0:
+    has_reference_planets = any(
+        solar_object.reference_allowed and solar_object.above_horizon for solar_object in star_map.solar_system_objects
+    )
+    if len(star_map) == 0 and not has_reference_planets:
         return ()
     if max_count is not None and max_count <= 0:
-        return ()
+        max_count = 0
 
     width = float(star_map.width)
     height = float(star_map.height)
@@ -930,25 +1182,26 @@ def select_reference_stars(
     edge_margin = max(18.0, min_dimension * edge_margin_ratio)
     min_distance = max(32.0, min_dimension * min_distance_ratio)
 
-    candidate_mask = (
-        star_map.above_horizon
-        & np.isfinite(star_map.x_px)
-        & np.isfinite(star_map.y_px)
-        & (star_map.x_px >= edge_margin)
-        & (star_map.x_px <= width - edge_margin)
-        & (star_map.y_px >= edge_margin)
-        & (star_map.y_px <= height - edge_margin)
-    )
-    if mag_limit is not None:
-        candidate_mask &= star_map.mag_v <= float(mag_limit)
-
-    candidate_indices = np.flatnonzero(candidate_mask)
-    if candidate_indices.size == 0:
-        return ()
-
-    sorted_indices = candidate_indices[np.argsort(star_map.mag_v[candidate_indices], kind="stable")]
     selected: list[int] = []
     selected_positions: list[tuple[float, float]] = []
+    if len(star_map) > 0 and max_count != 0:
+        candidate_mask = (
+            star_map.above_horizon
+            & np.isfinite(star_map.x_px)
+            & np.isfinite(star_map.y_px)
+            & (star_map.x_px >= edge_margin)
+            & (star_map.x_px <= width - edge_margin)
+            & (star_map.y_px >= edge_margin)
+            & (star_map.y_px <= height - edge_margin)
+        )
+        if mag_limit is not None:
+            candidate_mask &= star_map.mag_v <= float(mag_limit)
+
+        candidate_indices = np.flatnonzero(candidate_mask)
+    else:
+        candidate_indices = np.asarray([], dtype=np.int64)
+
+    sorted_indices = candidate_indices[np.argsort(star_map.mag_v[candidate_indices], kind="stable")]
     for candidate_index in sorted_indices:
         x_value = float(star_map.x_px[candidate_index])
         y_value = float(star_map.y_px[candidate_index])
@@ -976,6 +1229,30 @@ def select_reference_stars(
                 sim_y=float(star_map.y_px[star_index]),
                 alt_deg=float(star_map.alt_deg[star_index]),
                 az_deg=float(star_map.az_deg[star_index]),
+            )
+        )
+    for solar_object in star_map.solar_system_objects:
+        if not solar_object.reference_allowed:
+            continue
+        if not solar_object.above_horizon:
+            continue
+        if not (0.0 <= solar_object.sim_x <= width - 1.0 and 0.0 <= solar_object.sim_y <= height - 1.0):
+            continue
+        reference_stars.append(
+            ReferenceStar(
+                index=len(reference_stars) + 1,
+                star_id=solar_object.object_id,
+                name=solar_object.display_name,
+                display_name=solar_object.display_name,
+                common_name=solar_object.display_name,
+                ra_deg=solar_object.ra_deg,
+                dec_deg=solar_object.dec_deg,
+                mag_v=solar_object.mag_v,
+                sim_x=solar_object.sim_x,
+                sim_y=solar_object.sim_y,
+                alt_deg=solar_object.alt_deg,
+                az_deg=solar_object.az_deg,
+                object_type="planet",
             )
         )
     return tuple(reference_stars)

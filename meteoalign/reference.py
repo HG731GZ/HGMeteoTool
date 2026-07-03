@@ -35,6 +35,7 @@ def build_reference_payload(
             "catalog_count": star_map.catalog_count,
             "visible_count": len(star_map),
             "above_horizon_count": star_map.above_horizon_count,
+            "solar_system_count": len(star_map.solar_system_objects),
         },
         "observer": {
             "observation_time_utc": observer.observation_time_utc.astimezone(timezone.utc).isoformat(),
@@ -78,8 +79,26 @@ def build_reference_payload(
                 "sim_y": star.sim_y,
                 "alt_deg": star.alt_deg,
                 "az_deg": star.az_deg,
+                "object_type": star.object_type,
             }
             for star in reference_stars
+        ],
+        "solar_system_objects": [
+            {
+                "object_id": solar_object.object_id,
+                "display_name": solar_object.display_name,
+                "kernel_name": solar_object.kernel_name,
+                "ra_deg": solar_object.ra_deg,
+                "dec_deg": solar_object.dec_deg,
+                "mag_v": solar_object.mag_v,
+                "sim_x": solar_object.sim_x,
+                "sim_y": solar_object.sim_y,
+                "alt_deg": solar_object.alt_deg,
+                "az_deg": solar_object.az_deg,
+                "above_horizon": solar_object.above_horizon,
+                "reference_allowed": solar_object.reference_allowed,
+            }
+            for solar_object in star_map.solar_system_objects
         ],
     }
 

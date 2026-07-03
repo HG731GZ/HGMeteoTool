@@ -19,6 +19,7 @@ MODULES = {
     "numpy": "numpy",
     "scipy": "scipy",
     "astropy": "astropy",
+    "skyfield": "skyfield",
     "opencv-python-headless": "cv2",
     "photutils": "photutils",
     "pandas": "pandas",

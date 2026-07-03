@@ -40,14 +40,17 @@ class StarMapRenderer:
             center = QPointF(float(star_map.x_px[index]), float(star_map.y_px[index]))
             painter.drawEllipse(QRectF(center.x() - radius, center.y() - radius, radius * 2.0, radius * 2.0))
 
+        self._draw_solar_system_objects(painter, star_map, element_scale)
         self._draw_horizon_shadow(painter, star_map)
         self._draw_grid(painter, star_map, element_scale)
+        reference_object_ids = {reference_star.star_id for reference_star in reference_stars}
         if reference_stars and number_reference_stars:
             self._draw_reference_stars(painter, star_map, reference_stars, element_scale)
         elif reference_stars:
             self._draw_reference_star_names(painter, star_map, reference_stars, element_scale)
         elif draw_common_names:
             self._draw_star_names(painter, star_map, element_scale)
+        self._draw_solar_system_labels(painter, star_map, element_scale, excluded_object_ids=reference_object_ids)
         self._draw_direction_labels(painter, star_map, element_scale)
         painter.end()
         return image
@@ -93,6 +96,29 @@ class StarMapRenderer:
                 has_ring = True
             if has_ring:
                 painter.drawPath(path)
+
+    def _draw_solar_system_objects(
+        self,
+        painter: QPainter,
+        star_map: ProjectedStarMap,
+        element_scale: float,
+    ) -> None:
+        if not star_map.solar_system_objects:
+            return
+
+        for solar_object in sorted(star_map.solar_system_objects, key=lambda item: item.radius_px):
+            red, green, blue = solar_object.color_rgb
+            alpha = int(solar_object.alpha)
+            radius = solar_object.radius_px * element_scale
+            center = QPointF(float(solar_object.sim_x), float(solar_object.sim_y))
+            marker_rect = QRectF(center.x() - radius, center.y() - radius, radius * 2.0, radius * 2.0)
+
+            painter.setPen(QPen(QColor(0, 0, 0, min(alpha, 210)), max(1.2, 1.6 * element_scale)))
+            painter.setBrush(QColor(red, green, blue, alpha))
+            painter.drawEllipse(marker_rect)
+            painter.setPen(QPen(QColor(255, 255, 255, min(alpha, 210)), max(0.8, 1.0 * element_scale)))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(marker_rect)
 
     def _draw_grid(self, painter: QPainter, star_map: ProjectedStarMap, element_scale: float) -> None:
         painter.setBrush(Qt.NoBrush)
@@ -147,6 +173,50 @@ class StarMapRenderer:
             painter.drawText(point, name)
             painter.setPen(QPen(QColor(red, green, blue, alpha), 1.0 * element_scale))
             painter.drawText(point, name)
+
+    def _draw_solar_system_labels(
+        self,
+        painter: QPainter,
+        star_map: ProjectedStarMap,
+        element_scale: float,
+        excluded_object_ids: set[str],
+    ) -> None:
+        if not star_map.solar_system_objects:
+            return
+
+        font = QFont()
+        font.setPointSizeF(self.ui_config.star_name_font_size_pt * element_scale)
+        font.setBold(True)
+        painter.setFont(font)
+        metrics = painter.fontMetrics()
+        offset_px = 10.0 * element_scale
+        edge_padding_px = 4.0 * element_scale
+
+        for solar_object in star_map.solar_system_objects:
+            if solar_object.object_id in excluded_object_ids:
+                continue
+            label = solar_object.display_name.strip()
+            if not label:
+                continue
+
+            red, green, blue = solar_object.color_rgb
+            alpha = 245 if solar_object.above_horizon else 165
+            text_width = metrics.horizontalAdvance(label)
+            text_height = metrics.height()
+            x_value = min(
+                max(float(solar_object.sim_x) + offset_px, edge_padding_px),
+                star_map.width - text_width - edge_padding_px,
+            )
+            y_value = min(
+                max(float(solar_object.sim_y) - offset_px, text_height + edge_padding_px),
+                star_map.height - edge_padding_px,
+            )
+            point = QPointF(x_value, y_value)
+
+            painter.setPen(QPen(QColor(0, 0, 0, 230), 3.0 * element_scale))
+            painter.drawText(point, label)
+            painter.setPen(QPen(QColor(red, green, blue, alpha), 1.0 * element_scale))
+            painter.drawText(point, label)
 
     def _draw_reference_star_names(
         self,

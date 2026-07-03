@@ -11,6 +11,7 @@ dependencies:
       - numpy==2.2.6
       - scipy==1.15.3
       - astropy==6.1.7
+      - skyfield==1.54
       - opencv-python-headless==5.0.0.93
       - photutils==2.0.2
       - pandas==2.3.3
