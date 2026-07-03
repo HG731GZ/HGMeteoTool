@@ -11,12 +11,25 @@
    </rect>
   </property>
   <property name="windowTitle">
-   <string>MeteoAlign Phase 1</string>
+   <string>MeteoAlign Phase 2</string>
   </property>
   <widget class="QWidget" name="centralwidget">
-   <layout class="QHBoxLayout" name="horizontalLayout">
+   <layout class="QVBoxLayout" name="verticalLayoutMain">
     <item>
-     <widget class="QScrollArea" name="scrollAreaControls">
+     <widget class="QTabWidget" name="tabWidgetMain">
+      <property name="tabPosition">
+       <enum>QTabWidget::North</enum>
+      </property>
+      <property name="currentIndex">
+       <number>0</number>
+      </property>
+      <widget class="QWidget" name="tabSimulator">
+       <attribute name="title">
+        <string>星空模拟</string>
+       </attribute>
+       <layout class="QHBoxLayout" name="horizontalLayoutSimulator">
+        <item>
+         <widget class="QScrollArea" name="scrollAreaControls">
       <property name="minimumSize">
        <size>
         <width>330</width>
@@ -580,37 +593,252 @@
       </widget>
      </widget>
     </item>
-    <item>
-     <widget class="QGraphicsView" name="starMapView">
-      <property name="sizePolicy">
-       <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
-        <horstretch>1</horstretch>
-        <verstretch>1</verstretch>
-       </sizepolicy>
-      </property>
-      <property name="backgroundBrush">
-       <brush brushstyle="SolidPattern">
-        <color alpha="255">
-         <red>0</red>
-         <green>0</green>
-         <blue>0</blue>
-        </color>
-       </brush>
-      </property>
-      <property name="dragMode">
-       <enum>QGraphicsView::NoDrag</enum>
-      </property>
-      <property name="transformationAnchor">
-       <enum>QGraphicsView::AnchorViewCenter</enum>
-      </property>
-      <property name="resizeAnchor">
-       <enum>QGraphicsView::AnchorViewCenter</enum>
-      </property>
+        <item>
+         <widget class="QGraphicsView" name="starMapView">
+          <property name="sizePolicy">
+           <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
+            <horstretch>1</horstretch>
+            <verstretch>1</verstretch>
+           </sizepolicy>
+          </property>
+          <property name="backgroundBrush">
+           <brush brushstyle="SolidPattern">
+            <color alpha="255">
+             <red>0</red>
+             <green>0</green>
+             <blue>0</blue>
+            </color>
+           </brush>
+          </property>
+          <property name="dragMode">
+           <enum>QGraphicsView::NoDrag</enum>
+          </property>
+          <property name="transformationAnchor">
+           <enum>QGraphicsView::AnchorViewCenter</enum>
+          </property>
+          <property name="resizeAnchor">
+           <enum>QGraphicsView::AnchorViewCenter</enum>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+      <widget class="QWidget" name="tabReferenceImage">
+       <attribute name="title">
+        <string>真实图像点选</string>
+       </attribute>
+       <layout class="QHBoxLayout" name="horizontalLayoutReferenceImage">
+        <item>
+         <widget class="QGroupBox" name="groupBoxImportedImage">
+          <property name="minimumSize">
+           <size>
+            <width>300</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="maximumSize">
+           <size>
+            <width>360</width>
+            <height>16777215</height>
+           </size>
+          </property>
+          <property name="title">
+           <string>真实图像</string>
+          </property>
+          <layout class="QVBoxLayout" name="verticalLayoutImportedImage">
+           <item>
+            <layout class="QFormLayout" name="formLayoutImportedImage">
+             <item row="0" column="0">
+              <widget class="QLabel" name="labelImportedImagePathTitle">
+               <property name="text">
+                <string>文件</string>
+               </property>
+              </widget>
+             </item>
+             <item row="0" column="1">
+              <widget class="QLabel" name="labelImportedImagePath">
+               <property name="text">
+                <string>未导入</string>
+               </property>
+               <property name="wordWrap">
+                <bool>true</bool>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="0">
+              <widget class="QLabel" name="labelImportedImageSizeTitle">
+               <property name="text">
+                <string>原始尺寸</string>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="1">
+              <widget class="QLabel" name="labelImportedImageSize">
+               <property name="text">
+                <string>-</string>
+               </property>
+              </widget>
+             </item>
+             <item row="2" column="0">
+              <widget class="QLabel" name="labelImportedPreviewSizeTitle">
+               <property name="text">
+                <string>预览尺寸</string>
+               </property>
+              </widget>
+             </item>
+             <item row="2" column="1">
+              <widget class="QLabel" name="labelImportedPreviewSize">
+               <property name="text">
+                <string>-</string>
+               </property>
+              </widget>
+             </item>
+             <item row="3" column="0">
+              <widget class="QLabel" name="labelImportedPreviewScaleTitle">
+               <property name="text">
+                <string>预览比例</string>
+               </property>
+              </widget>
+             </item>
+             <item row="3" column="1">
+              <widget class="QLabel" name="labelImportedPreviewScale">
+               <property name="text">
+                <string>-</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <widget class="QPushButton" name="pushButtonImportSingleImage">
+             <property name="text">
+              <string>导入单张图像</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="pushButtonImportImageSequence">
+             <property name="text">
+              <string>导入序列图像</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <spacer name="verticalSpacerImportedImage">
+             <property name="orientation">
+              <enum>Qt::Vertical</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>20</width>
+               <height>40</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+          </layout>
+         </widget>
+        </item>
+        <item>
+         <widget class="QSplitter" name="splitterReferenceAndRealImage">
+          <property name="orientation">
+           <enum>Qt::Horizontal</enum>
+          </property>
+          <widget class="QGroupBox" name="groupBoxReferencePreview">
+           <property name="title">
+            <string>参考星图</string>
+           </property>
+           <layout class="QVBoxLayout" name="verticalLayoutReferencePreview">
+            <item>
+             <widget class="QGraphicsView" name="referenceImageView">
+              <property name="backgroundBrush">
+               <brush brushstyle="SolidPattern">
+                <color alpha="255">
+                 <red>0</red>
+                 <green>0</green>
+                 <blue>0</blue>
+                </color>
+               </brush>
+              </property>
+              <property name="dragMode">
+               <enum>QGraphicsView::ScrollHandDrag</enum>
+              </property>
+              <property name="transformationAnchor">
+               <enum>QGraphicsView::AnchorUnderMouse</enum>
+              </property>
+              <property name="resizeAnchor">
+               <enum>QGraphicsView::AnchorViewCenter</enum>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </widget>
+          <widget class="QGroupBox" name="groupBoxRealImagePreview">
+           <property name="title">
+            <string>真实图像预览</string>
+           </property>
+           <layout class="QVBoxLayout" name="verticalLayoutRealImagePreview">
+            <item>
+             <widget class="QGraphicsView" name="realImageView">
+              <property name="backgroundBrush">
+               <brush brushstyle="SolidPattern">
+                <color alpha="255">
+                 <red>16</red>
+                 <green>18</green>
+                 <blue>22</blue>
+                </color>
+               </brush>
+              </property>
+              <property name="dragMode">
+               <enum>QGraphicsView::ScrollHandDrag</enum>
+              </property>
+              <property name="transformationAnchor">
+               <enum>QGraphicsView::AnchorUnderMouse</enum>
+              </property>
+              <property name="resizeAnchor">
+               <enum>QGraphicsView::AnchorViewCenter</enum>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </widget>
+         </widget>
+        </item>
+       </layout>
+      </widget>
      </widget>
     </item>
    </layout>
   </widget>
+  <widget class="QMenuBar" name="menubar">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>0</y>
+     <width>1280</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <widget class="QMenu" name="menuFile">
+    <property name="title">
+     <string>文件</string>
+    </property>
+    <addaction name="actionImportSingleImage"/>
+    <addaction name="actionImportImageSequence"/>
+   </widget>
+   <addaction name="menuFile"/>
+  </widget>
   <widget class="QStatusBar" name="statusbar"/>
+  <action name="actionImportSingleImage">
+   <property name="text">
+    <string>导入单张图像...</string>
+   </property>
+  </action>
+  <action name="actionImportImageSequence">
+   <property name="text">
+    <string>导入序列图像...</string>
+   </property>
+  </action>
  </widget>
  <resources/>
  <connections/>

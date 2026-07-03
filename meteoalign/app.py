@@ -4,13 +4,23 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from PyQt5.QtCore import QDateTime, QEvent, QPoint, QTimer, Qt
+from PyQt5.QtCore import QDateTime, QEvent, QObject, QPoint, QThread, QTimer, Qt, pyqtSignal
 from PyQt5.QtGui import QFont, QPixmap
-from PyQt5.QtWidgets import QApplication, QGraphicsPixmapItem, QGraphicsScene, QMainWindow, QMessageBox
+from PyQt5.QtWidgets import (
+    QApplication,
+    QFileDialog,
+    QGraphicsPixmapItem,
+    QGraphicsScene,
+    QGraphicsView,
+    QMainWindow,
+    QMessageBox,
+    QProgressDialog,
+)
 
 from .catalog_download import ensure_catalogs_ready_or_handle
 from .catalog import load_default_catalog, project_root
 from .config import StarMapUiConfig, load_star_map_ui_config
+from .image_preview import IMAGE_FILE_FILTER, ImagePreview, load_image_preview
 from .milky_way import MilkyWayCatalog, load_milky_way
 from .reference import build_reference_payload, save_reference_outputs
 from .renderer import StarMapRenderer
@@ -40,6 +50,26 @@ LENS_MODELS = (
     FISHEYE_EQUISOLID,
 )
 PREVIEW_LONG_SIDE_PX = 1920
+IMPORTED_IMAGE_PREVIEW_LONG_SIDE_PX = 2400
+IMAGE_VIEW_ZOOM_IN_FACTOR = 1.25
+IMAGE_VIEW_ZOOM_OUT_FACTOR = 0.8
+
+
+class ImagePreviewLoadWorker(QObject):
+    finished = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, file_path: str | Path, max_long_side_px: int) -> None:
+        super().__init__()
+        self.file_path = Path(file_path)
+        self.max_long_side_px = max_long_side_px
+
+    def run(self) -> None:
+        try:
+            preview = load_image_preview(self.file_path, max_long_side_px=self.max_long_side_px)
+            self.finished.emit(preview)
+        except Exception as exc:  # noqa: BLE001 - 后台线程需要把所有读取错误传回界面层。
+            self.failed.emit(str(exc))
 
 
 class MainWindow(QMainWindow):
@@ -59,6 +89,18 @@ class MainWindow(QMainWindow):
         self.ui.starMapView.setScene(self.scene)
         self.ui.starMapView.viewport().installEventFilter(self)
 
+        self.reference_scene = QGraphicsScene(self)
+        self.reference_pixmap_item = QGraphicsPixmapItem()
+        self.reference_scene.addItem(self.reference_pixmap_item)
+        self.ui.referenceImageView.setScene(self.reference_scene)
+        self.ui.referenceImageView.viewport().installEventFilter(self)
+
+        self.real_image_scene = QGraphicsScene(self)
+        self.real_image_pixmap_item = QGraphicsPixmapItem()
+        self.real_image_scene.addItem(self.real_image_pixmap_item)
+        self.ui.realImageView.setScene(self.real_image_scene)
+        self.ui.realImageView.viewport().installEventFilter(self)
+
         self.render_timer = QTimer(self)
         self.render_timer.setSingleShot(True)
         self.render_timer.timeout.connect(self.render_now)
@@ -69,6 +111,11 @@ class MainWindow(QMainWindow):
         self._milky_way_cache_key: tuple[object, ...] | None = None
         self._milky_way_cache: HorizontalMilkyWayCatalog | None = None
         self._last_render_size: tuple[int, int] | None = None
+        self._last_reference_render_size: tuple[int, int] | None = None
+        self.current_image_preview: ImagePreview | None = None
+        self._image_import_thread: QThread | None = None
+        self._image_import_worker: ImagePreviewLoadWorker | None = None
+        self._image_import_progress: QProgressDialog | None = None
         self._syncing_camera_dimensions = False
 
         self._init_defaults()
@@ -108,6 +155,7 @@ class MainWindow(QMainWindow):
         self.ui.doubleSpinBoxAlt.setValue(20.0)
         self.ui.doubleSpinBoxRoll.setValue(0.0)
         self.ui.spinBoxReferenceStarCount.setValue(12)
+        self._reset_imported_image_labels()
         self._update_lens_model_controls()
 
     def _connect_inputs(self) -> None:
@@ -136,9 +184,133 @@ class MainWindow(QMainWindow):
         self.ui.spinBoxImageHeight.valueChanged.connect(self._handle_image_height_changed)
         self.ui.comboBoxLensModel.currentIndexChanged.connect(self._handle_lens_model_changed)
         self.ui.horizontalSliderCommonNameLimit.valueChanged.connect(self._update_common_name_limit_label)
+        self.ui.spinBoxReferenceStarCount.valueChanged.connect(self.schedule_render)
         self.ui.pushButtonSwapOrientation.clicked.connect(self._swap_camera_orientation)
         self.ui.pushButtonRender.clicked.connect(lambda: self.render_now())
         self.ui.pushButtonExportReference.clicked.connect(self.export_reference_map)
+        self.ui.pushButtonImportSingleImage.clicked.connect(self.import_single_image)
+        self.ui.pushButtonImportImageSequence.clicked.connect(self.show_sequence_import_placeholder)
+        self.ui.actionImportSingleImage.triggered.connect(self.import_single_image)
+        self.ui.actionImportImageSequence.triggered.connect(self.show_sequence_import_placeholder)
+        self.ui.tabWidgetMain.currentChanged.connect(self._handle_tab_changed)
+
+    def _reset_imported_image_labels(self) -> None:
+        self.ui.labelImportedImagePath.setText("未导入")
+        self.ui.labelImportedImageSize.setText("-")
+        self.ui.labelImportedPreviewSize.setText("-")
+        self.ui.labelImportedPreviewScale.setText("-")
+
+    def _update_imported_image_labels(self, preview: ImagePreview) -> None:
+        self.ui.labelImportedImagePath.setText(str(preview.path))
+        self.ui.labelImportedImageSize.setText(f"{preview.original_width} x {preview.original_height} px")
+        self.ui.labelImportedPreviewSize.setText(f"{preview.preview_width} x {preview.preview_height} px")
+        self.ui.labelImportedPreviewScale.setText(f"{preview.preview_scale * 100.0:.2f}%")
+
+    def import_single_image(self) -> None:
+        if self._image_import_thread is not None:
+            QMessageBox.information(self, "正在导入图像", "当前已有图像正在导入，请稍候。")
+            return
+        default_dir = project_root() / "testimages"
+        if not default_dir.exists():
+            default_dir = project_root()
+        file_path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "导入单张图像",
+            str(default_dir),
+            IMAGE_FILE_FILTER,
+        )
+        if not file_path:
+            return
+        self.start_single_image_import(file_path)
+
+    def start_single_image_import(self, file_path: str | Path) -> None:
+        if self._image_import_thread is not None:
+            QMessageBox.information(self, "正在导入图像", "当前已有图像正在导入，请稍候。")
+            return
+
+        image_path = Path(file_path)
+        self._set_image_import_controls_enabled(False)
+        self.ui.statusbar.showMessage(f"正在导入图像并生成预览: {image_path}")
+
+        progress = QProgressDialog(self)
+        progress.setWindowTitle("正在导入图像")
+        progress.setLabelText(f"正在读取图像并生成预览...\n{image_path}")
+        progress.setRange(0, 0)
+        progress.setCancelButton(None)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.show()
+
+        thread = QThread(self)
+        worker = ImagePreviewLoadWorker(image_path, IMPORTED_IMAGE_PREVIEW_LONG_SIDE_PX)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._handle_single_image_import_finished)
+        worker.failed.connect(self._handle_single_image_import_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._cleanup_single_image_import)
+
+        self._image_import_thread = thread
+        self._image_import_worker = worker
+        self._image_import_progress = progress
+        thread.start()
+
+    def load_single_image(self, file_path: str | Path) -> None:
+        try:
+            preview = load_image_preview(file_path, max_long_side_px=IMPORTED_IMAGE_PREVIEW_LONG_SIDE_PX)
+            self._apply_loaded_image_preview(preview)
+        except Exception as exc:  # noqa: BLE001 - 文件导入错误需要以对话框形式提示用户。
+            self.ui.statusbar.showMessage(f"导入图像失败: {exc}")
+            QMessageBox.critical(self, "导入图像失败", str(exc))
+
+    def _set_image_import_controls_enabled(self, enabled: bool) -> None:
+        self.ui.pushButtonImportSingleImage.setEnabled(enabled)
+        self.ui.pushButtonImportImageSequence.setEnabled(enabled)
+        self.ui.actionImportSingleImage.setEnabled(enabled)
+        self.ui.actionImportImageSequence.setEnabled(enabled)
+
+    def _apply_loaded_image_preview(self, preview: ImagePreview) -> None:
+        self.current_image_preview = preview
+        self._update_imported_image_labels(preview)
+        self._display_real_image_preview(preview)
+        self.ui.tabWidgetMain.setCurrentWidget(self.ui.tabReferenceImage)
+        self.ui.statusbar.showMessage(
+            "已导入图像: {path}  原始: {width} x {height} px  预览: {preview_width} x {preview_height} px".format(
+                path=preview.path,
+                width=preview.original_width,
+                height=preview.original_height,
+                preview_width=preview.preview_width,
+                preview_height=preview.preview_height,
+            )
+        )
+
+    def _handle_single_image_import_finished(self, preview: object) -> None:
+        if self._image_import_progress is not None:
+            self._image_import_progress.close()
+        self._apply_loaded_image_preview(preview)  # type: ignore[arg-type]
+
+    def _handle_single_image_import_failed(self, error_message: str) -> None:
+        if self._image_import_progress is not None:
+            self._image_import_progress.close()
+        self.ui.statusbar.showMessage(f"导入图像失败: {error_message}")
+        QMessageBox.critical(self, "导入图像失败", error_message)
+
+    def _cleanup_single_image_import(self) -> None:
+        self._image_import_thread = None
+        self._image_import_worker = None
+        self._image_import_progress = None
+        self._set_image_import_controls_enabled(True)
+
+    def show_sequence_import_placeholder(self) -> None:
+        QMessageBox.information(self, "序列图像导入", "序列图像导入入口已预留，将在后续阶段实现。")
+
+    def _handle_tab_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        QTimer.singleShot(0, self.fit_all_graphics_views)
 
     def schedule_render(self, *unused, delay_ms: int = 120) -> None:  # type: ignore[no-untyped-def]
         self.render_timer.start(delay_ms)
@@ -347,19 +519,47 @@ class MainWindow(QMainWindow):
         if should_fit:
             self.fit_star_map()
 
+    def _display_reference_map_image(self, star_map: ProjectedStarMap, image) -> None:  # type: ignore[no-untyped-def]
+        render_size = (star_map.width, star_map.height)
+        should_fit = self._last_reference_render_size != render_size or self.reference_pixmap_item.pixmap().isNull()
+        self.reference_pixmap_item.setPos(0, 0)
+        self.reference_pixmap_item.setPixmap(QPixmap.fromImage(image))
+        self.reference_scene.setSceneRect(0, 0, star_map.width, star_map.height)
+        self._last_reference_render_size = render_size
+        if should_fit:
+            self.fit_reference_map()
+
+    def _display_real_image_preview(self, preview: ImagePreview) -> None:
+        self.real_image_pixmap_item.setPos(0, 0)
+        self.real_image_pixmap_item.setPixmap(QPixmap.fromImage(preview.image))
+        self.real_image_scene.setSceneRect(0, 0, preview.preview_width, preview.preview_height)
+        self.fit_real_image()
+
     def render_now(self) -> None:
         try:
             _observer, _camera, view, _mag_limit, star_map = self._build_projected_star_map()
             common_name_mag_limit = self._common_name_mag_limit()
             image = self.renderer.render(star_map, common_name_mag_limit=common_name_mag_limit)
             self._display_star_map_image(star_map, image)
+            reference_stars = select_reference_stars(
+                star_map=star_map,
+                max_count=self.ui.spinBoxReferenceStarCount.value(),
+            )
+            reference_image = self.renderer.render(
+                star_map,
+                common_name_mag_limit=common_name_mag_limit,
+                reference_stars=reference_stars,
+            )
+            self._display_reference_map_image(star_map, reference_image)
             self.ui.statusbar.showMessage(
                 "星表: {catalog_count}  视野内: {visible_count}  地平线上: {above_count}  "
-                "银河面: {mw_count}  俗名: <= {name_limit:.1f} mag  镜头: {lens_name}  Az: {az:.2f} deg  Alt: {alt:.2f} deg".format(
+                "银河面: {mw_count}  参考星: {reference_count}  俗名: <= {name_limit:.1f} mag  "
+                "镜头: {lens_name}  Az: {az:.2f} deg  Alt: {alt:.2f} deg".format(
                     catalog_count=star_map.catalog_count,
                     visible_count=len(star_map),
                     above_count=star_map.above_horizon_count,
                     mw_count=len(star_map.milky_way_polygons),
+                    reference_count=len(reference_stars),
                     name_limit=common_name_mag_limit,
                     lens_name=self.ui.comboBoxLensModel.currentText(),
                     az=view.center_az_deg,
@@ -415,9 +615,29 @@ class MainWindow(QMainWindow):
         if not self.pixmap_item.pixmap().isNull():
             self.ui.starMapView.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
 
+    def fit_reference_map(self) -> None:
+        if not self.reference_pixmap_item.pixmap().isNull():
+            self.ui.referenceImageView.fitInView(self.reference_scene.sceneRect(), Qt.KeepAspectRatio)
+
+    def fit_real_image(self) -> None:
+        if not self.real_image_pixmap_item.pixmap().isNull():
+            self.ui.realImageView.fitInView(self.real_image_scene.sceneRect(), Qt.KeepAspectRatio)
+
+    def fit_all_graphics_views(self) -> None:
+        self.fit_star_map()
+        self.fit_reference_map()
+        self.fit_real_image()
+
+    def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        if self._image_import_thread is not None:
+            QMessageBox.information(self, "正在导入图像", "图像预览仍在生成，请等待导入完成后再关闭窗口。")
+            event.ignore()
+            return
+        super().closeEvent(event)
+
     def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().resizeEvent(event)
-        QTimer.singleShot(0, self.fit_star_map)
+        QTimer.singleShot(0, self.fit_all_graphics_views)
 
     def eventFilter(self, watched, event) -> bool:  # type: ignore[no-untyped-def]
         if watched is self.ui.starMapView.viewport():
@@ -442,7 +662,19 @@ class MainWindow(QMainWindow):
                 self.ui.starMapView.viewport().unsetCursor()
                 self.render_now()
                 return True
+        if watched is self.ui.referenceImageView.viewport() and event.type() == QEvent.Wheel:
+            self._apply_graphics_view_zoom(self.ui.referenceImageView, event.angleDelta().y())
+            return True
+        if watched is self.ui.realImageView.viewport() and event.type() == QEvent.Wheel:
+            self._apply_graphics_view_zoom(self.ui.realImageView, event.angleDelta().y())
+            return True
         return super().eventFilter(watched, event)
+
+    def _apply_graphics_view_zoom(self, view: QGraphicsView, wheel_delta: int) -> None:
+        if wheel_delta == 0:
+            return
+        factor = IMAGE_VIEW_ZOOM_IN_FACTOR if wheel_delta > 0 else IMAGE_VIEW_ZOOM_OUT_FACTOR
+        view.scale(factor, factor)
 
     def _apply_drag_delta(self, dx: int, dy: int) -> None:
         camera = self._preview_camera_settings()
