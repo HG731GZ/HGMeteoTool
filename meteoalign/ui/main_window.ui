@@ -710,7 +710,7 @@
                  <number>0</number>
                 </property>
                 <property name="columnCount">
-                 <number>3</number>
+                 <number>4</number>
                 </property>
                 <attribute name="horizontalHeaderCascadingSectionResizes">
                  <bool>false</bool>
@@ -742,6 +742,87 @@
                   <string>真实图像位置</string>
                  </property>
                 </column>
+                <column>
+                 <property name="text">
+                  <string>残差</string>
+                 </property>
+                </column>
+               </widget>
+              </item>
+             </layout>
+            </widget>
+           </item>
+           <item>
+            <widget class="QGroupBox" name="groupBoxReferenceAlignment">
+             <property name="title">
+              <string>自动配准辅助</string>
+             </property>
+             <layout class="QVBoxLayout" name="verticalLayoutReferenceAlignment">
+              <item>
+               <widget class="QLabel" name="labelAlignmentTransformStatus">
+                <property name="text">
+                 <string>至少配对 4 颗星后可自动配准</string>
+                </property>
+                <property name="wordWrap">
+                 <bool>true</bool>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QCheckBox" name="checkBoxOverlayReferenceMap">
+                <property name="text">
+                 <string>叠加实时星空到真实预览</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <layout class="QHBoxLayout" name="horizontalLayoutReferenceOverlayOpacity">
+                <item>
+                 <widget class="QLabel" name="labelReferenceOverlayOpacityTitle">
+                  <property name="text">
+                   <string>透明度</string>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QSlider" name="horizontalSliderReferenceOverlayOpacity">
+                  <property name="minimum">
+                   <number>0</number>
+                  </property>
+                  <property name="maximum">
+                   <number>100</number>
+                  </property>
+                  <property name="value">
+                   <number>45</number>
+                  </property>
+                  <property name="orientation">
+                   <enum>Qt::Horizontal</enum>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QLabel" name="labelReferenceOverlayOpacityValue">
+                  <property name="minimumSize">
+                   <size>
+                    <width>42</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="alignment">
+                   <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+                  </property>
+                  <property name="text">
+                   <string>45%</string>
+                  </property>
+                 </widget>
+                </item>
+               </layout>
+              </item>
+              <item>
+               <widget class="QCheckBox" name="checkBoxSyncReferenceAndRealView">
+                <property name="text">
+                 <string>同步实时星空与真实预览拖动缩放</string>
+                </property>
                </widget>
               </item>
              </layout>

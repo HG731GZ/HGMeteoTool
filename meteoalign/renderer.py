@@ -18,15 +18,50 @@ class StarMapRenderer:
         element_scale: float = 1.0,
         draw_common_names: bool = True,
         number_reference_stars: bool = True,
+        draw_background: bool = True,
+        draw_horizon_shadow: bool = True,
+        star_radius_scale: float = 1.0,
     ) -> QImage:
         element_scale = max(float(element_scale), 0.05)
         image = QImage(star_map.width, star_map.height, QImage.Format_ARGB32_Premultiplied)
-        image.fill(QColor(88, 88, 88))
+        if draw_background:
+            image.fill(QColor(88, 88, 88))
+        else:
+            image.fill(Qt.transparent)
 
         painter = QPainter(image)
+        self.paint(
+            painter,
+            star_map,
+            reference_stars=reference_stars,
+            element_scale=element_scale,
+            draw_common_names=draw_common_names,
+            number_reference_stars=number_reference_stars,
+            draw_background=draw_background,
+            draw_horizon_shadow=draw_horizon_shadow,
+            star_radius_scale=star_radius_scale,
+        )
+        painter.end()
+        return image
+
+    def paint(
+        self,
+        painter: QPainter,
+        star_map: ProjectedStarMap,
+        reference_stars: tuple[ReferenceStar, ...] = (),
+        element_scale: float = 1.0,
+        draw_common_names: bool = True,
+        number_reference_stars: bool = True,
+        draw_background: bool = True,
+        draw_horizon_shadow: bool = True,
+        star_radius_scale: float = 1.0,
+    ) -> None:
+        element_scale = max(float(element_scale), 0.05)
+        star_radius_scale = max(float(star_radius_scale), 0.05)
         painter.setRenderHint(QPainter.Antialiasing, True)
 
-        self._draw_sky_background(painter, star_map)
+        if draw_background:
+            self._draw_sky_background(painter, star_map)
         self._draw_milky_way(painter, star_map)
         painter.setPen(Qt.NoPen)
 
@@ -36,12 +71,13 @@ class StarMapRenderer:
             alpha = int(star_map.alpha[index])
             color = QColor(red, green, blue, alpha)
             painter.setBrush(color)
-            radius = float(star_map.radius_px[index]) * element_scale
+            radius = float(star_map.radius_px[index]) * element_scale * star_radius_scale
             center = QPointF(float(star_map.x_px[index]), float(star_map.y_px[index]))
             painter.drawEllipse(QRectF(center.x() - radius, center.y() - radius, radius * 2.0, radius * 2.0))
 
-        self._draw_solar_system_objects(painter, star_map, element_scale)
-        self._draw_horizon_shadow(painter, star_map)
+        self._draw_solar_system_objects(painter, star_map, element_scale, star_radius_scale)
+        if draw_horizon_shadow:
+            self._draw_horizon_shadow(painter, star_map)
         self._draw_grid(painter, star_map, element_scale)
         reference_object_ids = {reference_star.star_id for reference_star in reference_stars}
         if reference_stars and number_reference_stars:
@@ -52,8 +88,6 @@ class StarMapRenderer:
             self._draw_star_names(painter, star_map, element_scale)
         self._draw_solar_system_labels(painter, star_map, element_scale, excluded_object_ids=reference_object_ids)
         self._draw_direction_labels(painter, star_map, element_scale)
-        painter.end()
-        return image
 
     def _draw_sky_background(self, painter: QPainter, star_map: ProjectedStarMap) -> None:
         painter.setPen(Qt.NoPen)
@@ -102,6 +136,7 @@ class StarMapRenderer:
         painter: QPainter,
         star_map: ProjectedStarMap,
         element_scale: float,
+        star_radius_scale: float,
     ) -> None:
         if not star_map.solar_system_objects:
             return
@@ -109,14 +144,15 @@ class StarMapRenderer:
         for solar_object in sorted(star_map.solar_system_objects, key=lambda item: item.radius_px):
             red, green, blue = solar_object.color_rgb
             alpha = int(solar_object.alpha)
-            radius = solar_object.radius_px * element_scale
+            marker_scale = element_scale * star_radius_scale
+            radius = solar_object.radius_px * marker_scale
             center = QPointF(float(solar_object.sim_x), float(solar_object.sim_y))
             marker_rect = QRectF(center.x() - radius, center.y() - radius, radius * 2.0, radius * 2.0)
 
-            painter.setPen(QPen(QColor(0, 0, 0, min(alpha, 210)), max(1.2, 1.6 * element_scale)))
+            painter.setPen(QPen(QColor(0, 0, 0, min(alpha, 210)), max(1.0, 1.6 * marker_scale)))
             painter.setBrush(QColor(red, green, blue, alpha))
             painter.drawEllipse(marker_rect)
-            painter.setPen(QPen(QColor(255, 255, 255, min(alpha, 210)), max(0.8, 1.0 * element_scale)))
+            painter.setPen(QPen(QColor(255, 255, 255, min(alpha, 210)), max(0.7, 1.0 * marker_scale)))
             painter.setBrush(Qt.NoBrush)
             painter.drawEllipse(marker_rect)
 
