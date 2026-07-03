@@ -39,6 +39,7 @@ LENS_MODELS = (
     FISHEYE_EQUIDISTANT,
     FISHEYE_EQUISOLID,
 )
+PREVIEW_LONG_SIDE_PX = 1920
 
 
 class MainWindow(QMainWindow):
@@ -191,7 +192,6 @@ class MainWindow(QMainWindow):
         width_px = self.ui.spinBoxImageWidth.value()
         height_px = self._bounded_image_height(width_px / self._sensor_aspect_ratio())
         self._set_image_dimensions(width_px, height_px)
-        self.schedule_render()
 
     def _handle_image_height_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
         if self._syncing_camera_dimensions:
@@ -199,7 +199,6 @@ class MainWindow(QMainWindow):
         height_px = self.ui.spinBoxImageHeight.value()
         width_px = self._bounded_image_width(height_px * self._sensor_aspect_ratio())
         self._set_image_dimensions(width_px, height_px)
-        self.schedule_render()
 
     def _swap_camera_orientation(self) -> None:
         sensor_width = self.ui.doubleSpinBoxSensorWidth.value()
@@ -246,16 +245,39 @@ class MainWindow(QMainWindow):
             elevation_m=self.ui.doubleSpinBoxElevation.value(),
         )
 
-    def _camera_settings(self) -> CameraSettings:
+    def _camera_settings_for_image_size(self, image_width_px: int, image_height_px: int) -> CameraSettings:
         return CameraSettings(
             sensor_width_mm=self.ui.doubleSpinBoxSensorWidth.value(),
             sensor_height_mm=self.ui.doubleSpinBoxSensorHeight.value(),
-            image_width_px=self.ui.spinBoxImageWidth.value(),
-            image_height_px=self.ui.spinBoxImageHeight.value(),
+            image_width_px=image_width_px,
+            image_height_px=image_height_px,
             focal_length_mm=self.ui.doubleSpinBoxFocalLength.value(),
             lens_model=self._lens_model(),
             fisheye_fov_deg=self.ui.doubleSpinBoxFisheyeFov.value(),
         )
+
+    def _output_camera_settings(self) -> CameraSettings:
+        return self._camera_settings_for_image_size(
+            image_width_px=self.ui.spinBoxImageWidth.value(),
+            image_height_px=self.ui.spinBoxImageHeight.value(),
+        )
+
+    def _preview_image_size(self) -> tuple[int, int]:
+        aspect_ratio = self._sensor_aspect_ratio()
+        if aspect_ratio >= 1.0:
+            width_px = PREVIEW_LONG_SIDE_PX
+            height_px = max(128, int(round(PREVIEW_LONG_SIDE_PX / aspect_ratio)))
+        else:
+            height_px = PREVIEW_LONG_SIDE_PX
+            width_px = max(128, int(round(PREVIEW_LONG_SIDE_PX * aspect_ratio)))
+        return width_px, height_px
+
+    def _preview_camera_settings(self) -> CameraSettings:
+        image_width_px, image_height_px = self._preview_image_size()
+        return self._camera_settings_for_image_size(image_width_px=image_width_px, image_height_px=image_height_px)
+
+    def _render_element_scale(self, camera: CameraSettings) -> float:
+        return max(camera.image_width_px, camera.image_height_px) / float(PREVIEW_LONG_SIDE_PX)
 
     def _view_settings(self) -> ViewSettings:
         return ViewSettings(
@@ -296,9 +318,12 @@ class MainWindow(QMainWindow):
             self._milky_way_cache_key = cache_key
         return self._milky_way_cache
 
-    def _build_projected_star_map(self) -> tuple[ObserverSettings, CameraSettings, ViewSettings, float, ProjectedStarMap]:
+    def _build_projected_star_map(
+        self,
+        camera: CameraSettings | None = None,
+    ) -> tuple[ObserverSettings, CameraSettings, ViewSettings, float, ProjectedStarMap]:
         observer = self._observer_settings()
-        camera = self._camera_settings()
+        camera = camera or self._preview_camera_settings()
         view = self._view_settings()
         mag_limit = self.ui.doubleSpinBoxMagLimit.value()
         horizontal_catalog = self._get_horizontal_catalog(observer, mag_limit)
@@ -350,7 +375,8 @@ class MainWindow(QMainWindow):
 
     def export_reference_map(self) -> None:
         try:
-            observer, camera, view, mag_limit, star_map = self._build_projected_star_map()
+            output_camera = self._output_camera_settings()
+            observer, camera, view, mag_limit, star_map = self._build_projected_star_map(camera=output_camera)
             reference_stars = select_reference_stars(
                 star_map=star_map,
                 max_count=self.ui.spinBoxReferenceStarCount.value(),
@@ -364,6 +390,7 @@ class MainWindow(QMainWindow):
                 star_map,
                 common_name_mag_limit=common_name_mag_limit,
                 reference_stars=reference_stars,
+                element_scale=self._render_element_scale(camera),
             )
             payload = build_reference_payload(
                 star_map=star_map,
@@ -375,7 +402,7 @@ class MainWindow(QMainWindow):
                 common_name_mag_limit=common_name_mag_limit,
             )
             image_path, json_path = save_reference_outputs(image, payload, self._next_reference_output_dir())
-            self._display_star_map_image(star_map, image)
+            self.render_now()
             self.ui.statusbar.showMessage(
                 f"已导出参考图: {image_path}  参考星表: {json_path}  标注星数: {len(reference_stars)}"
             )
@@ -418,7 +445,7 @@ class MainWindow(QMainWindow):
         return super().eventFilter(watched, event)
 
     def _apply_drag_delta(self, dx: int, dy: int) -> None:
-        camera = self._camera_settings()
+        camera = self._preview_camera_settings()
         az_degrees_per_pixel = max(horizontal_fov_deg(camera) / max(self.ui.starMapView.viewport().width(), 1), 0.01)
         alt_degrees_per_pixel = max(vertical_fov_deg(camera) / max(self.ui.starMapView.viewport().height(), 1), 0.01)
         az = (self.ui.doubleSpinBoxAz.value() - dx * az_degrees_per_pixel) % 360.0

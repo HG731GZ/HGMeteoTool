@@ -213,7 +213,7 @@
            <item row="3" column="0">
             <widget class="QLabel" name="labelImageWidth">
              <property name="text">
-              <string>图像宽</string>
+              <string>导出图像宽</string>
              </property>
             </widget>
            </item>
@@ -233,7 +233,7 @@
            <item row="4" column="0">
             <widget class="QLabel" name="labelImageHeight">
              <property name="text">
-              <string>图像高</string>
+              <string>导出图像高</string>
              </property>
             </widget>
            </item>
