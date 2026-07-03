@@ -18,13 +18,13 @@ class StarMapRenderer:
         reference_stars: tuple[ReferenceStar, ...] = (),
     ) -> QImage:
         image = QImage(star_map.width, star_map.height, QImage.Format_ARGB32_Premultiplied)
-        image.fill(QColor(0, 0, 0))
+        image.fill(QColor(88, 88, 88))
 
         painter = QPainter(image)
         painter.setRenderHint(QPainter.Antialiasing, True)
 
+        self._draw_sky_background(painter, star_map)
         self._draw_milky_way(painter, star_map)
-        self._draw_grid(painter, star_map)
         painter.setPen(Qt.NoPen)
 
         order = star_map.radius_px.argsort()
@@ -37,12 +37,34 @@ class StarMapRenderer:
             center = QPointF(float(star_map.x_px[index]), float(star_map.y_px[index]))
             painter.drawEllipse(QRectF(center.x() - radius, center.y() - radius, radius * 2.0, radius * 2.0))
 
+        self._draw_horizon_shadow(painter, star_map)
+        self._draw_grid(painter, star_map)
         if not reference_stars:
             self._draw_star_names(painter, star_map, common_name_mag_limit)
         self._draw_reference_stars(painter, star_map, reference_stars)
         self._draw_direction_labels(painter, star_map)
         painter.end()
         return image
+
+    def _draw_sky_background(self, painter: QPainter, star_map: ProjectedStarMap) -> None:
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(0, 0, 0))
+        if star_map.sky_circle_radius_px is None:
+            painter.drawRect(QRectF(0.0, 0.0, float(star_map.width), float(star_map.height)))
+            return
+
+        radius = float(star_map.sky_circle_radius_px)
+        center = QPointF(star_map.width * 0.5, star_map.height * 0.5)
+        painter.drawEllipse(QRectF(center.x() - radius, center.y() - radius, radius * 2.0, radius * 2.0))
+
+    def _draw_horizon_shadow(self, painter: QPainter, star_map: ProjectedStarMap) -> None:
+        if not star_map.horizon_shadow_rects:
+            return
+
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(30, 30, 30, 150))
+        for rect in star_map.horizon_shadow_rects:
+            painter.drawRect(QRectF(rect.x_px, rect.y_px, rect.width_px, rect.height_px))
 
     def _draw_milky_way(self, painter: QPainter, star_map: ProjectedStarMap) -> None:
         if not star_map.milky_way_polygons:

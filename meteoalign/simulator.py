@@ -39,13 +39,9 @@ iers.conf.iers_degraded_accuracy = "warn"
 RECTILINEAR_LENS_MODEL = "rectilinear"
 FISHEYE_EQUIDISTANT = "fisheye_equidistant"
 FISHEYE_EQUISOLID = "fisheye_equisolid"
-FISHEYE_STEREOGRAPHIC = "fisheye_stereographic"
-FISHEYE_ORTHOGRAPHIC = "fisheye_orthographic"
 FISHEYE_LENS_MODELS = {
     FISHEYE_EQUIDISTANT,
     FISHEYE_EQUISOLID,
-    FISHEYE_STEREOGRAPHIC,
-    FISHEYE_ORTHOGRAPHIC,
 }
 SUPPORTED_LENS_MODELS = {RECTILINEAR_LENS_MODEL, *FISHEYE_LENS_MODELS}
 Point2D = tuple[float, float]
@@ -137,6 +133,14 @@ class ProjectedMilkyWayPolygon:
 
 
 @dataclass(frozen=True)
+class ProjectedFillRect:
+    x_px: float
+    y_px: float
+    width_px: float
+    height_px: float
+
+
+@dataclass(frozen=True)
 class ProjectedStarMap:
     width: int
     height: int
@@ -161,6 +165,9 @@ class ProjectedStarMap:
     grid_lines: tuple[ProjectedGridLine, ...]
     direction_labels: tuple[ProjectedLabel, ...]
     catalog_count: int
+    lens_model: str = RECTILINEAR_LENS_MODEL
+    sky_circle_radius_px: float | None = None
+    horizon_shadow_rects: tuple[ProjectedFillRect, ...] = ()
     milky_way_polygons: tuple[ProjectedMilkyWayPolygon, ...] = ()
 
     def __len__(self) -> int:
@@ -458,20 +465,14 @@ def _fisheye_radius_ratio(theta: np.ndarray, theta_max: float, lens_model: str) 
         if abs(float(denominator)) <= 1e-12:
             raise ValueError("Fisheye FOV is too small")
         return np.sin(theta / 2.0) / denominator
-    if lens_model == FISHEYE_STEREOGRAPHIC:
-        if theta_max >= np.pi / 2.0 - 1e-8:
-            raise ValueError("Stereographic fisheye FOV must be below 180 degrees")
-        denominator = np.tan(theta_max / 2.0)
-        if not np.isfinite(denominator) or abs(float(denominator)) <= 1e-12:
-            raise ValueError("Stereographic fisheye FOV is invalid")
-        return np.tan(theta / 2.0) / denominator
-    if lens_model == FISHEYE_ORTHOGRAPHIC:
-        if theta_max > np.pi / 2.0 + 1e-8:
-            raise ValueError("Orthographic fisheye FOV cannot exceed 180 degrees")
-        denominator = np.sin(theta_max)
-        if abs(float(denominator)) <= 1e-12:
-            raise ValueError("Fisheye FOV is too small")
-        return np.sin(theta) / denominator
+    raise ValueError(f"Unsupported fisheye lens model: {lens_model}")
+
+
+def _fisheye_theta_from_radius_ratio(rho: np.ndarray, theta_max: float, lens_model: str) -> np.ndarray:
+    if lens_model == FISHEYE_EQUIDISTANT:
+        return rho * theta_max
+    if lens_model == FISHEYE_EQUISOLID:
+        return 2.0 * np.arcsin(np.clip(rho * np.sin(theta_max / 2.0), -1.0, 1.0))
     raise ValueError(f"Unsupported fisheye lens model: {lens_model}")
 
 
@@ -509,6 +510,86 @@ def _project_altaz_points_fisheye(
         & (y_px <= camera.image_height_px + margin)
     )
     return x_px.astype(np.float64), y_px.astype(np.float64), valid
+
+
+def _alt_from_image_points(
+    x_px: np.ndarray,
+    y_px: np.ndarray,
+    camera: CameraSettings,
+    basis: tuple[np.ndarray, np.ndarray, np.ndarray],
+) -> tuple[np.ndarray, np.ndarray]:
+    right, up, forward = basis
+    if camera.lens_model == RECTILINEAR_LENS_MODEL:
+        x_mm = (x_px - camera.image_width_px * 0.5) * camera.sensor_width_mm / camera.image_width_px
+        y_mm = (camera.image_height_px * 0.5 - y_px) * camera.sensor_height_mm / camera.image_height_px
+        cam_x = x_mm / camera.focal_length_mm
+        cam_y = y_mm / camera.focal_length_mm
+        cam_z = np.ones_like(cam_x, dtype=np.float64)
+        valid = np.isfinite(cam_x) & np.isfinite(cam_y)
+    elif camera.lens_model in FISHEYE_LENS_MODELS:
+        center_x = camera.image_width_px * 0.5
+        center_y = camera.image_height_px * 0.5
+        screen_x = x_px - center_x
+        screen_y = center_y - y_px
+        r_px = np.hypot(screen_x, screen_y)
+        r_limit = min(camera.image_width_px, camera.image_height_px) * 0.5 - 0.5
+        rho = np.divide(r_px, r_limit, out=np.full_like(r_px, np.inf), where=r_limit > 1e-12)
+        theta_max = np.deg2rad(camera.fisheye_fov_deg * 0.5)
+        theta = _fisheye_theta_from_radius_ratio(np.clip(rho, 0.0, 1.0), theta_max, camera.lens_model)
+        plane_norm = np.sin(theta)
+        unit_x = np.divide(screen_x, r_px, out=np.zeros_like(screen_x), where=r_px > 1e-12)
+        unit_y = np.divide(screen_y, r_px, out=np.zeros_like(screen_y), where=r_px > 1e-12)
+        cam_x = unit_x * plane_norm
+        cam_y = unit_y * plane_norm
+        cam_z = np.cos(theta)
+        valid = (rho <= 1.0 + 1e-9) & np.isfinite(cam_x) & np.isfinite(cam_y) & np.isfinite(cam_z)
+    else:
+        raise ValueError(f"Unsupported lens model: {camera.lens_model}")
+
+    local_x = cam_x * right[0] + cam_y * up[0] + cam_z * forward[0]
+    local_y = cam_x * right[1] + cam_y * up[1] + cam_z * forward[1]
+    local_z = cam_x * right[2] + cam_y * up[2] + cam_z * forward[2]
+    norm = np.sqrt(local_x * local_x + local_y * local_y + local_z * local_z)
+    alt_deg = np.rad2deg(np.arcsin(np.divide(local_z, norm, out=np.zeros_like(local_z), where=norm > 1e-12)))
+    valid &= norm > 1e-12
+    return alt_deg.astype(np.float64), valid
+
+
+def _build_horizon_shadow_rects(
+    camera: CameraSettings,
+    basis: tuple[np.ndarray, np.ndarray, np.ndarray],
+) -> tuple[ProjectedFillRect, ...]:
+    # 用屏幕网格反算高度角，生成地平线下的深灰遮罩。
+    target_cell_px = 20.0
+    columns = min(max(int(np.ceil(camera.image_width_px / target_cell_px)), 24), 180)
+    rows = min(max(int(np.ceil(camera.image_height_px / target_cell_px)), 16), 140)
+    x_edges = np.linspace(0.0, float(camera.image_width_px), columns + 1, dtype=np.float64)
+    y_edges = np.linspace(0.0, float(camera.image_height_px), rows + 1, dtype=np.float64)
+    x_centers = (x_edges[:-1] + x_edges[1:]) * 0.5
+    y_centers = (y_edges[:-1] + y_edges[1:]) * 0.5
+    grid_x, grid_y = np.meshgrid(x_centers, y_centers)
+    alt_deg, valid = _alt_from_image_points(grid_x.ravel(), grid_y.ravel(), camera=camera, basis=basis)
+    below = (valid & (alt_deg < 0.0)).reshape((rows, columns))
+
+    rects: list[ProjectedFillRect] = []
+    for row in range(rows):
+        column = 0
+        while column < columns:
+            if not below[row, column]:
+                column += 1
+                continue
+            start_column = column
+            while column < columns and below[row, column]:
+                column += 1
+            rects.append(
+                ProjectedFillRect(
+                    x_px=float(x_edges[start_column]),
+                    y_px=float(y_edges[row]),
+                    width_px=float(x_edges[column] - x_edges[start_column]),
+                    height_px=float(y_edges[row + 1] - y_edges[row]),
+                )
+            )
+    return tuple(rects)
 
 
 def _split_projected_line(
@@ -772,6 +853,10 @@ def project_horizontal_catalog(
     alpha = np.where(above_horizon, 255, 128).astype(np.uint8)
     milky_way_polygons = _project_milky_way_polygons(horizontal_milky_way, camera=camera, basis=basis)
     grid_lines, direction_labels = _build_horizontal_grid(camera=camera, basis=basis)
+    horizon_shadow_rects = _build_horizon_shadow_rects(camera=camera, basis=basis)
+    sky_circle_radius_px = None
+    if camera.lens_model in FISHEYE_LENS_MODELS:
+        sky_circle_radius_px = min(camera.image_width_px, camera.image_height_px) * 0.5 - 0.5
 
     return ProjectedStarMap(
         width=camera.image_width_px,
@@ -797,6 +882,9 @@ def project_horizontal_catalog(
         grid_lines=grid_lines,
         direction_labels=direction_labels,
         catalog_count=len(horizontal_catalog),
+        lens_model=camera.lens_model,
+        sky_circle_radius_px=sky_circle_radius_px,
+        horizon_shadow_rects=horizon_shadow_rects,
         milky_way_polygons=milky_way_polygons,
     )
 

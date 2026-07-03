@@ -18,8 +18,6 @@ from .simulator import (
     CameraSettings,
     FISHEYE_EQUIDISTANT,
     FISHEYE_EQUISOLID,
-    FISHEYE_ORTHOGRAPHIC,
-    FISHEYE_STEREOGRAPHIC,
     HorizontalMilkyWayCatalog,
     HorizontalStarCatalog,
     ObserverSettings,
@@ -40,8 +38,6 @@ LENS_MODELS = (
     RECTILINEAR_LENS_MODEL,
     FISHEYE_EQUIDISTANT,
     FISHEYE_EQUISOLID,
-    FISHEYE_STEREOGRAPHIC,
-    FISHEYE_ORTHOGRAPHIC,
 )
 
 
@@ -72,6 +68,7 @@ class MainWindow(QMainWindow):
         self._milky_way_cache_key: tuple[object, ...] | None = None
         self._milky_way_cache: HorizontalMilkyWayCatalog | None = None
         self._last_render_size: tuple[int, int] | None = None
+        self._syncing_camera_dimensions = False
 
         self._init_defaults()
         self._connect_inputs()
@@ -119,10 +116,6 @@ class MainWindow(QMainWindow):
             self.ui.doubleSpinBoxLatitude,
             self.ui.doubleSpinBoxLongitude,
             self.ui.doubleSpinBoxElevation,
-            self.ui.doubleSpinBoxSensorWidth,
-            self.ui.doubleSpinBoxSensorHeight,
-            self.ui.spinBoxImageWidth,
-            self.ui.spinBoxImageHeight,
             self.ui.doubleSpinBoxFocalLength,
             self.ui.doubleSpinBoxFisheyeFov,
             self.ui.doubleSpinBoxMagLimit,
@@ -136,8 +129,13 @@ class MainWindow(QMainWindow):
                 widget.valueChanged.connect(self.schedule_render)
             elif hasattr(widget, "dateTimeChanged"):
                 widget.dateTimeChanged.connect(self.schedule_render)
+        self.ui.doubleSpinBoxSensorWidth.valueChanged.connect(self._handle_sensor_size_changed)
+        self.ui.doubleSpinBoxSensorHeight.valueChanged.connect(self._handle_sensor_size_changed)
+        self.ui.spinBoxImageWidth.valueChanged.connect(self._handle_image_width_changed)
+        self.ui.spinBoxImageHeight.valueChanged.connect(self._handle_image_height_changed)
         self.ui.comboBoxLensModel.currentIndexChanged.connect(self._handle_lens_model_changed)
         self.ui.horizontalSliderCommonNameLimit.valueChanged.connect(self._update_common_name_limit_label)
+        self.ui.pushButtonSwapOrientation.clicked.connect(self._swap_camera_orientation)
         self.ui.pushButtonRender.clicked.connect(lambda: self.render_now())
         self.ui.pushButtonExportReference.clicked.connect(self.export_reference_map)
 
@@ -150,6 +148,73 @@ class MainWindow(QMainWindow):
     def _update_common_name_limit_label(self, *unused) -> None:  # type: ignore[no-untyped-def]
         self.ui.labelCommonNameLimitValue.setText(f"{self._common_name_mag_limit():.1f} mag")
 
+    def _sensor_aspect_ratio(self) -> float:
+        sensor_height = max(self.ui.doubleSpinBoxSensorHeight.value(), 1e-6)
+        return max(self.ui.doubleSpinBoxSensorWidth.value() / sensor_height, 1e-6)
+
+    def _bounded_image_width(self, value: float) -> int:
+        return min(max(int(round(value)), self.ui.spinBoxImageWidth.minimum()), self.ui.spinBoxImageWidth.maximum())
+
+    def _bounded_image_height(self, value: float) -> int:
+        return min(max(int(round(value)), self.ui.spinBoxImageHeight.minimum()), self.ui.spinBoxImageHeight.maximum())
+
+    def _set_image_dimensions(self, width_px: int, height_px: int) -> None:
+        self._syncing_camera_dimensions = True
+        self.ui.spinBoxImageWidth.blockSignals(True)
+        self.ui.spinBoxImageHeight.blockSignals(True)
+        self.ui.spinBoxImageWidth.setValue(self._bounded_image_width(width_px))
+        self.ui.spinBoxImageHeight.setValue(self._bounded_image_height(height_px))
+        self.ui.spinBoxImageWidth.blockSignals(False)
+        self.ui.spinBoxImageHeight.blockSignals(False)
+        self._syncing_camera_dimensions = False
+
+    def _sync_image_size_to_sensor_long_side(self) -> None:
+        aspect_ratio = self._sensor_aspect_ratio()
+        long_side = max(self.ui.spinBoxImageWidth.value(), self.ui.spinBoxImageHeight.value())
+        if aspect_ratio >= 1.0:
+            width_px = self._bounded_image_width(long_side)
+            height_px = self._bounded_image_height(width_px / aspect_ratio)
+        else:
+            height_px = self._bounded_image_height(long_side)
+            width_px = self._bounded_image_width(height_px * aspect_ratio)
+        self._set_image_dimensions(width_px, height_px)
+
+    def _handle_sensor_size_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        if self._syncing_camera_dimensions:
+            return
+        self._sync_image_size_to_sensor_long_side()
+        self.schedule_render()
+
+    def _handle_image_width_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        if self._syncing_camera_dimensions:
+            return
+        width_px = self.ui.spinBoxImageWidth.value()
+        height_px = self._bounded_image_height(width_px / self._sensor_aspect_ratio())
+        self._set_image_dimensions(width_px, height_px)
+        self.schedule_render()
+
+    def _handle_image_height_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        if self._syncing_camera_dimensions:
+            return
+        height_px = self.ui.spinBoxImageHeight.value()
+        width_px = self._bounded_image_width(height_px * self._sensor_aspect_ratio())
+        self._set_image_dimensions(width_px, height_px)
+        self.schedule_render()
+
+    def _swap_camera_orientation(self) -> None:
+        sensor_width = self.ui.doubleSpinBoxSensorWidth.value()
+        sensor_height = self.ui.doubleSpinBoxSensorHeight.value()
+        self._syncing_camera_dimensions = True
+        self.ui.doubleSpinBoxSensorWidth.blockSignals(True)
+        self.ui.doubleSpinBoxSensorHeight.blockSignals(True)
+        self.ui.doubleSpinBoxSensorWidth.setValue(sensor_height)
+        self.ui.doubleSpinBoxSensorHeight.setValue(sensor_width)
+        self.ui.doubleSpinBoxSensorWidth.blockSignals(False)
+        self.ui.doubleSpinBoxSensorHeight.blockSignals(False)
+        self._syncing_camera_dimensions = False
+        self._sync_image_size_to_sensor_long_side()
+        self.schedule_render()
+
     def _lens_model(self) -> str:
         index = self.ui.comboBoxLensModel.currentIndex()
         if index < 0 or index >= len(LENS_MODELS):
@@ -159,12 +224,7 @@ class MainWindow(QMainWindow):
     def _update_lens_model_controls(self) -> None:
         lens_model = self._lens_model()
         is_fisheye = lens_model != RECTILINEAR_LENS_MODEL
-        if lens_model == FISHEYE_STEREOGRAPHIC:
-            max_fov = 179.0
-        elif lens_model == FISHEYE_ORTHOGRAPHIC:
-            max_fov = 180.0
-        else:
-            max_fov = 300.0
+        max_fov = 300.0
         self.ui.doubleSpinBoxFisheyeFov.setMaximum(max_fov)
         if self.ui.doubleSpinBoxFisheyeFov.value() > max_fov:
             self.ui.doubleSpinBoxFisheyeFov.setValue(max_fov)
