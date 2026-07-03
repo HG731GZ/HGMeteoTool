@@ -11,6 +11,7 @@ SUPPORTED_IMAGE_SUFFIXES = {".tif", ".tiff", ".jpg", ".jpeg", ".png"}
 IMAGE_FILE_FILTER = "图像文件 (*.tif *.tiff *.jpg *.jpeg *.png);;TIFF (*.tif *.tiff);;JPEG (*.jpg *.jpeg);;PNG (*.png)"
 DEFAULT_PREVIEW_LONG_SIDE_PX = 2400
 PREVIEW_ALLOCATION_LIMIT_MB = 512
+FULL_IMAGE_ALLOCATION_LIMIT_MB = 4096
 
 
 @dataclass(frozen=True)
@@ -19,20 +20,17 @@ class ImagePreview:
     image: QImage
     original_width: int
     original_height: int
-    preview_width: int
-    preview_height: int
-    preview_scale: float
 
 
-def _scaled_preview_size(width: int, height: int, max_long_side_px: int) -> tuple[int, int, float]:
+def _scaled_preview_size(width: int, height: int, max_long_side_px: int) -> tuple[int, int]:
     if width <= 0 or height <= 0:
         raise ValueError("图像尺寸无效，无法生成预览。")
 
     long_side = max(width, height)
     scale = min(1.0, max_long_side_px / float(long_side))
-    preview_width = max(1, int(round(width * scale)))
-    preview_height = max(1, int(round(height * scale)))
-    return preview_width, preview_height, scale
+    scaled_width = max(1, int(round(width * scale)))
+    scaled_height = max(1, int(round(height * scale)))
+    return scaled_width, scaled_height
 
 
 def _reader_error(reader: QImageReader) -> str:
@@ -42,7 +40,7 @@ def _reader_error(reader: QImageReader) -> str:
     return "未知图像读取错误"
 
 
-def load_image_preview(path: str | Path, max_long_side_px: int = DEFAULT_PREVIEW_LONG_SIDE_PX) -> ImagePreview:
+def load_image_preview(path: str | Path, max_long_side_px: int | None = DEFAULT_PREVIEW_LONG_SIDE_PX) -> ImagePreview:
     image_path = Path(path)
     if image_path.suffix.lower() not in SUPPORTED_IMAGE_SUFFIXES:
         raise ValueError("当前只支持 TIFF、JPG 与 PNG 图像。")
@@ -50,8 +48,9 @@ def load_image_preview(path: str | Path, max_long_side_px: int = DEFAULT_PREVIEW
         raise FileNotFoundError(f"图像不存在：{image_path}")
 
     if hasattr(QImageReader, "setAllocationLimit"):
-        # 给 Qt 解码器设置内存护栏，避免缩略读取失败时尝试分配整张超大图。
-        QImageReader.setAllocationLimit(PREVIEW_ALLOCATION_LIMIT_MB)
+        # 整图读取需要允许 TIFF 解码器分配临时高位深图像，随后会立即转成 8-bit。
+        allocation_limit_mb = FULL_IMAGE_ALLOCATION_LIMIT_MB if max_long_side_px is None else PREVIEW_ALLOCATION_LIMIT_MB
+        QImageReader.setAllocationLimit(allocation_limit_mb)
 
     reader = QImageReader(str(image_path))
     reader.setAutoTransform(True)
@@ -62,33 +61,33 @@ def load_image_preview(path: str | Path, max_long_side_px: int = DEFAULT_PREVIEW
     if not original_size.isValid():
         raise ValueError(f"无法读取图像尺寸：{_reader_error(reader)}")
 
-    preview_width, preview_height, scale = _scaled_preview_size(
-        original_size.width(),
-        original_size.height(),
-        max_long_side_px,
-    )
-    reader.setScaledSize(QSize(preview_width, preview_height))
-    image = reader.read()
-    if image.isNull():
-        raise ValueError(f"无法生成图像预览：{_reader_error(reader)}")
-
-    if max(image.width(), image.height()) > max_long_side_px:
-        # 少数解码器可能忽略 setScaledSize；这里再压一次，保证界面只持有预览图。
-        fallback_width, fallback_height, scale = _scaled_preview_size(
-            image.width(),
-            image.height(),
+    if max_long_side_px is not None:
+        scaled_width, scaled_height = _scaled_preview_size(
+            original_size.width(),
+            original_size.height(),
             max_long_side_px,
         )
-        image = image.scaled(QSize(fallback_width, fallback_height), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        preview_width = image.width()
-        preview_height = image.height()
+        reader.setScaledSize(QSize(scaled_width, scaled_height))
+
+    image = reader.read()
+    if image.isNull():
+        raise ValueError(f"无法生成显示图像：{_reader_error(reader)}")
+
+    image_8bit = image.convertToFormat(QImage.Format_RGB888)
+    del image
+
+    if max_long_side_px is not None and max(image_8bit.width(), image_8bit.height()) > max_long_side_px:
+        # 少数解码器可能忽略 setScaledSize；这里再压一次，保证界面只持有缩放图。
+        scaled_width, scaled_height = _scaled_preview_size(
+            image_8bit.width(),
+            image_8bit.height(),
+            max_long_side_px,
+        )
+        image_8bit = image_8bit.scaled(QSize(scaled_width, scaled_height), Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
     return ImagePreview(
         path=image_path,
-        image=image,
+        image=image_8bit,
         original_width=original_size.width(),
         original_height=original_size.height(),
-        preview_width=preview_width,
-        preview_height=preview_height,
-        preview_scale=scale,
     )

@@ -4,11 +4,12 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from PyQt5.QtCore import QDateTime, QEvent, QObject, QPoint, QThread, QTimer, Qt, pyqtSignal
-from PyQt5.QtGui import QFont, QPixmap
+from PyQt5.QtCore import QDateTime, QEvent, QObject, QPoint, QRectF, QThread, QTimer, Qt, pyqtSignal
+from PyQt5.QtGui import QFont, QImage, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
     QFileDialog,
+    QGraphicsItem,
     QGraphicsPixmapItem,
     QGraphicsScene,
     QGraphicsView,
@@ -50,16 +51,42 @@ LENS_MODELS = (
     FISHEYE_EQUISOLID,
 )
 PREVIEW_LONG_SIDE_PX = 1920
-IMPORTED_IMAGE_PREVIEW_LONG_SIDE_PX = 2400
+REAL_IMAGE_MAX_ZOOM_SCALE = 2.0
 IMAGE_VIEW_ZOOM_IN_FACTOR = 1.25
 IMAGE_VIEW_ZOOM_OUT_FACTOR = 0.8
+
+
+class GraphicsImageItem(QGraphicsItem):
+    def __init__(self) -> None:
+        super().__init__()
+        self.image = QImage()
+
+    def set_image(self, image: QImage) -> None:
+        self.prepareGeometryChange()
+        self.image = image
+
+    def isNull(self) -> bool:
+        return self.image.isNull()
+
+    def pixmap(self) -> QPixmap:
+        return QPixmap.fromImage(self.image)
+
+    def boundingRect(self) -> QRectF:
+        if self.image.isNull():
+            return QRectF()
+        return QRectF(0.0, 0.0, float(self.image.width()), float(self.image.height()))
+
+    def paint(self, painter, option, widget=None) -> None:  # type: ignore[no-untyped-def]
+        if self.image.isNull():
+            return
+        painter.drawImage(0, 0, self.image)
 
 
 class ImagePreviewLoadWorker(QObject):
     finished = pyqtSignal(object)
     failed = pyqtSignal(str)
 
-    def __init__(self, file_path: str | Path, max_long_side_px: int) -> None:
+    def __init__(self, file_path: str | Path, max_long_side_px: int | None) -> None:
         super().__init__()
         self.file_path = Path(file_path)
         self.max_long_side_px = max_long_side_px
@@ -96,8 +123,9 @@ class MainWindow(QMainWindow):
         self.ui.referenceImageView.viewport().installEventFilter(self)
 
         self.real_image_scene = QGraphicsScene(self)
-        self.real_image_pixmap_item = QGraphicsPixmapItem()
-        self.real_image_scene.addItem(self.real_image_pixmap_item)
+        self.real_image_item = GraphicsImageItem()
+        self.real_image_pixmap_item = self.real_image_item
+        self.real_image_scene.addItem(self.real_image_item)
         self.ui.realImageView.setScene(self.real_image_scene)
         self.ui.realImageView.viewport().installEventFilter(self)
 
@@ -116,6 +144,7 @@ class MainWindow(QMainWindow):
         self._image_import_thread: QThread | None = None
         self._image_import_worker: ImagePreviewLoadWorker | None = None
         self._image_import_progress: QProgressDialog | None = None
+        self._real_image_zoom_max_scale = REAL_IMAGE_MAX_ZOOM_SCALE
         self._syncing_camera_dimensions = False
 
         self._init_defaults()
@@ -197,14 +226,10 @@ class MainWindow(QMainWindow):
     def _reset_imported_image_labels(self) -> None:
         self.ui.labelImportedImagePath.setText("未导入")
         self.ui.labelImportedImageSize.setText("-")
-        self.ui.labelImportedPreviewSize.setText("-")
-        self.ui.labelImportedPreviewScale.setText("-")
 
     def _update_imported_image_labels(self, preview: ImagePreview) -> None:
         self.ui.labelImportedImagePath.setText(str(preview.path))
         self.ui.labelImportedImageSize.setText(f"{preview.original_width} x {preview.original_height} px")
-        self.ui.labelImportedPreviewSize.setText(f"{preview.preview_width} x {preview.preview_height} px")
-        self.ui.labelImportedPreviewScale.setText(f"{preview.preview_scale * 100.0:.2f}%")
 
     def import_single_image(self) -> None:
         if self._image_import_thread is not None:
@@ -230,11 +255,11 @@ class MainWindow(QMainWindow):
 
         image_path = Path(file_path)
         self._set_image_import_controls_enabled(False)
-        self.ui.statusbar.showMessage(f"正在导入图像并生成预览: {image_path}")
+        self.ui.statusbar.showMessage(f"正在读取整张图像并量化为 8-bit: {image_path}")
 
         progress = QProgressDialog(self)
         progress.setWindowTitle("正在导入图像")
-        progress.setLabelText(f"正在读取图像并生成预览...\n{image_path}")
+        progress.setLabelText(f"正在读取整张图像并量化为 8-bit 显示图...\n{image_path}")
         progress.setRange(0, 0)
         progress.setCancelButton(None)
         progress.setWindowModality(Qt.WindowModal)
@@ -244,7 +269,7 @@ class MainWindow(QMainWindow):
         progress.show()
 
         thread = QThread(self)
-        worker = ImagePreviewLoadWorker(image_path, IMPORTED_IMAGE_PREVIEW_LONG_SIDE_PX)
+        worker = ImagePreviewLoadWorker(image_path, None)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.finished.connect(self._handle_single_image_import_finished)
@@ -262,7 +287,7 @@ class MainWindow(QMainWindow):
 
     def load_single_image(self, file_path: str | Path) -> None:
         try:
-            preview = load_image_preview(file_path, max_long_side_px=IMPORTED_IMAGE_PREVIEW_LONG_SIDE_PX)
+            preview = load_image_preview(file_path, max_long_side_px=None)
             self._apply_loaded_image_preview(preview)
         except Exception as exc:  # noqa: BLE001 - 文件导入错误需要以对话框形式提示用户。
             self.ui.statusbar.showMessage(f"导入图像失败: {exc}")
@@ -280,12 +305,10 @@ class MainWindow(QMainWindow):
         self._display_real_image_preview(preview)
         self.ui.tabWidgetMain.setCurrentWidget(self.ui.tabReferenceImage)
         self.ui.statusbar.showMessage(
-            "已导入图像: {path}  原始: {width} x {height} px  预览: {preview_width} x {preview_height} px".format(
+            "已导入图像: {path}  原始: {width} x {height} px".format(
                 path=preview.path,
                 width=preview.original_width,
                 height=preview.original_height,
-                preview_width=preview.preview_width,
-                preview_height=preview.preview_height,
             )
         )
 
@@ -530,9 +553,9 @@ class MainWindow(QMainWindow):
             self.fit_reference_map()
 
     def _display_real_image_preview(self, preview: ImagePreview) -> None:
-        self.real_image_pixmap_item.setPos(0, 0)
-        self.real_image_pixmap_item.setPixmap(QPixmap.fromImage(preview.image))
-        self.real_image_scene.setSceneRect(0, 0, preview.preview_width, preview.preview_height)
+        self.real_image_item.setPos(0, 0)
+        self.real_image_item.set_image(preview.image)
+        self.real_image_scene.setSceneRect(0, 0, preview.image.width(), preview.image.height())
         self.fit_real_image()
 
     def render_now(self) -> None:
@@ -620,8 +643,9 @@ class MainWindow(QMainWindow):
             self.ui.referenceImageView.fitInView(self.reference_scene.sceneRect(), Qt.KeepAspectRatio)
 
     def fit_real_image(self) -> None:
-        if not self.real_image_pixmap_item.pixmap().isNull():
+        if not self.real_image_item.isNull():
             self.ui.realImageView.fitInView(self.real_image_scene.sceneRect(), Qt.KeepAspectRatio)
+            self._cap_graphics_view_to_max_scale(self.ui.realImageView)
 
     def fit_all_graphics_views(self) -> None:
         self.fit_star_map()
@@ -674,7 +698,64 @@ class MainWindow(QMainWindow):
         if wheel_delta == 0:
             return
         factor = IMAGE_VIEW_ZOOM_IN_FACTOR if wheel_delta > 0 else IMAGE_VIEW_ZOOM_OUT_FACTOR
+        if wheel_delta < 0:
+            min_scale = self._graphics_view_fit_scale(view)
+            current_scale = self._graphics_view_current_scale(view)
+            if current_scale * factor <= min_scale:
+                self._fit_graphics_view_to_scene(view)
+                return
+        if wheel_delta > 0:
+            max_scale = self._graphics_view_max_scale(view)
+            current_scale = self._graphics_view_current_scale(view)
+            if max_scale is not None and current_scale * factor >= max_scale:
+                self._set_graphics_view_scale(view, max_scale)
+                return
         view.scale(factor, factor)
+
+    def _graphics_view_current_scale(self, view: QGraphicsView) -> float:
+        transform = view.transform()
+        return min(abs(transform.m11()), abs(transform.m22()))
+
+    def _graphics_view_fit_scale(self, view: QGraphicsView) -> float:
+        scene = view.scene()
+        if scene is None:
+            return 1.0
+        scene_rect = scene.sceneRect()
+        if scene_rect.width() <= 0.0 or scene_rect.height() <= 0.0:
+            return 1.0
+        viewport_size = view.viewport().size()
+        width_scale = viewport_size.width() / scene_rect.width()
+        height_scale = viewport_size.height() / scene_rect.height()
+        fit_scale = max(min(width_scale, height_scale), 1e-6)
+        max_scale = self._graphics_view_max_scale(view)
+        if max_scale is not None:
+            return min(fit_scale, max_scale)
+        return fit_scale
+
+    def _fit_graphics_view_to_scene(self, view: QGraphicsView) -> None:
+        scene = view.scene()
+        if scene is None or scene.sceneRect().isEmpty():
+            return
+        view.fitInView(scene.sceneRect(), Qt.KeepAspectRatio)
+        self._cap_graphics_view_to_max_scale(view)
+
+    def _graphics_view_max_scale(self, view: QGraphicsView) -> float | None:
+        if view is self.ui.realImageView:
+            return self._real_image_zoom_max_scale
+        return None
+
+    def _cap_graphics_view_to_max_scale(self, view: QGraphicsView) -> None:
+        max_scale = self._graphics_view_max_scale(view)
+        if max_scale is None:
+            return
+        if self._graphics_view_current_scale(view) > max_scale:
+            self._set_graphics_view_scale(view, max_scale)
+
+    def _set_graphics_view_scale(self, view: QGraphicsView, target_scale: float) -> None:
+        center = view.mapToScene(view.viewport().rect().center())
+        view.resetTransform()
+        view.scale(target_scale, target_scale)
+        view.centerOn(center)
 
     def _apply_drag_delta(self, dx: int, dy: int) -> None:
         camera = self._preview_camera_settings()
