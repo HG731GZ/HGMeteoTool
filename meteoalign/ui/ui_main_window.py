@@ -265,7 +265,7 @@ class Ui_MainWindow(object):
         self.verticalLayoutReferencePickSidePanel = QtWidgets.QVBoxLayout(self.widgetReferencePickSidePanel)
         self.verticalLayoutReferencePickSidePanel.setObjectName("verticalLayoutReferencePickSidePanel")
         self.groupBoxImportedImage = QtWidgets.QGroupBox(self.widgetReferencePickSidePanel)
-        self.groupBoxImportedImage.setMaximumSize(QtCore.QSize(16777215, 150))
+        self.groupBoxImportedImage.setMaximumSize(QtCore.QSize(16777215, 190))
         self.groupBoxImportedImage.setObjectName("groupBoxImportedImage")
         self.verticalLayoutImportedImage = QtWidgets.QVBoxLayout(self.groupBoxImportedImage)
         self.verticalLayoutImportedImage.setObjectName("verticalLayoutImportedImage")

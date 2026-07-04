@@ -623,7 +623,7 @@
              <property name="maximumSize">
               <size>
                <width>16777215</width>
-               <height>150</height>
+               <height>190</height>
               </size>
              </property>
              <layout class="QVBoxLayout" name="verticalLayoutImportedImage">

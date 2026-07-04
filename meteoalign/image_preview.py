@@ -41,11 +41,12 @@ def _reader_error(reader: QImageReader) -> str:
 
 
 def load_image_preview(path: str | Path, max_long_side_px: int | None = DEFAULT_PREVIEW_LONG_SIDE_PX) -> ImagePreview:
-    image_path = Path(path)
+    image_path = Path(path).expanduser()
     if image_path.suffix.lower() not in SUPPORTED_IMAGE_SUFFIXES:
         raise ValueError("当前只支持 TIFF、JPG 与 PNG 图像。")
     if not image_path.exists():
         raise FileNotFoundError(f"图像不存在：{image_path}")
+    image_path = image_path.resolve()
 
     if hasattr(QImageReader, "setAllocationLimit"):
         # 整图读取需要允许 TIFF 解码器分配临时高位深图像，随后会立即转成 8-bit。

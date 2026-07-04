@@ -491,6 +491,7 @@ class MainWindow(QMainWindow):
         self._reference_alignment_error_message = ""
         self._sky_alignment_error_message = ""
         self._syncing_reference_real_views = False
+        self._suspend_alignment_updates = False
         self._manual_reference_star_ids: list[str] = []
         self._star_pick_native_zoom_remainder = 0.0
         self._dynamic_fit_labels: tuple[QLabel, ...] = ()
@@ -551,7 +552,10 @@ class MainWindow(QMainWindow):
         full_text = text.strip()
         label.setProperty(TEXT_FIT_FULL_TEXT_PROPERTY, full_text)
         label.setToolTip((tooltip or full_text).strip())
+        if label.text() != full_text:
+            label.setText(full_text)
         self._fit_label_text(label)
+        QTimer.singleShot(0, lambda label=label: self._fit_label_text(label))
 
     def _refit_dynamic_labels(self) -> None:
         for label in self._dynamic_fit_labels:
@@ -562,6 +566,10 @@ class MainWindow(QMainWindow):
         available_rect = label.contentsRect()
         available_width = max(available_rect.width() - 2, 1)
         available_height = max(available_rect.height() - 2, 1)
+        if available_width <= 4 or available_height <= 4:
+            if label.text() != full_text:
+                label.setText(full_text)
+            return
         base_point_size = float(label.property(TEXT_FIT_BASE_POINT_SIZE_PROPERTY) or label.font().pointSizeF())
         min_point_size = float(label.property(TEXT_FIT_MIN_POINT_SIZE_PROPERTY) or 7.0)
         max_lines = max(1, int(label.property(TEXT_FIT_MAX_LINES_PROPERTY) or 1))
@@ -693,7 +701,8 @@ class MainWindow(QMainWindow):
         self.ui.labelImportedImageSize.setText("-")
 
     def _update_imported_image_labels(self, preview: ImagePreview) -> None:
-        self._set_fitted_label_text(self.ui.labelImportedImagePath, str(preview.path), str(preview.path))
+        image_path = str(Path(preview.path).expanduser().resolve())
+        self._set_fitted_label_text(self.ui.labelImportedImagePath, image_path, image_path)
         self.ui.labelImportedImageSize.setText(f"{preview.original_width} x {preview.original_height} px")
 
     def _reference_star_lookup(self) -> dict[str, ReferenceStar]:
@@ -730,6 +739,8 @@ class MainWindow(QMainWindow):
             return None
 
         predicted_x, predicted_y = transform.transform_radec(reference_star.ra_deg, reference_star.dec_deg)
+        if not all(math.isfinite(value) for value in (predicted_x, predicted_y)):
+            return None
         dx = predicted_x - target_position[0]
         dy = predicted_y - target_position[1]
         distance = float(np.hypot(dx, dy))
@@ -787,6 +798,8 @@ class MainWindow(QMainWindow):
         self._sky_alignment_transform = None
         self._reference_alignment_error_message = ""
         self._sky_alignment_error_message = ""
+        if self._suspend_alignment_updates:
+            return
         if self.current_image_preview is None:
             self._reference_alignment_error_message = "导入真实图像后可计算实时星空叠加。"
             self._sky_alignment_error_message = "导入真实图像后可计算天球残差。"
@@ -1254,7 +1267,7 @@ class MainWindow(QMainWindow):
         if added_any:
             self._refresh_reference_stars_from_current_map()
 
-    def _restore_star_pair_records(self, pair_payloads: list[object]) -> int:
+    def _restore_star_pair_records(self, pair_payloads: list[object], update_alignment: bool = True) -> int:
         recorded_positions: dict[str, tuple[float, float]] = {}
         for pair_payload in pair_payloads:
             star_id = self._session_pair_star_id(pair_payload)
@@ -1284,7 +1297,8 @@ class MainWindow(QMainWindow):
 
         self._restore_star_pair_annotations_from_table()
         self._refresh_star_pair_table_styles()
-        self._update_reference_alignment_transform()
+        if update_alignment:
+            self._update_reference_alignment_transform()
         QTimer.singleShot(0, table.scrollToBottom)
         return restored_count
 
@@ -1336,12 +1350,18 @@ class MainWindow(QMainWindow):
 
         image_path = self._session_real_image_path(payload, source_path)
         self._active_star_pair_row = None
-        self._apply_reference_payload(reference_payload, source_path)
-        self._ensure_pair_record_stars_visible(pair_payloads)
-        if preview is None:
-            preview = load_image_preview(image_path, max_long_side_px=None)
-        self._apply_loaded_image_preview(preview)
-        restored_count = self._restore_star_pair_records(pair_payloads)
+        previous_suspend_alignment = self._suspend_alignment_updates
+        self._suspend_alignment_updates = True
+        try:
+            self._apply_reference_payload(reference_payload, source_path)
+            self._ensure_pair_record_stars_visible(pair_payloads)
+            if preview is None:
+                preview = load_image_preview(image_path, max_long_side_px=None)
+            self._apply_loaded_image_preview(preview, clear_existing_pairs=False)
+            restored_count = self._restore_star_pair_records(pair_payloads, update_alignment=False)
+        finally:
+            self._suspend_alignment_updates = previous_suspend_alignment
+        self._update_reference_alignment_transform()
         self.ui.tabWidgetMain.setCurrentWidget(self.ui.tabReferenceImage)
         self.ui.statusbar.showMessage(
             f"已导入星点配对 JSON: {source_path}  真实图像: {image_path}  恢复配对: {restored_count}"
@@ -2070,15 +2090,16 @@ class MainWindow(QMainWindow):
         self.ui.pushButtonExportStarPairs.setEnabled(enabled)
         self.ui.pushButtonClearStarPairs.setEnabled(enabled)
 
-    def _apply_loaded_image_preview(self, preview: ImagePreview) -> None:
-        self._clear_star_pair_positions_for_new_input("新的真实图像")
+    def _apply_loaded_image_preview(self, preview: ImagePreview, clear_existing_pairs: bool = True) -> None:
+        if clear_existing_pairs:
+            self._clear_star_pair_positions_for_new_input("新的真实图像")
         self.current_image_preview = preview
-        self._update_imported_image_labels(preview)
         self._display_real_image_preview(preview)
         self.ui.tabWidgetMain.setCurrentWidget(self.ui.tabReferenceImage)
+        self._update_imported_image_labels(preview)
         self.ui.statusbar.showMessage(
             "已导入图像: {path}  原始: {width} x {height} px。右键配对表行选择“点选位置”。".format(
-                path=preview.path,
+                path=Path(preview.path).expanduser().resolve(),
                 width=preview.original_width,
                 height=preview.original_height,
             )
