@@ -1168,10 +1168,7 @@ def select_reference_stars(
     edge_margin_ratio: float = 0.05,
     min_distance_ratio: float = 0.06,
 ) -> tuple[ReferenceStar, ...]:
-    has_reference_planets = any(
-        solar_object.reference_allowed and solar_object.above_horizon for solar_object in star_map.solar_system_objects
-    )
-    if len(star_map) == 0 and not has_reference_planets:
+    if len(star_map) == 0:
         return ()
     if max_count is not None and max_count <= 0:
         max_count = 0
@@ -1229,30 +1226,6 @@ def select_reference_stars(
                 sim_y=float(star_map.y_px[star_index]),
                 alt_deg=float(star_map.alt_deg[star_index]),
                 az_deg=float(star_map.az_deg[star_index]),
-            )
-        )
-    for solar_object in star_map.solar_system_objects:
-        if not solar_object.reference_allowed:
-            continue
-        if not solar_object.above_horizon:
-            continue
-        if not (0.0 <= solar_object.sim_x <= width - 1.0 and 0.0 <= solar_object.sim_y <= height - 1.0):
-            continue
-        reference_stars.append(
-            ReferenceStar(
-                index=len(reference_stars) + 1,
-                star_id=solar_object.object_id,
-                name=solar_object.display_name,
-                display_name=solar_object.display_name,
-                common_name=solar_object.display_name,
-                ra_deg=solar_object.ra_deg,
-                dec_deg=solar_object.dec_deg,
-                mag_v=solar_object.mag_v,
-                sim_x=solar_object.sim_x,
-                sim_y=solar_object.sim_y,
-                alt_deg=solar_object.alt_deg,
-                az_deg=solar_object.az_deg,
-                object_type="planet",
             )
         )
     return tuple(reference_stars)

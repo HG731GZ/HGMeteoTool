@@ -17,6 +17,7 @@ def build_reference_payload(
     utc_offset_hours: float = 0.0,
     reference_label_mode: str = "fixed_count",
     reference_mag_limit: float | None = None,
+    manual_reference_star_ids: tuple[str, ...] = (),
     generated_at_utc: datetime | None = None,
 ) -> dict[str, object]:
     generated_time = generated_at_utc or datetime.now(timezone.utc)
@@ -65,6 +66,7 @@ def build_reference_payload(
             "reference_mag_limit": reference_mag_limit,
             "reference_star_count": len(reference_stars),
         },
+        "manual_reference_star_ids": list(manual_reference_star_ids),
         "stars": [
             {
                 "index": star.index,

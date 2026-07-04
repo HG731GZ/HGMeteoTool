@@ -12,6 +12,7 @@ class StarMapUiConfig:
     direction_label_font_size_pt: int = 16
     star_name_font_size_pt: int = 11
     reference_label_font_size_pt: int = 15
+    aligned_reference_scale_multiplier: float = 1.6
     star_pick_circle_default_diameter_px: int = 50
     star_pick_circle_min_diameter_px: int = 20
     star_pick_circle_max_diameter_px: int = 200
@@ -66,6 +67,13 @@ def load_star_map_ui_config(path: Path | None = None) -> StarMapUiConfig:
         direction_label_font_size_pt=_read_int(raw_config, "direction_label_font_size_pt", 16, 6, 48),
         star_name_font_size_pt=_read_int(raw_config, "star_name_font_size_pt", 11, 6, 48),
         reference_label_font_size_pt=_read_int(raw_config, "reference_label_font_size_pt", 15, 6, 64),
+        aligned_reference_scale_multiplier=_read_float(
+            raw_config,
+            "aligned_reference_scale_multiplier",
+            1.6,
+            0.2,
+            6.0,
+        ),
         star_pick_circle_default_diameter_px=circle_default,
         star_pick_circle_min_diameter_px=circle_min,
         star_pick_circle_max_diameter_px=circle_max,

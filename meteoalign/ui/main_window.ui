@@ -549,13 +549,6 @@
          </widget>
         </item>
         <item>
-         <widget class="QPushButton" name="pushButtonRender">
-          <property name="text">
-           <string>重新渲染</string>
-          </property>
-         </widget>
-        </item>
-        <item>
          <spacer name="verticalSpacerControls">
           <property name="orientation">
            <enum>Qt::Vertical</enum>
@@ -750,6 +743,31 @@
                </widget>
               </item>
              </layout>
+            </widget>
+           </item>
+           <item>
+            <layout class="QHBoxLayout" name="horizontalLayoutStarPairSessionButtons">
+             <item>
+              <widget class="QPushButton" name="pushButtonExportStarPairs">
+               <property name="text">
+                <string>导出配对 JSON</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="pushButtonImportStarPairs">
+               <property name="text">
+                <string>导入配对 JSON</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </item>
+           <item>
+            <widget class="QPushButton" name="pushButtonClearStarPairs">
+             <property name="text">
+              <string>清除所有匹配</string>
+             </property>
             </widget>
            </item>
            <item>

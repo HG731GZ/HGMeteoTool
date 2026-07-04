@@ -88,6 +88,9 @@ STAR_PAIR_INDEX_COLUMN = 0
 STAR_PAIR_NAME_COLUMN = 1
 STAR_PAIR_POSITION_COLUMN = 2
 STAR_PAIR_RESIDUAL_COLUMN = 3
+STAR_PAIR_SESSION_FORMAT = "meteoalign_star_pair_session"
+STAR_PAIR_SESSION_VERSION = 1
+STAR_PAIR_SESSION_JSON_FILTER = "MeteoAlign 星点配对 JSON (*.json);;JSON 文件 (*.json);;所有文件 (*)"
 RESIDUAL_WARNING_MIN_PX = 25.0
 RESIDUAL_SEVERE_MIN_PX = 50.0
 RESIDUAL_SEVERE_RMS_SCALE = 2.0
@@ -281,7 +284,7 @@ class LiveStarMapGraphicsItem(QGraphicsItem):
         if transform is None:
             return
 
-        label_scale = min(max(self.element_scale, 0.75), 2.4)
+        label_scale = max(self.element_scale, 0.75)
         font = QFont()
         font.setPointSizeF(self.renderer.ui_config.reference_label_font_size_pt * label_scale)
         font.setBold(True)
@@ -353,6 +356,59 @@ class ImagePreviewLoadWorker(QObject):
             self.failed.emit(str(exc))
 
 
+class ReferenceJsonImportWorker(QObject):
+    finished = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, file_path: str | Path) -> None:
+        super().__init__()
+        self.file_path = Path(file_path)
+
+    def run(self) -> None:
+        try:
+            payload = json.loads(self.file_path.read_text(encoding="utf-8"))
+            self.finished.emit((self.file_path, payload))
+        except Exception as exc:  # noqa: BLE001 - 后台线程需要把所有 JSON 读取错误传回界面层。
+            self.failed.emit(str(exc))
+
+
+class StarPairSessionImportWorker(QObject):
+    finished = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, file_path: str | Path) -> None:
+        super().__init__()
+        self.file_path = Path(file_path)
+
+    def run(self) -> None:
+        try:
+            payload = json.loads(self.file_path.read_text(encoding="utf-8"))
+            image_path = self._real_image_path(payload)
+            preview = load_image_preview(image_path, max_long_side_px=None)
+            self.finished.emit((self.file_path, payload, preview))
+        except Exception as exc:  # noqa: BLE001 - 后台线程需要把所有 JSON/图像读取错误传回界面层。
+            self.failed.emit(str(exc))
+
+    def _real_image_path(self, payload: object) -> Path:
+        if not isinstance(payload, dict):
+            raise ValueError("JSON 根对象必须是字典。")
+        if payload.get("format") != STAR_PAIR_SESSION_FORMAT:
+            raise ValueError("当前只支持 MeteoAlign 星点配对 JSON。")
+        real_image = payload.get("real_image")
+        if not isinstance(real_image, dict):
+            raise ValueError("JSON 缺少 real_image 字段。")
+        path_value = real_image.get("path")
+        if not isinstance(path_value, str) or not path_value.strip():
+            raise ValueError("JSON 缺少真实图像完整路径。")
+        image_path = Path(path_value).expanduser()
+        if not image_path.is_absolute():
+            image_path = self.file_path.parent / image_path
+        image_path = image_path.resolve()
+        if not image_path.exists():
+            raise FileNotFoundError(f"真实图像不存在：{image_path}")
+        return image_path
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -411,6 +467,9 @@ class MainWindow(QMainWindow):
         self._image_import_thread: QThread | None = None
         self._image_import_worker: ImagePreviewLoadWorker | None = None
         self._image_import_progress: QProgressDialog | None = None
+        self._json_import_thread: QThread | None = None
+        self._json_import_worker: QObject | None = None
+        self._json_import_progress: QProgressDialog | None = None
         self._real_image_zoom_max_scale = REAL_IMAGE_MAX_ZOOM_SCALE
         self._syncing_camera_dimensions = False
         self._active_star_pair_row: int | None = None
@@ -484,7 +543,6 @@ class MainWindow(QMainWindow):
             self.ui.doubleSpinBoxAz,
             self.ui.doubleSpinBoxAlt,
             self.ui.doubleSpinBoxRoll,
-            self.ui.doubleSpinBoxReferenceMagLimit,
         )
         for widget in widgets:
             if hasattr(widget, "valueChanged"):
@@ -497,12 +555,15 @@ class MainWindow(QMainWindow):
         self.ui.spinBoxImageHeight.valueChanged.connect(self._handle_image_height_changed)
         self.ui.comboBoxLensModel.currentIndexChanged.connect(self._handle_lens_model_changed)
         self.ui.comboBoxReferenceLabelMode.currentIndexChanged.connect(self._handle_reference_label_mode_changed)
-        self.ui.spinBoxReferenceStarCount.valueChanged.connect(self.schedule_render)
+        self.ui.spinBoxReferenceStarCount.valueChanged.connect(self._handle_reference_label_options_changed)
+        self.ui.doubleSpinBoxReferenceMagLimit.valueChanged.connect(self._handle_reference_label_options_changed)
         self.ui.pushButtonSwapOrientation.clicked.connect(self._swap_camera_orientation)
-        self.ui.pushButtonRender.clicked.connect(lambda: self.render_now())
         self.ui.pushButtonExportReference.clicked.connect(self.export_reference_map)
         self.ui.pushButtonImportSingleImage.clicked.connect(self.import_single_image)
         self.ui.pushButtonImportImageSequence.clicked.connect(self.show_sequence_import_placeholder)
+        self.ui.pushButtonExportStarPairs.clicked.connect(self.export_star_pair_session)
+        self.ui.pushButtonImportStarPairs.clicked.connect(self.import_star_pair_session)
+        self.ui.pushButtonClearStarPairs.clicked.connect(self.clear_all_star_pair_positions)
         self.ui.actionImportSingleImage.triggered.connect(self.import_single_image)
         self.ui.actionImportImageSequence.triggered.connect(self.show_sequence_import_placeholder)
         self.ui.tabWidgetMain.currentChanged.connect(self._handle_tab_changed)
@@ -838,6 +899,336 @@ class MainWindow(QMainWindow):
             if star_id and position_text:
                 positions[star_id] = position_text
         return positions
+
+    def _star_pair_position_count(self) -> int:
+        return len(self._collect_star_pair_positions())
+
+    def _clear_star_pair_positions_for_new_input(self, input_name: str) -> int:
+        pair_count = self._star_pair_position_count()
+        if pair_count <= 0:
+            return 0
+        self._clear_star_pair_positions()
+        self.ui.statusbar.showMessage(f"导入{input_name}前已清除 {pair_count} 个已有匹配。")
+        return pair_count
+
+    def _show_json_import_progress(
+        self,
+        title: str,
+        label_text: str,
+        status_text: str,
+    ) -> QProgressDialog:
+        dialog = QProgressDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.setLabelText(label_text)
+        dialog.setRange(0, 0)
+        dialog.setCancelButton(None)
+        dialog.setWindowModality(Qt.WindowModal)
+        dialog.setMinimumDuration(0)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        dialog.show()
+        self.ui.statusbar.showMessage(status_text)
+        QApplication.processEvents()
+        return dialog
+
+    def _cleanup_json_import(self) -> None:
+        if self._json_import_progress is not None:
+            self._json_import_progress.close()
+        self._json_import_thread = None
+        self._json_import_worker = None
+        self._json_import_progress = None
+        self._set_json_import_controls_enabled(True)
+
+    def _is_catalog_reference_star(self, star: ReferenceStar) -> bool:
+        star_id = star.star_id.strip()
+        return star.object_type == "star" and bool(star_id) and not star_id.startswith("solar_system:")
+
+    def _build_reference_payload_for_current_settings(self) -> dict[str, object]:
+        output_camera = self._output_camera_settings()
+        observer, camera, view, mag_limit, star_map = self._build_projected_star_map(camera=output_camera)
+        reference_stars = self._select_current_reference_stars(star_map)
+        return build_reference_payload(
+            star_map=star_map,
+            reference_stars=reference_stars,
+            observer=observer,
+            camera=camera,
+            view=view,
+            visible_mag_limit=mag_limit,
+            utc_offset_hours=self.ui.doubleSpinBoxUtcOffset.value(),
+            reference_label_mode=self._reference_label_mode(),
+            reference_mag_limit=self.ui.doubleSpinBoxReferenceMagLimit.value(),
+            manual_reference_star_ids=tuple(self._manual_reference_star_ids),
+        )
+
+    def _star_pair_records(self) -> list[dict[str, object]]:
+        records: list[dict[str, object]] = []
+        for row in range(self.ui.tableWidgetStarPairs.rowCount()):
+            reference_star = self._reference_star_for_row(row)
+            target_position = self._parse_star_pair_position_text(row)
+            if reference_star is None or target_position is None:
+                continue
+            if not self._is_catalog_reference_star(reference_star):
+                continue
+
+            image_x, image_y = target_position
+            if not all(math.isfinite(value) for value in (image_x, image_y, reference_star.ra_deg, reference_star.dec_deg)):
+                continue
+
+            record: dict[str, object] = {
+                "reference_index": reference_star.index,
+                "star_id": reference_star.star_id,
+                "name": reference_star.name,
+                "display_name": reference_star.display_name,
+                "common_name": reference_star.common_name,
+                "ra_deg": reference_star.ra_deg,
+                "dec_deg": reference_star.dec_deg,
+                "mag_v": reference_star.mag_v,
+                "image_x_px": image_x,
+                "image_y_px": image_y,
+                "sim_x": reference_star.sim_x,
+                "sim_y": reference_star.sim_y,
+                "object_type": "star",
+            }
+            residual = self._star_pair_alignment_residual(row)
+            if residual is not None:
+                dx, dy, distance = residual
+                record["residual_dx_px"] = dx
+                record["residual_dy_px"] = dy
+                record["residual_px"] = distance
+            records.append(record)
+        return records
+
+    def _default_star_pair_session_path(self) -> Path:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return project_root() / "outputs" / f"star_pairs_{timestamp}.json"
+
+    def _build_star_pair_session_payload(self) -> dict[str, object]:
+        if self.current_image_preview is None:
+            raise ValueError("请先导入真实图像，再导出星点配对 JSON。")
+
+        preview = self.current_image_preview
+        image_path = Path(preview.path).expanduser().resolve()
+        reference_payload = self._build_reference_payload_for_current_settings()
+        pair_records = self._star_pair_records()
+        generated_time = datetime.now(timezone.utc)
+        return {
+            "format": STAR_PAIR_SESSION_FORMAT,
+            "version": STAR_PAIR_SESSION_VERSION,
+            "generated_at_utc": generated_time.isoformat(),
+            "reference_payload": reference_payload,
+            "real_image": {
+                "path": str(image_path),
+                "original_width_px": preview.original_width,
+                "original_height_px": preview.original_height,
+                "display_width_px": preview.image.width(),
+                "display_height_px": preview.image.height(),
+            },
+            "pair_count": len(pair_records),
+            "pairs": pair_records,
+        }
+
+    def export_star_pair_session(self) -> None:
+        if self.current_image_preview is None:
+            QMessageBox.information(self, "尚未导入图像", "请先导入真实图像，再导出星点配对 JSON。")
+            return
+
+        default_path = self._default_star_pair_session_path()
+        default_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "导出星点配对 JSON",
+            str(default_path),
+            STAR_PAIR_SESSION_JSON_FILTER,
+        )
+        if not file_path:
+            return
+
+        json_path = Path(file_path)
+        if not json_path.suffix:
+            json_path = json_path.with_suffix(".json")
+        try:
+            payload = self._build_star_pair_session_payload()
+            json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            pair_count = int(payload.get("pair_count", 0))
+            self.ui.statusbar.showMessage(f"已导出星点配对 JSON: {json_path}  配对数: {pair_count}")
+            QMessageBox.information(self, "配对 JSON 已导出", f"JSON：{json_path}\n配对数：{pair_count}")
+        except Exception as exc:  # noqa: BLE001 - 导出入口需要把文件和字段错误直接反馈给用户。
+            self.ui.statusbar.showMessage(f"导出星点配对 JSON 失败: {exc}")
+            QMessageBox.critical(self, "导出星点配对 JSON 失败", str(exc))
+
+    def import_star_pair_session(self) -> None:
+        default_dir = project_root() / "outputs"
+        if not default_dir.exists():
+            default_dir = project_root()
+        file_path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "导入星点配对 JSON",
+            str(default_dir),
+            STAR_PAIR_SESSION_JSON_FILTER,
+        )
+        if not file_path:
+            return
+        self.load_star_pair_session(file_path)
+
+    def load_star_pair_session(self, file_path: str | Path) -> None:
+        if self._json_import_thread is not None:
+            QMessageBox.information(self, "正在导入 JSON", "当前已有 JSON 正在导入，请稍候。")
+            return
+        json_path = Path(file_path)
+        self._set_json_import_controls_enabled(False)
+        self._json_import_progress = self._show_json_import_progress(
+            title="正在导入配对 JSON",
+            label_text=f"正在读取配对 JSON 并恢复真实图像...\n{json_path}",
+            status_text=f"正在导入星点配对 JSON: {json_path}",
+        )
+
+        thread = QThread(self)
+        worker = StarPairSessionImportWorker(json_path)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._handle_star_pair_session_import_finished)
+        worker.failed.connect(self._handle_star_pair_session_import_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._cleanup_json_import)
+
+        self._json_import_thread = thread
+        self._json_import_worker = worker
+        thread.start()
+
+    def _session_pair_star_id(self, pair_payload: object) -> str:
+        if not isinstance(pair_payload, dict):
+            return ""
+        object_type = str(pair_payload.get("object_type", "star")).strip()
+        if object_type != "star":
+            return ""
+        star_id = str(pair_payload.get("star_id", "")).strip()
+        if not star_id or star_id.startswith("solar_system:"):
+            return ""
+        return star_id
+
+    def _session_pair_position(self, pair_payload: object) -> tuple[float, float] | None:
+        if not isinstance(pair_payload, dict):
+            return None
+        try:
+            image_x = float(pair_payload["image_x_px"])
+            image_y = float(pair_payload["image_y_px"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        if not math.isfinite(image_x) or not math.isfinite(image_y):
+            return None
+        return image_x, image_y
+
+    def _ensure_pair_record_stars_visible(self, pair_payloads: list[object]) -> None:
+        visible_star_ids = {
+            self._star_pair_star_id(row)
+            for row in range(self.ui.tableWidgetStarPairs.rowCount())
+            if self._star_pair_star_id(row)
+        }
+        added_any = False
+        for pair_payload in pair_payloads:
+            star_id = self._session_pair_star_id(pair_payload)
+            if not star_id or star_id in visible_star_ids or star_id in self._manual_reference_star_ids:
+                continue
+            self._manual_reference_star_ids.append(star_id)
+            visible_star_ids.add(star_id)
+            added_any = True
+        if added_any:
+            self._refresh_reference_stars_from_current_map()
+
+    def _restore_star_pair_records(self, pair_payloads: list[object]) -> int:
+        recorded_positions: dict[str, tuple[float, float]] = {}
+        for pair_payload in pair_payloads:
+            star_id = self._session_pair_star_id(pair_payload)
+            position = self._session_pair_position(pair_payload)
+            if star_id and position is not None:
+                recorded_positions[star_id] = position
+
+        table = self.ui.tableWidgetStarPairs
+        signals_were_blocked = table.blockSignals(True)
+        self._clear_star_pair_annotations()
+        restored_count = 0
+        for row in range(table.rowCount()):
+            star_id = self._star_pair_star_id(row)
+            position_item = table.item(row, STAR_PAIR_POSITION_COLUMN)
+            if position_item is None:
+                position_item = QTableWidgetItem()
+                table.setItem(row, STAR_PAIR_POSITION_COLUMN, position_item)
+            position_item.setData(Qt.UserRole, star_id)
+            position = recorded_positions.get(star_id)
+            if position is None:
+                position_item.setText("")
+                continue
+            image_x, image_y = position
+            position_item.setText(f"{image_x:.2f}, {image_y:.2f}")
+            restored_count += 1
+        table.blockSignals(signals_were_blocked)
+
+        self._restore_star_pair_annotations_from_table()
+        self._refresh_star_pair_table_styles()
+        self._update_reference_alignment_transform()
+        return restored_count
+
+    def _session_real_image_path(self, payload: dict[str, object], source_path: Path) -> Path:
+        real_image = self._payload_section(payload, "real_image")
+        path_value = real_image.get("path")
+        if not isinstance(path_value, str) or not path_value.strip():
+            raise ValueError("JSON 缺少真实图像完整路径。")
+        image_path = Path(path_value).expanduser()
+        if not image_path.is_absolute():
+            image_path = source_path.parent / image_path
+        image_path = image_path.resolve()
+        if not image_path.exists():
+            raise FileNotFoundError(f"真实图像不存在：{image_path}")
+        return image_path
+
+    def _handle_star_pair_session_import_finished(self, result: object) -> None:
+        try:
+            source_path, payload, preview = result  # type: ignore[misc]
+            if not isinstance(source_path, Path):
+                source_path = Path(source_path)
+            self._clear_star_pair_positions_for_new_input("新的配对 JSON")
+            self._apply_star_pair_session_payload(payload, source_path, preview=preview)
+        except Exception as exc:  # noqa: BLE001 - 主线程恢复界面时也需要把错误反馈给用户。
+            self.ui.statusbar.showMessage(f"导入星点配对 JSON 失败: {exc}")
+            QMessageBox.critical(self, "导入星点配对 JSON 失败", str(exc))
+
+    def _handle_star_pair_session_import_failed(self, error_message: str) -> None:
+        self.ui.statusbar.showMessage(f"导入星点配对 JSON 失败: {error_message}")
+        QMessageBox.critical(self, "导入星点配对 JSON 失败", error_message)
+
+    def _apply_star_pair_session_payload(
+        self,
+        payload: object,
+        source_path: Path,
+        preview: ImagePreview | None = None,
+    ) -> None:
+        if not isinstance(payload, dict):
+            raise ValueError("JSON 根对象必须是字典。")
+        if payload.get("format") != STAR_PAIR_SESSION_FORMAT:
+            raise ValueError("当前只支持 MeteoAlign 星点配对 JSON。")
+
+        reference_payload = payload.get("reference_payload")
+        if not isinstance(reference_payload, dict):
+            raise ValueError("JSON 缺少 reference_payload 字段。")
+        pair_payloads = payload.get("pairs", [])
+        if not isinstance(pair_payloads, list):
+            raise ValueError("JSON 中 pairs 字段必须是列表。")
+
+        image_path = self._session_real_image_path(payload, source_path)
+        self._active_star_pair_row = None
+        self._apply_reference_payload(reference_payload, source_path)
+        self._ensure_pair_record_stars_visible(pair_payloads)
+        if preview is None:
+            preview = load_image_preview(image_path, max_long_side_px=None)
+        self._apply_loaded_image_preview(preview)
+        restored_count = self._restore_star_pair_records(pair_payloads)
+        self.ui.tabWidgetMain.setCurrentWidget(self.ui.tabReferenceImage)
+        self.ui.statusbar.showMessage(
+            f"已导入星点配对 JSON: {source_path}  真实图像: {image_path}  恢复配对: {restored_count}"
+        )
 
     def _read_only_table_item(self, text: str) -> QTableWidgetItem:
         item = QTableWidgetItem(text)
@@ -1215,7 +1606,10 @@ class MainWindow(QMainWindow):
         self._refresh_star_pair_row_style(row)
         self._update_reference_alignment_transform()
 
-    def _clear_star_pair_positions(self) -> None:
+    def _clear_star_pair_positions(self) -> int:
+        cleared_count = self._star_pair_position_count()
+        if self._active_star_pair_row is not None:
+            self._leave_star_pick_mode()
         table = self.ui.tableWidgetStarPairs
         table.blockSignals(True)
         for row in range(table.rowCount()):
@@ -1226,6 +1620,14 @@ class MainWindow(QMainWindow):
         self._clear_star_pair_annotations()
         self._refresh_star_pair_table_styles()
         self._update_reference_alignment_transform()
+        return cleared_count
+
+    def clear_all_star_pair_positions(self) -> None:
+        cleared_count = self._clear_star_pair_positions()
+        if cleared_count <= 0:
+            self.ui.statusbar.showMessage("当前没有可清除的星点匹配。")
+            return
+        self.ui.statusbar.showMessage(f"已清除 {cleared_count} 个星点匹配。")
 
     def _clear_star_pair_position(self, row: int) -> None:
         table = self.ui.tableWidgetStarPairs
@@ -1293,26 +1695,6 @@ class MainWindow(QMainWindow):
                     )
                 )
 
-        for solar_object in star_map.solar_system_objects:
-            if not solar_object.reference_allowed or not solar_object.above_horizon:
-                continue
-            if transform is None:
-                x_value = float(solar_object.sim_x)
-                y_value = float(solar_object.sim_y)
-            else:
-                x_value, y_value = transform.transform_radec(solar_object.ra_deg, solar_object.dec_deg)
-            if not np.isfinite(x_value) or not np.isfinite(y_value):
-                continue
-            positions.append(
-                (
-                    solar_object.object_id,
-                    solar_object.display_name,
-                    float(x_value),
-                    float(y_value),
-                    float(solar_object.mag_v),
-                    max(1.0, float(solar_object.radius_px) * self._current_reference_element_scale()),
-                )
-            )
         return positions
 
     def _current_reference_element_scale(self) -> float:
@@ -1565,7 +1947,14 @@ class MainWindow(QMainWindow):
         self.ui.actionImportSingleImage.setEnabled(enabled)
         self.ui.actionImportImageSequence.setEnabled(enabled)
 
+    def _set_json_import_controls_enabled(self, enabled: bool) -> None:
+        self.ui.pushButtonImportReferenceJson.setEnabled(enabled)
+        self.ui.pushButtonImportStarPairs.setEnabled(enabled)
+        self.ui.pushButtonExportStarPairs.setEnabled(enabled)
+        self.ui.pushButtonClearStarPairs.setEnabled(enabled)
+
     def _apply_loaded_image_preview(self, preview: ImagePreview) -> None:
+        self._clear_star_pair_positions_for_new_input("新的真实图像")
         self.current_image_preview = preview
         self._update_imported_image_labels(preview)
         self._display_real_image_preview(preview)
@@ -1618,7 +2007,11 @@ class MainWindow(QMainWindow):
         self.ui.doubleSpinBoxReferenceMagLimit.setEnabled(not is_fixed_count)
 
     def _handle_reference_label_mode_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        self._handle_reference_label_options_changed()
+
+    def _handle_reference_label_options_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
         self._update_reference_label_controls()
+        self._refresh_reference_stars_from_current_map()
         self.schedule_render()
 
     def _reference_star_from_star_map_index(
@@ -1644,23 +2037,6 @@ class MainWindow(QMainWindow):
             sim_y=float(star_map.y_px[star_index]),
             alt_deg=float(star_map.alt_deg[star_index]),
             az_deg=float(star_map.az_deg[star_index]),
-        )
-
-    def _reference_star_from_solar_object(self, solar_object, output_index: int) -> ReferenceStar:  # type: ignore[no-untyped-def]
-        return ReferenceStar(
-            index=output_index,
-            star_id=solar_object.object_id,
-            name=solar_object.display_name,
-            display_name=solar_object.display_name,
-            common_name=solar_object.display_name,
-            ra_deg=solar_object.ra_deg,
-            dec_deg=solar_object.dec_deg,
-            mag_v=solar_object.mag_v,
-            sim_x=solar_object.sim_x,
-            sim_y=solar_object.sim_y,
-            alt_deg=solar_object.alt_deg,
-            az_deg=solar_object.az_deg,
-            object_type="planet",
         )
 
     def _reference_star_with_index(self, star: ReferenceStar, index: int) -> ReferenceStar:
@@ -1689,12 +2065,6 @@ class MainWindow(QMainWindow):
             if reference_star.star_id:
                 lookup[reference_star.star_id] = reference_star
 
-        for solar_object in star_map.solar_system_objects:
-            if not solar_object.reference_allowed or not solar_object.above_horizon:
-                continue
-            reference_star = self._reference_star_from_solar_object(solar_object, output_index=0)
-            if reference_star.star_id:
-                lookup[reference_star.star_id] = reference_star
         return lookup
 
     def _select_current_reference_stars(self, star_map: ProjectedStarMap) -> tuple[ReferenceStar, ...]:
@@ -1877,7 +2247,9 @@ class MainWindow(QMainWindow):
 
     def _aligned_star_element_scale(self, target_size: tuple[int, int]) -> float:
         long_side = max(float(target_size[0]), float(target_size[1]), 1.0)
-        return max(0.75, min(2.8, long_side / float(PREVIEW_LONG_SIDE_PX)))
+        base_scale = long_side / float(PREVIEW_LONG_SIDE_PX)
+        # 对齐到真实图像后，场景尺寸通常远大于预览图；这里用配置倍率补偿 fitInView 后的视觉缩小。
+        return max(0.75, min(12.0, base_scale * self.ui_config.aligned_reference_scale_multiplier))
 
     def _view_settings(self) -> ViewSettings:
         return ViewSettings(
@@ -2040,13 +2412,47 @@ class MainWindow(QMainWindow):
         self.load_reference_json(file_path)
 
     def load_reference_json(self, file_path: str | Path) -> None:
+        if self._json_import_thread is not None:
+            QMessageBox.information(self, "正在导入 JSON", "当前已有 JSON 正在导入，请稍候。")
+            return
         json_path = Path(file_path)
+        self._set_json_import_controls_enabled(False)
+        self._json_import_progress = self._show_json_import_progress(
+            title="正在导入预览 JSON",
+            label_text=f"正在读取预览 JSON 并恢复星空模拟参数...\n{json_path}",
+            status_text=f"正在导入预览 JSON: {json_path}",
+        )
+
+        thread = QThread(self)
+        worker = ReferenceJsonImportWorker(json_path)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._handle_reference_json_import_finished)
+        worker.failed.connect(self._handle_reference_json_import_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._cleanup_json_import)
+
+        self._json_import_thread = thread
+        self._json_import_worker = worker
+        thread.start()
+
+    def _handle_reference_json_import_finished(self, result: object) -> None:
         try:
-            payload = json.loads(json_path.read_text(encoding="utf-8"))
-            self._apply_reference_payload(payload, json_path)
-        except Exception as exc:  # noqa: BLE001 - 导入入口需要把 JSON/字段错误以对话框提示。
+            source_path, payload = result  # type: ignore[misc]
+            if not isinstance(source_path, Path):
+                source_path = Path(source_path)
+            self._clear_star_pair_positions_for_new_input("新的预览 JSON")
+            self._apply_reference_payload(payload, source_path)
+        except Exception as exc:  # noqa: BLE001 - 主线程恢复界面时也需要把错误反馈给用户。
             self.ui.statusbar.showMessage(f"导入预览 JSON 失败: {exc}")
             QMessageBox.critical(self, "导入预览 JSON 失败", str(exc))
+
+    def _handle_reference_json_import_failed(self, error_message: str) -> None:
+        self.ui.statusbar.showMessage(f"导入预览 JSON 失败: {error_message}")
+        QMessageBox.critical(self, "导入预览 JSON 失败", error_message)
 
     def _payload_section(self, payload: dict[str, object], section_name: str) -> dict[str, object]:
         section = payload.get(section_name)
@@ -2172,16 +2578,14 @@ class MainWindow(QMainWindow):
             for widget, was_blocked in zip(widgets_to_block, previous_signal_states):
                 widget.blockSignals(was_blocked)
 
-        restored_star_ids: list[str] = []
-        stars_payload = payload.get("stars")
-        if isinstance(stars_payload, list):
-            for star_payload in stars_payload:
-                if not isinstance(star_payload, dict):
-                    continue
-                star_id = str(star_payload.get("star_id", "")).strip()
-                if star_id and star_id not in restored_star_ids:
-                    restored_star_ids.append(star_id)
-        self._manual_reference_star_ids = restored_star_ids
+        restored_manual_star_ids: list[str] = []
+        manual_ids_payload = payload.get("manual_reference_star_ids")
+        if isinstance(manual_ids_payload, list):
+            for raw_star_id in manual_ids_payload:
+                star_id = str(raw_star_id).strip()
+                if star_id and star_id not in restored_manual_star_ids:
+                    restored_manual_star_ids.append(star_id)
+        self._manual_reference_star_ids = restored_manual_star_ids
         self._update_reference_label_controls()
         self._update_lens_model_controls()
         self.ui.tabWidgetMain.setCurrentWidget(self.ui.tabSimulator)
@@ -2213,6 +2617,7 @@ class MainWindow(QMainWindow):
                 utc_offset_hours=self.ui.doubleSpinBoxUtcOffset.value(),
                 reference_label_mode=self._reference_label_mode(),
                 reference_mag_limit=self.ui.doubleSpinBoxReferenceMagLimit.value(),
+                manual_reference_star_ids=tuple(self._manual_reference_star_ids),
             )
             image_path, json_path = save_reference_outputs(image, payload, self._next_reference_output_dir())
             self.render_now()
@@ -2252,6 +2657,10 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         if self._image_import_thread is not None:
             QMessageBox.information(self, "正在导入图像", "图像预览仍在生成，请等待导入完成后再关闭窗口。")
+            event.ignore()
+            return
+        if self._json_import_thread is not None:
+            QMessageBox.information(self, "正在导入 JSON", "JSON 仍在导入，请等待完成后再关闭窗口。")
             event.ignore()
             return
         super().closeEvent(event)

@@ -4,6 +4,7 @@
   "direction_label_font_size_pt": 16,
   "star_name_font_size_pt": 14,
   "reference_label_font_size_pt": 15,
+  "aligned_reference_scale_multiplier": 1.6,
   "star_pick_circle_default_diameter_px": 50,
   "star_pick_circle_min_diameter_px": 20,
   "star_pick_circle_max_diameter_px": 200,
