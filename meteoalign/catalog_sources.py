@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import shutil
 import tempfile
+import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 
 @dataclass(frozen=True)
@@ -118,7 +119,26 @@ def ensure_catalog_dir(catalog_dir: Path) -> None:
         raise NotADirectoryError(f"星表路径不是目录：{catalog_dir}")
 
 
-def download_file(item: CatalogFile, catalog_dir: Path, force: bool) -> None:
+DownloadProgressCallback = Callable[[int, int | None, float], None]
+
+
+def _content_length(response) -> int | None:  # type: ignore[no-untyped-def]
+    text = response.headers.get("Content-Length")
+    if not text:
+        return None
+    try:
+        value = int(text)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def download_file(
+    item: CatalogFile,
+    catalog_dir: Path,
+    force: bool,
+    progress_callback: DownloadProgressCallback | None = None,
+) -> None:
     target = catalog_dir / item.relative_path
     target.parent.mkdir(parents=True, exist_ok=True)
 
@@ -142,7 +162,18 @@ def download_file(item: CatalogFile, catalog_dir: Path, force: bool) -> None:
                 item.url, headers={"User-Agent": "MeteoAlign catalog downloader"}
             )
             with urllib.request.urlopen(request, timeout=120) as response:
-                shutil.copyfileobj(response, temp_file)
+                total_bytes = item.expected_size or _content_length(response)
+                downloaded_bytes = 0
+                started_at = time.monotonic()
+                while True:
+                    chunk = response.read(1024 * 256)
+                    if not chunk:
+                        break
+                    temp_file.write(chunk)
+                    downloaded_bytes += len(chunk)
+                    if progress_callback is not None:
+                        elapsed = max(time.monotonic() - started_at, 1e-6)
+                        progress_callback(downloaded_bytes, total_bytes, downloaded_bytes / elapsed)
         except Exception:
             temp_path.unlink(missing_ok=True)
             raise

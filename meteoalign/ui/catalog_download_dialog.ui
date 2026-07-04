@@ -9,8 +9,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>460</width>
-    <height>150</height>
+    <width>560</width>
+    <height>230</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -28,9 +28,37 @@
     </widget>
    </item>
    <item>
-    <widget class="QProgressBar" name="progressBar">
+    <widget class="QLabel" name="labelCurrentTitle">
+     <property name="text">
+      <string>当前星表：-</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QProgressBar" name="progressBarCurrent">
      <property name="value">
       <number>0</number>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="labelTotalTitle">
+     <property name="text">
+      <string>总进度：-</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QProgressBar" name="progressBarTotal">
+     <property name="value">
+      <number>0</number>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="labelSpeed">
+     <property name="text">
+      <string>下载速度：-</string>
      </property>
     </widget>
    </item>
