@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 from PyQt5.QtCore import QDateTime, QEvent, QObject, QPoint, QPointF, QRectF, QThread, QTimer, Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QBrush, QCursor, QFont, QFontMetrics, QImage, QPainter, QPen, QPixmap
+from PyQt5.QtGui import QColor, QBrush, QCursor, QFont, QImage, QPainter, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -93,11 +93,6 @@ STAR_PAIR_SESSION_FORMAT = "meteoalign_star_pair_session"
 STAR_PAIR_SESSION_VERSION = 1
 STAR_PAIR_SESSION_JSON_FILTER = "MeteoAlign 星点配对 JSON (*.json);;JSON 文件 (*.json);;所有文件 (*)"
 ALIGNMENT_STATUS_MAX_CHARS = 68
-TEXT_FIT_FULL_TEXT_PROPERTY = "meteoalignFullText"
-TEXT_FIT_BASE_POINT_SIZE_PROPERTY = "meteoalignBasePointSize"
-TEXT_FIT_MIN_POINT_SIZE_PROPERTY = "meteoalignMinPointSize"
-TEXT_FIT_MAX_LINES_PROPERTY = "meteoalignMaxLines"
-TEXT_FIT_ELIDE_MODE_PROPERTY = "meteoalignElideMode"
 RESIDUAL_WARNING_MIN_PX = 25.0
 RESIDUAL_SEVERE_MIN_PX = 50.0
 RESIDUAL_SEVERE_RMS_SCALE = 2.0
@@ -494,9 +489,7 @@ class MainWindow(QMainWindow):
         self._suspend_alignment_updates = False
         self._manual_reference_star_ids: list[str] = []
         self._star_pick_native_zoom_remainder = 0.0
-        self._dynamic_fit_labels: tuple[QLabel, ...] = ()
 
-        self._init_dynamic_text_fitting()
         self._init_defaults()
         self._connect_inputs()
         self.schedule_render(delay_ms=0)
@@ -511,104 +504,10 @@ class MainWindow(QMainWindow):
         status_font.setPointSize(ui_config.status_bar_font_size_pt)
         self.ui.statusbar.setFont(status_font)
 
-    def _init_dynamic_text_fitting(self) -> None:
-        self._dynamic_fit_labels = (
-            self.ui.labelImportedImagePath,
-            self.ui.labelAlignmentTransformStatus,
-        )
-        self._configure_dynamic_fit_label(
-            self.ui.labelImportedImagePath,
-            min_point_size=6.0,
-            max_lines=3,
-            elide_mode=Qt.ElideMiddle,
-        )
-        self._configure_dynamic_fit_label(
-            self.ui.labelAlignmentTransformStatus,
-            min_point_size=7.0,
-            max_lines=1,
-            elide_mode=Qt.ElideRight,
-        )
-
-    def _configure_dynamic_fit_label(
-        self,
-        label: QLabel,
-        min_point_size: float,
-        max_lines: int,
-        elide_mode: int,
-    ) -> None:
-        base_point_size = label.font().pointSizeF()
-        if base_point_size <= 0.0:
-            base_point_size = float(label.font().pointSize())
-        if base_point_size <= 0.0:
-            base_point_size = float(self.ui_config.controls_font_size_pt)
-        label.setProperty(TEXT_FIT_BASE_POINT_SIZE_PROPERTY, base_point_size)
-        label.setProperty(TEXT_FIT_MIN_POINT_SIZE_PROPERTY, min_point_size)
-        label.setProperty(TEXT_FIT_MAX_LINES_PROPERTY, max(1, int(max_lines)))
-        label.setProperty(TEXT_FIT_ELIDE_MODE_PROPERTY, int(elide_mode))
-        label.setProperty(TEXT_FIT_FULL_TEXT_PROPERTY, label.text())
-        label.installEventFilter(self)
-
-    def _set_fitted_label_text(self, label: QLabel, text: str, tooltip: str | None = None) -> None:
-        full_text = text.strip()
-        text_was_changed = str(label.property(TEXT_FIT_FULL_TEXT_PROPERTY) or "") != full_text
-        label.setProperty(TEXT_FIT_FULL_TEXT_PROPERTY, full_text)
-        label.setToolTip((tooltip or full_text).strip())
-        self._fit_label_text(label)
-        if text_was_changed:
-            QTimer.singleShot(0, lambda label=label: self._fit_label_text(label))
-
-    def _refit_dynamic_labels(self) -> None:
-        for label in self._dynamic_fit_labels:
-            self._fit_label_text(label)
-
-    def _fit_label_text(self, label: QLabel) -> None:
-        full_text = str(label.property(TEXT_FIT_FULL_TEXT_PROPERTY) or label.text())
-        available_rect = label.contentsRect()
-        available_width = max(available_rect.width() - 2, 1)
-        available_height = max(available_rect.height() - 2, 1)
-        if available_width <= 4 or available_height <= 4:
-            if label.text() != full_text:
-                label.setText(full_text)
-            return
-        base_point_size = float(label.property(TEXT_FIT_BASE_POINT_SIZE_PROPERTY) or label.font().pointSizeF())
-        min_point_size = float(label.property(TEXT_FIT_MIN_POINT_SIZE_PROPERTY) or 7.0)
-        max_lines = max(1, int(label.property(TEXT_FIT_MAX_LINES_PROPERTY) or 1))
-        elide_mode = int(label.property(TEXT_FIT_ELIDE_MODE_PROPERTY) or int(Qt.ElideRight))
-
-        chosen_font = QFont(label.font())
-        chosen_text = full_text
-        for point_size in np.arange(base_point_size, min_point_size - 0.01, -0.5):
-            candidate_font = QFont(label.font())
-            candidate_font.setPointSizeF(float(point_size))
-            if self._label_text_fits(candidate_font, full_text, available_width, available_height, max_lines):
-                chosen_font = candidate_font
-                break
-        else:
-            chosen_font.setPointSizeF(min_point_size)
-            metrics = QFontMetrics(chosen_font)
-            chosen_text = metrics.elidedText(full_text, elide_mode, available_width)
-
-        if label.font() != chosen_font:
-            label.setFont(chosen_font)
-        if label.text() != chosen_text:
-            label.setText(chosen_text)
-
-    def _label_text_fits(
-        self,
-        font: QFont,
-        text: str,
-        available_width: int,
-        available_height: int,
-        max_lines: int,
-    ) -> bool:
-        metrics = QFontMetrics(font)
-        if max_lines <= 1:
-            return metrics.horizontalAdvance(text) <= available_width and metrics.height() <= available_height
-
-        flags = Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignTop
-        wrapped_rect = metrics.boundingRect(0, 0, available_width, 10000, flags, text)
-        max_allowed_height = min(available_height, metrics.lineSpacing() * max_lines + 2)
-        return wrapped_rect.width() <= available_width and wrapped_rect.height() <= max_allowed_height
+    def _set_plain_label_text(self, label: QLabel, text: str, tooltip: str | None = None) -> None:
+        display_text = text.strip()
+        label.setText(display_text)
+        label.setToolTip((tooltip or display_text).strip())
 
     def _init_defaults(self) -> None:
         self.ui.dateTimeEditObservation.setDateTime(QDateTime.currentDateTime())
@@ -698,12 +597,12 @@ class MainWindow(QMainWindow):
         )
 
     def _reset_imported_image_labels(self) -> None:
-        self._set_fitted_label_text(self.ui.labelImportedImagePath, "未导入", "")
+        self._set_plain_label_text(self.ui.labelImportedImagePath, "未导入", "")
         self.ui.labelImportedImageSize.setText("-")
 
     def _update_imported_image_labels(self, preview: ImagePreview) -> None:
         image_path = str(Path(preview.path).expanduser().resolve())
-        self._set_fitted_label_text(self.ui.labelImportedImagePath, image_path, image_path)
+        self._set_plain_label_text(self.ui.labelImportedImagePath, image_path, image_path)
         self.ui.labelImportedImageSize.setText(f"{preview.original_width} x {preview.original_height} px")
 
     def _reference_star_lookup(self) -> dict[str, ReferenceStar]:
@@ -838,7 +737,7 @@ class MainWindow(QMainWindow):
         display_text = text.strip()
         if len(display_text) > ALIGNMENT_STATUS_MAX_CHARS:
             display_text = f"{display_text[: ALIGNMENT_STATUS_MAX_CHARS - 1]}…"
-        self._set_fitted_label_text(
+        self._set_plain_label_text(
             self.ui.labelAlignmentTransformStatus,
             display_text,
             (tooltip or text).strip(),
@@ -2807,11 +2706,8 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().resizeEvent(event)
         QTimer.singleShot(0, self.fit_all_graphics_views)
-        QTimer.singleShot(0, self._refit_dynamic_labels)
 
     def eventFilter(self, watched, event) -> bool:  # type: ignore[no-untyped-def]
-        if watched in self._dynamic_fit_labels and event.type() in (QEvent.Resize, QEvent.Show):
-            QTimer.singleShot(0, self._refit_dynamic_labels)
         if watched is self.ui.tableWidgetStarPairs and event.type() == QEvent.KeyPress:
             if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
                 return self._clear_selected_star_pair_positions()

@@ -275,7 +275,7 @@ class Ui_MainWindow(object):
         self.labelImportedImagePathTitle.setObjectName("labelImportedImagePathTitle")
         self.formLayoutImportedImage.setWidget(0, QtWidgets.QFormLayout.LabelRole, self.labelImportedImagePathTitle)
         self.labelImportedImagePath = QtWidgets.QLabel(self.groupBoxImportedImage)
-        self.labelImportedImagePath.setWordWrap(True)
+        self.labelImportedImagePath.setWordWrap(False)
         self.labelImportedImagePath.setObjectName("labelImportedImagePath")
         self.formLayoutImportedImage.setWidget(0, QtWidgets.QFormLayout.FieldRole, self.labelImportedImagePath)
         self.labelImportedImageSizeTitle = QtWidgets.QLabel(self.groupBoxImportedImage)
