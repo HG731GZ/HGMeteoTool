@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -98,6 +99,48 @@ RESIDUAL_SEVERE_MIN_PX = 50.0
 RESIDUAL_SEVERE_RMS_SCALE = 2.0
 STAR_RADIUS_ZOOM_EXPONENT = 0.32
 STAR_RADIUS_MIN_ZOOM_SCALE = 0.48
+
+
+def _session_image_candidate(path_value: object, source_path: Path) -> Path | None:
+    if not isinstance(path_value, str) or not path_value.strip():
+        return None
+    image_path = Path(path_value).expanduser()
+    if not image_path.is_absolute():
+        image_path = source_path.parent / image_path
+    return image_path.resolve()
+
+
+def _resolve_star_pair_session_real_image_path(payload: object, source_path: Path) -> Path:
+    if not isinstance(payload, dict):
+        raise ValueError("JSON 根对象必须是字典。")
+    if payload.get("format") != STAR_PAIR_SESSION_FORMAT:
+        raise ValueError("当前只支持 MeteoAlign 星点配对 JSON。")
+    real_image = payload.get("real_image")
+    if not isinstance(real_image, dict):
+        raise ValueError("JSON 缺少 real_image 字段。")
+
+    searched_paths: list[Path] = []
+    for key in ("relative_path", "path"):
+        image_path = _session_image_candidate(real_image.get(key), source_path)
+        if image_path is None:
+            continue
+        searched_paths.append(image_path)
+        if image_path.exists():
+            return image_path
+
+    if not searched_paths:
+        raise ValueError("JSON 缺少真实图像相对路径与完整路径。")
+    searched_text = "\n".join(str(path) for path in searched_paths)
+    raise FileNotFoundError(f"真实图像不存在，已按相对路径和完整路径查找：\n{searched_text}")
+
+
+def _relative_image_path_for_session(image_path: Path, json_path: Path) -> str:
+    json_dir = json_path.expanduser().resolve().parent
+    try:
+        return os.path.relpath(str(image_path), start=str(json_dir))
+    except ValueError:
+        # Windows 不同盘符之间没有有效相对路径，此时保留文件名并继续依赖完整路径兜底。
+        return image_path.name
 
 
 class GraphicsImageItem(QGraphicsItem):
@@ -392,23 +435,7 @@ class StarPairSessionImportWorker(QObject):
             self.failed.emit(str(exc))
 
     def _real_image_path(self, payload: object) -> Path:
-        if not isinstance(payload, dict):
-            raise ValueError("JSON 根对象必须是字典。")
-        if payload.get("format") != STAR_PAIR_SESSION_FORMAT:
-            raise ValueError("当前只支持 MeteoAlign 星点配对 JSON。")
-        real_image = payload.get("real_image")
-        if not isinstance(real_image, dict):
-            raise ValueError("JSON 缺少 real_image 字段。")
-        path_value = real_image.get("path")
-        if not isinstance(path_value, str) or not path_value.strip():
-            raise ValueError("JSON 缺少真实图像完整路径。")
-        image_path = Path(path_value).expanduser()
-        if not image_path.is_absolute():
-            image_path = self.file_path.parent / image_path
-        image_path = image_path.resolve()
-        if not image_path.exists():
-            raise FileNotFoundError(f"真实图像不存在：{image_path}")
-        return image_path
+        return _resolve_star_pair_session_real_image_path(payload, self.file_path)
 
 
 class MainWindow(QMainWindow):
@@ -1031,12 +1058,13 @@ class MainWindow(QMainWindow):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         return project_root() / "outputs" / f"star_pairs_{timestamp}.json"
 
-    def _build_star_pair_session_payload(self) -> dict[str, object]:
+    def _build_star_pair_session_payload(self, json_path: Path) -> dict[str, object]:
         if self.current_image_preview is None:
             raise ValueError("请先导入真实图像，再导出星点配对 JSON。")
 
         preview = self.current_image_preview
         image_path = Path(preview.path).expanduser().resolve()
+        relative_image_path = _relative_image_path_for_session(image_path, json_path)
         reference_payload = self._build_reference_payload_for_current_settings()
         pair_records = self._star_pair_records()
         generated_time = datetime.now(timezone.utc)
@@ -1047,6 +1075,7 @@ class MainWindow(QMainWindow):
             "reference_payload": reference_payload,
             "real_image": {
                 "path": str(image_path),
+                "relative_path": relative_image_path,
                 "original_width_px": preview.original_width,
                 "original_height_px": preview.original_height,
                 "display_width_px": preview.image.width(),
@@ -1076,7 +1105,7 @@ class MainWindow(QMainWindow):
         if not json_path.suffix:
             json_path = json_path.with_suffix(".json")
         try:
-            payload = self._build_star_pair_session_payload()
+            payload = self._build_star_pair_session_payload(json_path)
             json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             pair_count = int(payload.get("pair_count", 0))
             self.ui.statusbar.showMessage(f"已导出星点配对 JSON: {json_path}  配对数: {pair_count}")
@@ -1203,17 +1232,7 @@ class MainWindow(QMainWindow):
         return restored_count
 
     def _session_real_image_path(self, payload: dict[str, object], source_path: Path) -> Path:
-        real_image = self._payload_section(payload, "real_image")
-        path_value = real_image.get("path")
-        if not isinstance(path_value, str) or not path_value.strip():
-            raise ValueError("JSON 缺少真实图像完整路径。")
-        image_path = Path(path_value).expanduser()
-        if not image_path.is_absolute():
-            image_path = source_path.parent / image_path
-        image_path = image_path.resolve()
-        if not image_path.exists():
-            raise FileNotFoundError(f"真实图像不存在：{image_path}")
-        return image_path
+        return _resolve_star_pair_session_real_image_path(payload, source_path)
 
     def _handle_star_pair_session_import_finished(self, result: object) -> None:
         try:
