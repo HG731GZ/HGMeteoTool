@@ -38,6 +38,7 @@ from .image_preview import IMAGE_FILE_FILTER, ImagePreview, load_image_preview
 from .milky_way import MilkyWayCatalog, load_milky_way
 from .reference import build_reference_payload, save_reference_outputs
 from .renderer import StarMapRenderer
+from .source_model import SourceAstrometricModel, fit_source_astrometric_model
 from .simulator import (
     CameraSettings,
     FISHEYE_EQUIDISTANT,
@@ -93,12 +94,19 @@ STAR_PAIR_RESIDUAL_COLUMN = 3
 STAR_PAIR_SESSION_FORMAT = "meteoalign_star_pair_session"
 STAR_PAIR_SESSION_VERSION = 1
 STAR_PAIR_SESSION_JSON_FILTER = "MeteoAlign 星点配对 JSON (*.json);;JSON 文件 (*.json);;所有文件 (*)"
+SOURCE_MODEL_JSON_FILTER = "MeteoAlign 源图映射 JSON (*.json);;JSON 文件 (*.json);;所有文件 (*)"
 ALIGNMENT_STATUS_MAX_CHARS = 68
 RESIDUAL_WARNING_MIN_PX = 25.0
 RESIDUAL_SEVERE_MIN_PX = 50.0
 RESIDUAL_SEVERE_RMS_SCALE = 2.0
 STAR_RADIUS_ZOOM_EXPONENT = 0.32
 STAR_RADIUS_MIN_ZOOM_SCALE = 0.48
+AUTO_MATCH_MODE_MAG_LIMIT = "mag_limit"
+AUTO_MATCH_MODE_FIXED_COUNT = "fixed_count"
+AUTO_MATCH_DEFAULT_FIXED_COUNT_MAG_LIMIT = 8.0
+AUTO_MATCH_MIN_AMPLITUDE = 2.0
+AUTO_MATCH_DUPLICATE_MIN_DISTANCE_PX = 4.0
+AUTO_MATCH_ANNOTATION_LIMIT = 250
 
 
 def _session_image_candidate(path_value: object, source_path: Path) -> Path | None:
@@ -141,6 +149,47 @@ def _relative_image_path_for_session(image_path: Path, json_path: Path) -> str:
     except ValueError:
         # Windows 不同盘符之间没有有效相对路径，此时保留文件名并继续依赖完整路径兜底。
         return image_path.name
+
+
+def _qimage_to_binary_mask(image: QImage) -> np.ndarray:
+    if image.isNull():
+        raise ValueError("蒙版图像为空。")
+
+    rgb_image = image.convertToFormat(QImage.Format_RGB888)
+    width = rgb_image.width()
+    height = rgb_image.height()
+    bytes_per_line = rgb_image.bytesPerLine()
+    buffer_size = rgb_image.sizeInBytes() if hasattr(rgb_image, "sizeInBytes") else rgb_image.byteCount()
+    image_bits = rgb_image.bits()
+    image_bits.setsize(buffer_size)
+
+    raw = np.frombuffer(image_bits, dtype=np.uint8)
+    rows = raw.reshape((height, bytes_per_line))
+    rgb = rows[:, : width * 3].reshape((height, width, 3))
+    return np.any(rgb != 0, axis=2)
+
+
+def _image_with_binary_mask(image: QImage, mask: np.ndarray) -> QImage:
+    if image.isNull():
+        return QImage()
+
+    mask_array = np.asarray(mask, dtype=bool)
+    if mask_array.shape != (image.height(), image.width()):
+        raise ValueError("蒙版尺寸必须与图像尺寸一致。")
+
+    rgb_image = image.convertToFormat(QImage.Format_RGB888)
+    width = rgb_image.width()
+    height = rgb_image.height()
+    bytes_per_line = rgb_image.bytesPerLine()
+    buffer_size = rgb_image.sizeInBytes() if hasattr(rgb_image, "sizeInBytes") else rgb_image.byteCount()
+    image_bits = rgb_image.bits()
+    image_bits.setsize(buffer_size)
+
+    raw = np.frombuffer(image_bits, dtype=np.uint8)
+    rows = np.array(raw.reshape((height, bytes_per_line)), copy=True)
+    pixels = rows[:, : width * 3].reshape((height, width, 3))
+    pixels[~mask_array] = 0
+    return QImage(rows.data, width, height, bytes_per_line, QImage.Format_RGB888).copy()
 
 
 class GraphicsImageItem(QGraphicsItem):
@@ -401,6 +450,48 @@ class ImagePreviewLoadWorker(QObject):
             self.failed.emit(str(exc))
 
 
+class SkyMaskLoadWorker(QObject):
+    finished = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        file_path: str | Path,
+        expected_size: tuple[int, int],
+        source_image: QImage,
+        source_path: Path,
+    ) -> None:
+        super().__init__()
+        self.file_path = Path(file_path)
+        self.expected_size = expected_size
+        self.source_image = source_image
+        self.source_path = source_path
+
+    def run(self) -> None:
+        try:
+            preview = load_image_preview(self.file_path, max_long_side_px=None)
+            expected_width, expected_height = self.expected_size
+            if preview.image.width() != expected_width or preview.image.height() != expected_height:
+                raise ValueError(
+                    "蒙版尺寸必须与真实图像一致：真实图像 {image_width} x {image_height} px，"
+                    "蒙版 {mask_width} x {mask_height} px。".format(
+                        image_width=expected_width,
+                        image_height=expected_height,
+                        mask_width=preview.image.width(),
+                        mask_height=preview.image.height(),
+                    )
+                )
+
+            mask = _qimage_to_binary_mask(preview.image)
+            if not np.any(mask):
+                raise ValueError("蒙版中没有任何非零像素，无法参与星点匹配。")
+
+            masked_image = _image_with_binary_mask(self.source_image, mask)
+            self.finished.emit((preview.path, self.source_path, mask, masked_image))
+        except Exception as exc:  # noqa: BLE001 - 后台线程需要把所有蒙版读取错误传回界面层。
+            self.failed.emit(str(exc))
+
+
 class ReferenceJsonImportWorker(QObject):
     finished = pyqtSignal(object)
     failed = pyqtSignal(str)
@@ -499,6 +590,9 @@ class MainWindow(QMainWindow):
         self._json_import_thread: QThread | None = None
         self._json_import_worker: QObject | None = None
         self._json_import_progress: QProgressDialog | None = None
+        self._mask_import_thread: QThread | None = None
+        self._mask_import_worker: QObject | None = None
+        self._mask_import_progress: QProgressDialog | None = None
         self._real_image_zoom_max_scale = REAL_IMAGE_MAX_ZOOM_SCALE
         self._syncing_camera_dimensions = False
         self._active_star_pair_row: int | None = None
@@ -510,12 +604,17 @@ class MainWindow(QMainWindow):
         self._current_star_map: ProjectedStarMap | None = None
         self._current_reference_stars: tuple[ReferenceStar, ...] = ()
         self._sky_alignment_transform: SkyAlignmentTransform | None = None
+        self._source_astrometric_model: SourceAstrometricModel | None = None
         self._reference_alignment_error_message = ""
         self._sky_alignment_error_message = ""
+        self._source_model_error_message = ""
         self._syncing_reference_real_views = False
         self._suspend_alignment_updates = False
         self._manual_reference_star_ids: list[str] = []
         self._star_pick_native_zoom_remainder = 0.0
+        self.current_sky_mask_path: Path | None = None
+        self.current_sky_mask: np.ndarray | None = None
+        self.current_sky_masked_image: QImage | None = None
 
         self._init_defaults()
         self._connect_inputs()
@@ -535,6 +634,24 @@ class MainWindow(QMainWindow):
         display_text = text.strip()
         label.setText(display_text)
         label.setToolTip((tooltip or display_text).strip())
+
+    def _refresh_elided_label(self, label: QLabel) -> None:
+        full_text = str(label.property("fullText") or "")
+        if not full_text:
+            return
+        available_width = max(12, label.contentsRect().width() - 2)
+        label.setText(label.fontMetrics().elidedText(full_text, Qt.ElideRight, available_width))
+
+    def _set_elided_label_text(self, label: QLabel, text: str, tooltip: str | None = None) -> None:
+        full_text = text.strip()
+        label.setProperty("fullText", full_text)
+        label.setToolTip((tooltip or full_text).strip())
+        self._refresh_elided_label(label)
+        QTimer.singleShot(0, lambda label=label: self._refresh_elided_label(label))
+
+    def _refresh_all_elided_labels(self) -> None:
+        self._refresh_elided_label(self.ui.labelImportedImagePath)
+        self._refresh_elided_label(self.ui.labelSkyMaskStatus)
 
     def _init_defaults(self) -> None:
         self.ui.dateTimeEditObservation.setDateTime(QDateTime.currentDateTime())
@@ -559,8 +676,14 @@ class MainWindow(QMainWindow):
         self.ui.comboBoxReferenceLabelMode.setCurrentIndex(0)
         self.ui.spinBoxReferenceStarCount.setValue(12)
         self.ui.doubleSpinBoxReferenceMagLimit.setValue(3.0)
+        self.ui.comboBoxAutoMatchMode.setCurrentIndex(0)
+        self.ui.doubleSpinBoxAutoMatchMagLimit.setValue(6.0)
+        self.ui.spinBoxAutoMatchCount.setValue(2000)
+        self.ui.spinBoxAutoMatchRadius.setValue(30)
         self._reset_imported_image_labels()
+        self._reset_sky_mask_status()
         self._update_reference_label_controls()
+        self._update_auto_match_controls()
         self._update_lens_model_controls()
         self._update_reference_overlay_opacity_label()
         self._update_reference_alignment_controls()
@@ -599,6 +722,12 @@ class MainWindow(QMainWindow):
         self.ui.pushButtonExportStarPairs.clicked.connect(self.export_star_pair_session)
         self.ui.pushButtonImportStarPairs.clicked.connect(self.import_star_pair_session)
         self.ui.pushButtonClearStarPairs.clicked.connect(self.clear_all_star_pair_positions)
+        self.ui.pushButtonImportSkyMask.clicked.connect(self.import_sky_mask)
+        self.ui.pushButtonClearSkyMask.clicked.connect(self.clear_sky_mask)
+        self.ui.checkBoxShowSkyMask.toggled.connect(self._refresh_real_image_display_for_mask)
+        self.ui.comboBoxAutoMatchMode.currentIndexChanged.connect(self._update_auto_match_controls)
+        self.ui.pushButtonAutoMatchFieldStars.clicked.connect(self.auto_match_field_stars)
+        self.ui.pushButtonExportSourceModel.clicked.connect(self.export_source_model_json)
         self.ui.actionImportSingleImage.triggered.connect(self.import_single_image)
         self.ui.actionImportImageSequence.triggered.connect(self.show_sequence_import_placeholder)
         self.ui.tabWidgetMain.currentChanged.connect(self._handle_tab_changed)
@@ -606,6 +735,8 @@ class MainWindow(QMainWindow):
         self.ui.tableWidgetStarPairs.customContextMenuRequested.connect(self._show_star_pair_context_menu)
         self.ui.tableWidgetStarPairs.itemChanged.connect(self._handle_star_pair_item_changed)
         self.ui.tableWidgetStarPairs.installEventFilter(self)
+        self.ui.labelImportedImagePath.installEventFilter(self)
+        self.ui.labelSkyMaskStatus.installEventFilter(self)
         self.ui.pushButtonImportReferenceJson.clicked.connect(self.import_reference_json)
         self.ui.checkBoxOverlayReferenceMap.toggled.connect(self._update_reference_alignment_display)
         self.ui.horizontalSliderReferenceOverlayOpacity.valueChanged.connect(self._handle_reference_overlay_opacity_changed)
@@ -624,13 +755,85 @@ class MainWindow(QMainWindow):
         )
 
     def _reset_imported_image_labels(self) -> None:
-        self._set_plain_label_text(self.ui.labelImportedImagePath, "未导入", "")
+        self._set_elided_label_text(self.ui.labelImportedImagePath, "未导入", "")
         self.ui.labelImportedImageSize.setText("-")
 
     def _update_imported_image_labels(self, preview: ImagePreview) -> None:
         image_path = str(Path(preview.path).expanduser().resolve())
-        self._set_plain_label_text(self.ui.labelImportedImagePath, image_path, image_path)
+        self._set_elided_label_text(self.ui.labelImportedImagePath, image_path, image_path)
         self.ui.labelImportedImageSize.setText(f"{preview.original_width} x {preview.original_height} px")
+
+    def _reset_sky_mask_status(self) -> None:
+        self.current_sky_mask_path = None
+        self.current_sky_mask = None
+        self.current_sky_masked_image = None
+        self._set_elided_label_text(self.ui.labelSkyMaskStatus, "未使用蒙版", "")
+
+    def _update_sky_mask_status(self) -> None:
+        if self.current_sky_mask is None:
+            self._reset_sky_mask_status()
+            return
+
+        valid_fraction = float(np.count_nonzero(self.current_sky_mask)) / max(float(self.current_sky_mask.size), 1.0)
+        path_text = str(self.current_sky_mask_path) if self.current_sky_mask_path is not None else "内存蒙版"
+        self._set_elided_label_text(
+            self.ui.labelSkyMaskStatus,
+            f"蒙版有效区域 {valid_fraction * 100.0:.1f}%",
+            path_text,
+        )
+
+    def _sky_mask_allows_point(self, x_px: float, y_px: float) -> bool:
+        if self.current_sky_mask is None:
+            return True
+        if not (math.isfinite(x_px) and math.isfinite(y_px)):
+            return False
+
+        mask_height, mask_width = self.current_sky_mask.shape
+        image_x = int(round(x_px))
+        image_y = int(round(y_px))
+        if image_x < 0 or image_x >= mask_width or image_y < 0 or image_y >= mask_height:
+            return False
+        return bool(self.current_sky_mask[image_y, image_x])
+
+    def _clear_sky_mask_if_size_mismatch(self, image_width: int, image_height: int) -> None:
+        if self.current_sky_mask is None:
+            return
+        mask_height, mask_width = self.current_sky_mask.shape
+        if mask_width == image_width and mask_height == image_height:
+            self.current_sky_masked_image = None
+            return
+        self._reset_sky_mask_status()
+        self.ui.statusbar.showMessage("新的真实图像尺寸与已有蒙版不一致，已自动清除蒙版。")
+
+    def _auto_match_mode(self) -> str:
+        return AUTO_MATCH_MODE_FIXED_COUNT if self.ui.comboBoxAutoMatchMode.currentIndex() == 1 else AUTO_MATCH_MODE_MAG_LIMIT
+
+    def _update_auto_match_controls(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        fixed_count = self._auto_match_mode() == AUTO_MATCH_MODE_FIXED_COUNT
+        self.ui.labelAutoMatchMagLimit.setEnabled(not fixed_count)
+        self.ui.doubleSpinBoxAutoMatchMagLimit.setEnabled(not fixed_count)
+        self.ui.labelAutoMatchCount.setEnabled(fixed_count)
+        self.ui.spinBoxAutoMatchCount.setEnabled(fixed_count)
+
+    def _real_image_for_current_mask_preview(self) -> QImage:
+        if self.current_image_preview is None:
+            return QImage()
+        image = self.current_image_preview.image
+        if self.current_sky_mask is not None and self.ui.checkBoxShowSkyMask.isChecked():
+            if self.current_sky_masked_image is None:
+                self.current_sky_masked_image = _image_with_binary_mask(image, self.current_sky_mask)
+            return self.current_sky_masked_image
+        return image
+
+    def _refresh_real_image_display_for_mask(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        if self.current_image_preview is None:
+            return
+        self.real_image_item.set_image(self._real_image_for_current_mask_preview())
+
+    def _set_mask_import_controls_enabled(self, enabled: bool) -> None:
+        self.ui.pushButtonImportSkyMask.setEnabled(enabled and self.current_image_preview is not None)
+        self.ui.pushButtonClearSkyMask.setEnabled(enabled and self.current_sky_mask is not None)
+        self.ui.checkBoxShowSkyMask.setEnabled(enabled and self.current_sky_mask is not None)
 
     def _reference_star_lookup(self) -> dict[str, ReferenceStar]:
         return {star.star_id.strip(): star for star in self._current_reference_stars if star.star_id.strip()}
@@ -723,13 +926,16 @@ class MainWindow(QMainWindow):
 
     def _update_reference_alignment_transform(self) -> None:
         self._sky_alignment_transform = None
+        self._source_astrometric_model = None
         self._reference_alignment_error_message = ""
         self._sky_alignment_error_message = ""
+        self._source_model_error_message = ""
         if self._suspend_alignment_updates:
             return
         if self.current_image_preview is None:
             self._reference_alignment_error_message = "导入真实图像后可计算实时星空叠加。"
             self._sky_alignment_error_message = "导入真实图像后可计算天球残差。"
+            self._source_model_error_message = "导入真实图像后可拟合 xy→RA/Dec 映射。"
             self._update_star_pair_residual_columns()
             self._update_reference_alignment_display()
             return
@@ -742,6 +948,9 @@ class MainWindow(QMainWindow):
             self._sky_alignment_error_message = (
                 f"已配对 {sky_points.shape[0]} 颗星；至少 {MIN_ALIGNMENT_PAIRS} 颗后可计算天球残差。"
             )
+            self._source_model_error_message = (
+                f"已配对 {sky_points.shape[0]} 颗星；至少 {MIN_ALIGNMENT_PAIRS} 颗后可拟合 xy→RA/Dec 映射。"
+            )
             self._update_star_pair_residual_columns()
             self._update_reference_alignment_display()
             return
@@ -753,6 +962,16 @@ class MainWindow(QMainWindow):
             )
         except Exception as exc:  # noqa: BLE001 - 天球残差失败需要直接反馈给交互界面。
             self._sky_alignment_error_message = str(exc)
+        if self._sky_alignment_transform is not None and self.current_image_preview is not None:
+            try:
+                image = self.current_image_preview.image
+                self._source_astrometric_model = fit_source_astrometric_model(
+                    ra_dec_points=sky_points,
+                    pixel_points=sky_target_points,
+                    image_size=(image.width(), image.height()),
+                )
+            except Exception as exc:  # noqa: BLE001 - 源图模型错误要保留给导出按钮和状态栏。
+                self._source_model_error_message = str(exc)
         self._update_star_pair_residual_columns()
         self._update_reference_alignment_display()
 
@@ -793,12 +1012,23 @@ class MainWindow(QMainWindow):
 
     def _update_reference_alignment_controls(self) -> None:
         has_alignment = self._sky_alignment_transform is not None and self.current_image_preview is not None
+        has_source_model = self._source_astrometric_model is not None and self.current_image_preview is not None
         overlay_checked = self.ui.checkBoxOverlayReferenceMap.isChecked()
         self.ui.checkBoxOverlayReferenceMap.setEnabled(has_alignment)
         self.ui.labelReferenceOverlayOpacityTitle.setEnabled(has_alignment and overlay_checked)
         self.ui.horizontalSliderReferenceOverlayOpacity.setEnabled(has_alignment and overlay_checked)
         self.ui.labelReferenceOverlayOpacityValue.setEnabled(has_alignment and overlay_checked)
         self.ui.checkBoxSyncReferenceAndRealView.setEnabled(has_alignment)
+        mask_controls_enabled = self._mask_import_thread is None
+        self.ui.pushButtonImportSkyMask.setEnabled(mask_controls_enabled and self.current_image_preview is not None)
+        self.ui.pushButtonClearSkyMask.setEnabled(mask_controls_enabled and self.current_sky_mask is not None)
+        self.ui.checkBoxShowSkyMask.setEnabled(mask_controls_enabled and self.current_sky_mask is not None)
+        if self.current_sky_mask is None and self.ui.checkBoxShowSkyMask.isChecked():
+            was_blocked = self.ui.checkBoxShowSkyMask.blockSignals(True)
+            self.ui.checkBoxShowSkyMask.setChecked(False)
+            self.ui.checkBoxShowSkyMask.blockSignals(was_blocked)
+        self.ui.pushButtonAutoMatchFieldStars.setEnabled(has_alignment)
+        self.ui.pushButtonExportSourceModel.setEnabled(has_source_model)
         if not has_alignment and self.ui.checkBoxSyncReferenceAndRealView.isChecked():
             self.ui.checkBoxSyncReferenceAndRealView.blockSignals(True)
             self.ui.checkBoxSyncReferenceAndRealView.setChecked(False)
@@ -806,6 +1036,11 @@ class MainWindow(QMainWindow):
 
         sky_transform = self._sky_alignment_transform
         if sky_transform is not None:
+            source_model_text = ""
+            if self._source_astrometric_model is not None:
+                source_model_text = f"，映射可导出"
+            elif self._source_model_error_message:
+                source_model_text = "，映射未就绪"
             distances = self._alignment_residual_distances()
             compact_summary = ""
             residual_summary = "暂无逐星残差"
@@ -815,20 +1050,27 @@ class MainWindow(QMainWindow):
                 compact_summary = f"，中位 {median_distance:.2f}，最大 {max_distance:.2f}"
                 residual_summary = f"中位 {median_distance:.2f} px，最大 {max_distance:.2f} px"
             display_text = (
-                "配准 {count} 对，{model} RMS {rms:.2f}px{summary}".format(
+                "配准 {count} 对，{model} RMS {rms:.2f}px{summary}{source_model}".format(
                     count=sky_transform.pair_count,
                     model=sky_transform.display_name,
                     rms=sky_transform.rms_px,
                     summary=compact_summary,
+                    source_model=source_model_text,
                 )
             )
             tooltip = (
                 "实时星空叠加：已用 {count} 对星拟合 RA/Dec {model}，RMS {rms:.2f} px。\n"
-                "天球残差：{residual_summary}。".format(
+                "天球残差：{residual_summary}。\n"
+                "源图映射：{source_model_summary}".format(
                     count=sky_transform.pair_count,
                     model=sky_transform.display_name,
                     rms=sky_transform.rms_px,
                     residual_summary=residual_summary,
+                    source_model_summary=(
+                        "已可导出 xy→RA/Dec JSON。"
+                        if self._source_astrometric_model is not None
+                        else self._source_model_error_message or "尚未就绪。"
+                    ),
                 )
             )
             self._set_alignment_status_text(display_text, tooltip)
@@ -836,6 +1078,7 @@ class MainWindow(QMainWindow):
             status_text = (
                 self._sky_alignment_error_message
                 or self._reference_alignment_error_message
+                or self._source_model_error_message
                 or f"至少配对 {MIN_ALIGNMENT_PAIRS} 颗星后可自动配准。"
             )
             self._set_alignment_status_text(status_text)
@@ -1113,6 +1356,103 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001 - 导出入口需要把文件和字段错误直接反馈给用户。
             self.ui.statusbar.showMessage(f"导出星点配对 JSON 失败: {exc}")
             QMessageBox.critical(self, "导出星点配对 JSON 失败", str(exc))
+
+    def _default_source_model_path(self) -> Path:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return project_root() / "outputs" / f"source_model_{timestamp}.json"
+
+    def _source_image_payload(self, json_path: Path) -> dict[str, object]:
+        if self.current_image_preview is None:
+            raise ValueError("请先导入真实图像。")
+        preview = self.current_image_preview
+        image_path = Path(preview.path).expanduser().resolve()
+        return {
+            "path": str(image_path),
+            "relative_path": _relative_image_path_for_session(image_path, json_path),
+            "original_width_px": preview.original_width,
+            "original_height_px": preview.original_height,
+            "model_width_px": preview.image.width(),
+            "model_height_px": preview.image.height(),
+        }
+
+    def _sky_mask_payload(self, json_path: Path) -> dict[str, object]:
+        if self.current_sky_mask is None:
+            return {"active": False}
+        mask_height, mask_width = self.current_sky_mask.shape
+        payload: dict[str, object] = {
+            "active": True,
+            "width_px": int(mask_width),
+            "height_px": int(mask_height),
+            "valid_fraction": float(np.count_nonzero(self.current_sky_mask)) / max(float(self.current_sky_mask.size), 1.0),
+            "zero_pixels_excluded": True,
+        }
+        if self.current_sky_mask_path is not None:
+            mask_path = self.current_sky_mask_path.expanduser().resolve()
+            payload["path"] = str(mask_path)
+            payload["relative_path"] = _relative_image_path_for_session(mask_path, json_path)
+        return payload
+
+    def _auto_match_settings_payload(self) -> dict[str, object]:
+        return {
+            "mode": self._auto_match_mode(),
+            "mag_limit": float(self.ui.doubleSpinBoxAutoMatchMagLimit.value()),
+            "fixed_count": int(self.ui.spinBoxAutoMatchCount.value()),
+            "search_radius_px": int(self.ui.spinBoxAutoMatchRadius.value()),
+            "mask_enabled": self.current_sky_mask is not None,
+        }
+
+    def _current_source_model(self) -> SourceAstrometricModel:
+        if self._source_astrometric_model is None:
+            self._update_reference_alignment_transform()
+        if self._source_astrometric_model is None:
+            raise ValueError(self._source_model_error_message or f"至少需要 {MIN_ALIGNMENT_PAIRS} 对星点才能导出映射。")
+        return self._source_astrometric_model
+
+    def _build_source_model_payload(self, json_path: Path) -> dict[str, object]:
+        model = self._current_source_model()
+        return model.to_json_payload(
+            source_image=self._source_image_payload(json_path),
+            fit_pairs=self._star_pair_records(),
+            mask=self._sky_mask_payload(json_path),
+            matching=self._auto_match_settings_payload(),
+        )
+
+    def export_source_model_json(self) -> None:
+        if self.current_image_preview is None:
+            QMessageBox.information(self, "尚未导入图像", "请先导入真实图像，再导出 xy→RA/Dec 映射 JSON。")
+            return
+
+        default_path = self._default_source_model_path()
+        default_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "导出 xy→RA/Dec 映射 JSON",
+            str(default_path),
+            SOURCE_MODEL_JSON_FILTER,
+        )
+        if not file_path:
+            return
+
+        json_path = Path(file_path)
+        if not json_path.suffix:
+            json_path = json_path.with_suffix(".json")
+        try:
+            payload = self._build_source_model_payload(json_path)
+            json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            diagnostics = payload.get("diagnostics", {})
+            pair_count = int(diagnostics.get("pair_count", 0)) if isinstance(diagnostics, dict) else 0
+            rms_px = float(diagnostics.get("rms_px", float("nan"))) if isinstance(diagnostics, dict) else float("nan")
+            self.ui.statusbar.showMessage(
+                f"已导出 xy→RA/Dec 映射 JSON: {json_path}  配对数: {pair_count}  RMS: {rms_px:.2f}px"
+            )
+            QMessageBox.information(
+                self,
+                "映射 JSON 已导出",
+                f"JSON：{json_path}\n配对数：{pair_count}\nRMS：{rms_px:.2f} px",
+            )
+        except Exception as exc:  # noqa: BLE001 - 导出入口需要把拟合与文件错误直接反馈给用户。
+            self.ui.statusbar.showMessage(f"导出 xy→RA/Dec 映射 JSON 失败: {exc}")
+            QMessageBox.critical(self, "导出 xy→RA/Dec 映射 JSON 失败", str(exc))
 
     def import_star_pair_session(self) -> None:
         default_dir = project_root() / "outputs"
@@ -1645,7 +1985,12 @@ class MainWindow(QMainWindow):
             return ""
         return item.text()
 
-    def _set_star_pair_position(self, row: int, fitted_position: FittedStarPosition) -> None:
+    def _set_star_pair_position(
+        self,
+        row: int,
+        fitted_position: FittedStarPosition,
+        update_alignment: bool = True,
+    ) -> None:
         table = self.ui.tableWidgetStarPairs
         if row < 0 or row >= table.rowCount():
             return
@@ -1660,7 +2005,8 @@ class MainWindow(QMainWindow):
         position_item.setText(f"{fitted_position.x:.2f}, {fitted_position.y:.2f}")
         table.selectRow(row)
         self._refresh_star_pair_row_style(row)
-        self._update_reference_alignment_transform()
+        if update_alignment:
+            self._update_reference_alignment_transform()
 
     def _clear_star_pair_positions(self) -> int:
         cleared_count = self._star_pair_position_count()
@@ -1935,6 +2281,242 @@ class MainWindow(QMainWindow):
             )
         )
 
+    def _auto_match_required_mag_limit(self) -> float:
+        if self._auto_match_mode() == AUTO_MATCH_MODE_MAG_LIMIT:
+            return self.ui.doubleSpinBoxAutoMatchMagLimit.value()
+        return max(
+            self.ui.doubleSpinBoxMagLimit.value(),
+            self.ui.doubleSpinBoxAutoMatchMagLimit.value(),
+            AUTO_MATCH_DEFAULT_FIXED_COUNT_MAG_LIMIT,
+        )
+
+    def _ensure_current_star_map_for_auto_match(self, mag_limit: float) -> None:
+        if self.ui.doubleSpinBoxMagLimit.value() + 1e-6 < mag_limit:
+            was_blocked = self.ui.doubleSpinBoxMagLimit.blockSignals(True)
+            self.ui.doubleSpinBoxMagLimit.setValue(min(mag_limit, self.ui.doubleSpinBoxMagLimit.maximum()))
+            self.ui.doubleSpinBoxMagLimit.blockSignals(was_blocked)
+            self.render_now()
+        elif self._current_star_map is None:
+            self.render_now()
+
+    def _auto_match_candidate_stars(
+        self,
+        transform: SkyAlignmentTransform,
+    ) -> tuple[list[ReferenceStar], dict[str, tuple[float, float]]]:
+        if self.current_image_preview is None:
+            return [], {}
+
+        mag_limit = self._auto_match_required_mag_limit()
+        self._ensure_current_star_map_for_auto_match(mag_limit)
+        star_map = self._current_star_map
+        if star_map is None or len(star_map) <= 0:
+            return [], {}
+
+        image = self.current_image_preview.image
+        ra_dec_points = np.column_stack((star_map.ra_deg, star_map.dec_deg))
+        predicted = transform.transform_radec_points(ra_dec_points)
+        finite = np.all(np.isfinite(predicted), axis=1)
+        inside = (
+            finite
+            & (predicted[:, 0] >= 0.0)
+            & (predicted[:, 0] < image.width())
+            & (predicted[:, 1] >= 0.0)
+            & (predicted[:, 1] < image.height())
+            & star_map.above_horizon.astype(bool)
+        )
+
+        if self.current_sky_mask is not None:
+            mask_allowed = np.zeros(len(star_map), dtype=bool)
+            for index in np.where(inside)[0]:
+                mask_allowed[index] = self._sky_mask_allows_point(float(predicted[index, 0]), float(predicted[index, 1]))
+            inside &= mask_allowed
+
+        if self._auto_match_mode() == AUTO_MATCH_MODE_MAG_LIMIT:
+            inside &= star_map.mag_v <= self.ui.doubleSpinBoxAutoMatchMagLimit.value()
+
+        candidate_indices = np.where(inside)[0]
+        if candidate_indices.size <= 0:
+            return [], {}
+
+        order = np.argsort(star_map.mag_v[candidate_indices], kind="stable")
+        candidate_indices = candidate_indices[order]
+        if self._auto_match_mode() == AUTO_MATCH_MODE_FIXED_COUNT:
+            candidate_indices = candidate_indices[: self.ui.spinBoxAutoMatchCount.value()]
+
+        candidates: list[ReferenceStar] = []
+        predicted_by_id: dict[str, tuple[float, float]] = {}
+        seen_star_ids: set[str] = set()
+        for star_index in candidate_indices:
+            reference_star = self._reference_star_from_star_map_index(star_map, int(star_index), output_index=0)
+            star_id = reference_star.star_id.strip()
+            if not star_id or star_id in seen_star_ids:
+                continue
+            seen_star_ids.add(star_id)
+            candidates.append(reference_star)
+            predicted_by_id[star_id] = (float(predicted[star_index, 0]), float(predicted[star_index, 1]))
+        return candidates, predicted_by_id
+
+    def _ensure_auto_match_candidates_visible(self, candidates: list[ReferenceStar]) -> None:
+        visible_star_ids = {
+            self._star_pair_star_id(row)
+            for row in range(self.ui.tableWidgetStarPairs.rowCount())
+            if self._star_pair_star_id(row)
+        }
+        added_any = False
+        for reference_star in candidates:
+            star_id = reference_star.star_id.strip()
+            if not star_id or star_id in visible_star_ids or star_id in self._manual_reference_star_ids:
+                continue
+            self._manual_reference_star_ids.append(star_id)
+            visible_star_ids.add(star_id)
+            added_any = True
+        if added_any:
+            self._refresh_reference_stars_from_current_map()
+
+    def _existing_matched_positions(self) -> list[tuple[float, float]]:
+        positions: list[tuple[float, float]] = []
+        for row in range(self.ui.tableWidgetStarPairs.rowCount()):
+            position = self._parse_star_pair_position_text(row)
+            if position is not None:
+                positions.append(position)
+        return positions
+
+    def _position_is_duplicate(self, position: tuple[float, float], accepted_positions: list[tuple[float, float]]) -> bool:
+        for accepted_x, accepted_y in accepted_positions:
+            if float(np.hypot(position[0] - accepted_x, position[1] - accepted_y)) < AUTO_MATCH_DUPLICATE_MIN_DISTANCE_PX:
+                return True
+        return False
+
+    def auto_match_field_stars(self) -> None:
+        if self.current_image_preview is None:
+            QMessageBox.information(self, "尚未导入图像", "请先导入真实图像，再自动扩展匹配。")
+            return
+
+        transform = self._sky_alignment_transform
+        if transform is None:
+            self._update_reference_alignment_transform()
+            transform = self._sky_alignment_transform
+        if transform is None:
+            QMessageBox.information(
+                self,
+                "无法自动扩展匹配",
+                self._sky_alignment_error_message
+                or self._reference_alignment_error_message
+                or f"至少需要 {MIN_ALIGNMENT_PAIRS} 对已配准参考星。",
+            )
+            return
+
+        candidates, predicted_by_id = self._auto_match_candidate_stars(transform)
+        if not candidates:
+            QMessageBox.information(self, "没有候选星", "当前视场、星等/数量设置和蒙版下没有可匹配的候选星。")
+            return
+
+        self._ensure_auto_match_candidates_visible(candidates)
+        image = self.current_image_preview.image
+        search_radius_px = self.ui.spinBoxAutoMatchRadius.value()
+        annotate_matches = len(candidates) <= AUTO_MATCH_ANNOTATION_LIMIT
+        accepted_positions = self._existing_matched_positions()
+        matched_count = 0
+        skipped_existing = 0
+        skipped_mask = 0
+        skipped_duplicate = 0
+        failed_count = 0
+        canceled = False
+        progress = QProgressDialog(self)
+        progress.setWindowTitle("正在自动扩展匹配")
+        progress.setLabelText(f"正在对 {len(candidates)} 颗候选星做 PSF 拟合...")
+        progress.setRange(0, len(candidates))
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.show()
+        QApplication.processEvents()
+
+        table = self.ui.tableWidgetStarPairs
+        signals_were_blocked = table.blockSignals(True)
+        try:
+            for candidate_index, reference_star in enumerate(candidates, start=1):
+                if progress.wasCanceled():
+                    canceled = True
+                    break
+                if candidate_index == 1 or candidate_index % 10 == 0:
+                    progress.setValue(candidate_index - 1)
+                    QApplication.processEvents()
+
+                star_id = reference_star.star_id.strip()
+                row = self._row_for_star_id(star_id)
+                if row is None:
+                    failed_count += 1
+                    continue
+                if self._star_pair_position_text(row):
+                    skipped_existing += 1
+                    continue
+
+                predicted_position = predicted_by_id.get(star_id)
+                if predicted_position is None:
+                    failed_count += 1
+                    continue
+                predicted_x, predicted_y = predicted_position
+                if not self._sky_mask_allows_point(predicted_x, predicted_y):
+                    skipped_mask += 1
+                    continue
+
+                try:
+                    fitted_position = fit_star_position(
+                        image,
+                        click_x=predicted_x,
+                        click_y=predicted_y,
+                        radius_px=search_radius_px,
+                    )
+                except Exception:
+                    failed_count += 1
+                    continue
+
+                distance_px = float(np.hypot(fitted_position.x - predicted_x, fitted_position.y - predicted_y))
+                if distance_px > float(search_radius_px) or fitted_position.amplitude < AUTO_MATCH_MIN_AMPLITUDE:
+                    failed_count += 1
+                    continue
+                if not self._sky_mask_allows_point(fitted_position.x, fitted_position.y):
+                    skipped_mask += 1
+                    continue
+                fitted_xy = (float(fitted_position.x), float(fitted_position.y))
+                if self._position_is_duplicate(fitted_xy, accepted_positions):
+                    skipped_duplicate += 1
+                    continue
+
+                self._set_star_pair_position(row, fitted_position, update_alignment=False)
+                if annotate_matches:
+                    self._add_or_update_star_pair_annotation(row, fitted_position, search_radius_px)
+                accepted_positions.append(fitted_xy)
+                matched_count += 1
+        finally:
+            table.blockSignals(signals_were_blocked)
+            progress.setValue(len(candidates))
+            progress.close()
+
+        self._refresh_star_pair_table_styles()
+        self._update_reference_alignment_transform()
+        status_prefix = "自动扩展匹配已取消" if canceled else "自动扩展匹配完成"
+        self.ui.statusbar.showMessage(
+            "{status_prefix}：候选 {candidate_count}，新增 {matched_count}，已有 {skipped_existing}，"
+            "蒙版跳过 {skipped_mask}，重复跳过 {skipped_duplicate}，失败 {failed_count}。".format(
+                status_prefix=status_prefix,
+                candidate_count=len(candidates),
+                matched_count=matched_count,
+                skipped_existing=skipped_existing,
+                skipped_mask=skipped_mask,
+                skipped_duplicate=skipped_duplicate,
+                failed_count=failed_count,
+            )
+        )
+        if matched_count <= 0 and not canceled:
+            QMessageBox.information(
+                self,
+                "自动扩展匹配完成",
+                "没有新增匹配。可以检查蒙版、搜索半径、星等/数量设置，或先增加几颗手动配对星提高初始配准精度。",
+            )
+
     def import_single_image(self) -> None:
         if self._image_import_thread is not None:
             QMessageBox.information(self, "正在导入图像", "当前已有图像正在导入，请稍候。")
@@ -2013,6 +2595,7 @@ class MainWindow(QMainWindow):
         if clear_existing_pairs:
             self._clear_star_pair_positions_for_new_input("新的真实图像")
         self.current_image_preview = preview
+        self._clear_sky_mask_if_size_mismatch(preview.image.width(), preview.image.height())
         self._display_real_image_preview(preview)
         self.ui.tabWidgetMain.setCurrentWidget(self.ui.tabReferenceImage)
         self._update_imported_image_labels(preview)
@@ -2043,6 +2626,128 @@ class MainWindow(QMainWindow):
 
     def show_sequence_import_placeholder(self) -> None:
         QMessageBox.information(self, "序列图像导入", "序列图像导入入口已预留，将在后续阶段实现。")
+
+    def import_sky_mask(self) -> None:
+        if self._mask_import_thread is not None:
+            QMessageBox.information(self, "正在导入蒙版", "当前已有蒙版正在导入，请稍候。")
+            return
+        if self.current_image_preview is None:
+            QMessageBox.information(self, "尚未导入图像", "请先导入真实图像，再导入同尺寸蒙版。")
+            return
+
+        default_dir = Path(self.current_image_preview.path).expanduser().resolve().parent
+        file_path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "导入星空区域蒙版",
+            str(default_dir),
+            IMAGE_FILE_FILTER,
+        )
+        if not file_path:
+            return
+        self.start_sky_mask_import(file_path)
+
+    def load_sky_mask(self, file_path: str | Path) -> None:
+        self.start_sky_mask_import(file_path)
+
+    def start_sky_mask_import(self, file_path: str | Path) -> None:
+        if self._mask_import_thread is not None:
+            QMessageBox.information(self, "正在导入蒙版", "当前已有蒙版正在导入，请稍候。")
+            return
+        if self.current_image_preview is None:
+            QMessageBox.information(self, "尚未导入图像", "请先导入真实图像，再导入同尺寸蒙版。")
+            return
+
+        mask_path = Path(file_path).expanduser().resolve()
+        image = self.current_image_preview.image
+        source_path = Path(self.current_image_preview.path).expanduser().resolve()
+        self._set_mask_import_controls_enabled(False)
+        self.ui.statusbar.showMessage(f"正在导入蒙版并生成缓存预览: {mask_path}")
+
+        progress = QProgressDialog(self)
+        progress.setWindowTitle("正在导入蒙版")
+        progress.setLabelText(f"正在读取蒙版并生成缓存预览...\n{mask_path}")
+        progress.setRange(0, 0)
+        progress.setCancelButton(None)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.show()
+
+        thread = QThread(self)
+        worker = SkyMaskLoadWorker(
+            mask_path,
+            expected_size=(image.width(), image.height()),
+            source_image=image,
+            source_path=source_path,
+        )
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._handle_sky_mask_import_finished)
+        worker.failed.connect(self._handle_sky_mask_import_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._cleanup_sky_mask_import)
+
+        self._mask_import_thread = thread
+        self._mask_import_worker = worker
+        self._mask_import_progress = progress
+        thread.start()
+
+    def _handle_sky_mask_import_finished(self, result: object) -> None:
+        if self._mask_import_progress is not None:
+            self._mask_import_progress.close()
+        try:
+            mask_path, source_path, mask, masked_image = result  # type: ignore[misc]
+            if not isinstance(mask_path, Path):
+                mask_path = Path(mask_path)
+            if not isinstance(source_path, Path):
+                source_path = Path(source_path)
+            if self.current_image_preview is None:
+                raise ValueError("真实图像已关闭，无法应用蒙版。")
+            current_source_path = Path(self.current_image_preview.path).expanduser().resolve()
+            if current_source_path != source_path:
+                raise ValueError("真实图像已改变，请重新导入蒙版。")
+            image = self.current_image_preview.image
+            mask_array = np.asarray(mask, dtype=bool)
+            if mask_array.shape != (image.height(), image.width()):
+                raise ValueError("蒙版尺寸与当前真实图像不一致，请重新导入。")
+
+            self.current_sky_mask_path = mask_path
+            self.current_sky_mask = mask_array
+            self.current_sky_masked_image = masked_image if isinstance(masked_image, QImage) else None
+            self._update_sky_mask_status()
+            self._update_reference_alignment_controls()
+            self._refresh_real_image_display_for_mask()
+            self.ui.statusbar.showMessage(f"已导入蒙版并缓存显示图: {mask_path}")
+        except Exception as exc:  # noqa: BLE001 - 主线程应用蒙版时需要把状态错误直接反馈给用户。
+            self.ui.statusbar.showMessage(f"导入蒙版失败: {exc}")
+            QMessageBox.critical(self, "导入蒙版失败", str(exc))
+
+    def _handle_sky_mask_import_failed(self, error_message: str) -> None:
+        if self._mask_import_progress is not None:
+            self._mask_import_progress.close()
+        self.ui.statusbar.showMessage(f"导入蒙版失败: {error_message}")
+        QMessageBox.critical(self, "导入蒙版失败", error_message)
+
+    def _cleanup_sky_mask_import(self) -> None:
+        if self._mask_import_progress is not None:
+            self._mask_import_progress.close()
+        self._mask_import_thread = None
+        self._mask_import_worker = None
+        self._mask_import_progress = None
+        self._update_reference_alignment_controls()
+
+    def clear_sky_mask(self) -> None:
+        if self.current_sky_mask is None:
+            self.ui.statusbar.showMessage("当前没有正在使用的蒙版。")
+            return
+        self._reset_sky_mask_status()
+        self._update_reference_alignment_controls()
+        self._refresh_real_image_display_for_mask()
+        self.ui.statusbar.showMessage("已清除蒙版，后续自动匹配将使用整张图像。")
 
     def _handle_tab_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
         QTimer.singleShot(0, self.fit_all_graphics_views)
@@ -2165,11 +2870,17 @@ class MainWindow(QMainWindow):
         reference_stars = self._select_current_reference_stars(self._current_star_map)
         self._update_star_pair_table(reference_stars)
 
-    def _select_star_pair_row_by_id(self, star_id: str) -> int | None:
+    def _row_for_star_id(self, star_id: str) -> int | None:
         for row in range(self.ui.tableWidgetStarPairs.rowCount()):
             if self._star_pair_star_id(row) == star_id:
-                self.ui.tableWidgetStarPairs.selectRow(row)
                 return row
+        return None
+
+    def _select_star_pair_row_by_id(self, star_id: str) -> int | None:
+        row = self._row_for_star_id(star_id)
+        if row is not None:
+            self.ui.tableWidgetStarPairs.selectRow(row)
+            return row
         return None
 
     def _sensor_aspect_ratio(self) -> float:
@@ -2362,11 +3073,12 @@ class MainWindow(QMainWindow):
     def _build_projected_star_map(
         self,
         camera: CameraSettings | None = None,
+        visible_mag_limit: float | None = None,
     ) -> tuple[ObserverSettings, CameraSettings, ViewSettings, float, ProjectedStarMap]:
         observer = self._observer_settings()
         camera = camera or self._preview_camera_settings()
         view = self._view_settings()
-        mag_limit = self.ui.doubleSpinBoxMagLimit.value()
+        mag_limit = self.ui.doubleSpinBoxMagLimit.value() if visible_mag_limit is None else float(visible_mag_limit)
         horizontal_catalog = self._get_horizontal_catalog(observer, mag_limit)
         horizontal_milky_way = self._get_horizontal_milky_way(observer)
         horizontal_solar_system = self._get_horizontal_solar_system(observer)
@@ -2405,7 +3117,7 @@ class MainWindow(QMainWindow):
     def _display_real_image_preview(self, preview: ImagePreview) -> None:
         self._clear_star_pair_annotations()
         self.real_image_item.setPos(0, 0)
-        self.real_image_item.set_image(preview.image)
+        self.real_image_item.set_image(self._real_image_for_current_mask_preview())
         self.real_image_scene.setSceneRect(0, 0, preview.image.width(), preview.image.height())
         self._restore_star_pair_annotations_from_table()
         self._update_reference_alignment_transform()
@@ -2720,13 +3432,22 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "正在导入 JSON", "JSON 仍在导入，请等待完成后再关闭窗口。")
             event.ignore()
             return
+        if self._mask_import_thread is not None:
+            QMessageBox.information(self, "正在导入蒙版", "蒙版仍在导入，请等待完成后再关闭窗口。")
+            event.ignore()
+            return
         super().closeEvent(event)
 
     def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().resizeEvent(event)
+        QTimer.singleShot(0, self._refresh_all_elided_labels)
         QTimer.singleShot(0, self.fit_all_graphics_views)
 
     def eventFilter(self, watched, event) -> bool:  # type: ignore[no-untyped-def]
+        if watched in (self.ui.labelImportedImagePath, self.ui.labelSkyMaskStatus):
+            if event.type() in (QEvent.Resize, QEvent.Show):
+                QTimer.singleShot(0, lambda label=watched: self._refresh_elided_label(label))
+            return False
         if watched is self.ui.tableWidgetStarPairs and event.type() == QEvent.KeyPress:
             if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
                 return self._clear_selected_star_pair_positions()
