@@ -550,12 +550,12 @@ class MainWindow(QMainWindow):
 
     def _set_fitted_label_text(self, label: QLabel, text: str, tooltip: str | None = None) -> None:
         full_text = text.strip()
+        text_was_changed = str(label.property(TEXT_FIT_FULL_TEXT_PROPERTY) or "") != full_text
         label.setProperty(TEXT_FIT_FULL_TEXT_PROPERTY, full_text)
         label.setToolTip((tooltip or full_text).strip())
-        if label.text() != full_text:
-            label.setText(full_text)
         self._fit_label_text(label)
-        QTimer.singleShot(0, lambda label=label: self._fit_label_text(label))
+        if text_was_changed:
+            QTimer.singleShot(0, lambda label=label: self._fit_label_text(label))
 
     def _refit_dynamic_labels(self) -> None:
         for label in self._dynamic_fit_labels:
@@ -588,7 +588,8 @@ class MainWindow(QMainWindow):
             metrics = QFontMetrics(chosen_font)
             chosen_text = metrics.elidedText(full_text, elide_mode, available_width)
 
-        label.setFont(chosen_font)
+        if label.font() != chosen_font:
+            label.setFont(chosen_font)
         if label.text() != chosen_text:
             label.setText(chosen_text)
 
@@ -2809,7 +2810,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._refit_dynamic_labels)
 
     def eventFilter(self, watched, event) -> bool:  # type: ignore[no-untyped-def]
-        if watched in self._dynamic_fit_labels and event.type() in (QEvent.Resize, QEvent.Show, QEvent.FontChange):
+        if watched in self._dynamic_fit_labels and event.type() in (QEvent.Resize, QEvent.Show):
             QTimer.singleShot(0, self._refit_dynamic_labels)
         if watched is self.ui.tableWidgetStarPairs and event.type() == QEvent.KeyPress:
             if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
