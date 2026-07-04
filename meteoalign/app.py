@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -74,6 +75,10 @@ PREVIEW_LONG_SIDE_PX = 1920
 REAL_IMAGE_MAX_ZOOM_SCALE = 2.0
 IMAGE_VIEW_ZOOM_IN_FACTOR = 1.25
 IMAGE_VIEW_ZOOM_OUT_FACTOR = 0.8
+TOUCHPAD_ZOOM_SENSITIVITY = 1.6
+TOUCHPAD_ZOOM_MIN_FACTOR = 0.55
+TOUCHPAD_ZOOM_MAX_FACTOR = 1.8
+STAR_PICK_TOUCHPAD_STEPS_PER_ZOOM_UNIT = 12.0
 STAR_PICK_CIRCLE_STEP_PX = 10
 MIN_PSF_RADIUS_PX = 4
 AUTO_PAIR_MAX_SEARCH_RADIUS_PX = 120
@@ -369,6 +374,7 @@ class MainWindow(QMainWindow):
         self.reference_star_map_item = LiveStarMapGraphicsItem(self.renderer)
         self.reference_scene.addItem(self.reference_star_map_item)
         self.ui.referenceImageView.setScene(self.reference_scene)
+        self.ui.referenceImageView.installEventFilter(self)
         self.ui.referenceImageView.viewport().installEventFilter(self)
         self.ui.referenceImageView.viewport().setFocusPolicy(Qt.StrongFocus)
         self.ui.referenceImageView.viewport().setMouseTracking(True)
@@ -385,6 +391,7 @@ class MainWindow(QMainWindow):
         self.real_reference_overlay_item.setVisible(False)
         self.real_image_scene.addItem(self.real_reference_overlay_item)
         self.ui.realImageView.setScene(self.real_image_scene)
+        self.ui.realImageView.installEventFilter(self)
         self.ui.realImageView.viewport().installEventFilter(self)
 
         self.render_timer = QTimer(self)
@@ -419,6 +426,7 @@ class MainWindow(QMainWindow):
         self._sky_alignment_error_message = ""
         self._syncing_reference_real_views = False
         self._manual_reference_star_ids: list[str] = []
+        self._star_pick_native_zoom_remainder = 0.0
 
         self._init_defaults()
         self._connect_inputs()
@@ -2278,6 +2286,22 @@ class MainWindow(QMainWindow):
                 self.ui.starMapView.viewport().unsetCursor()
                 self.render_now()
                 return True
+        if watched is self.ui.referenceImageView:
+            if event.type() == QEvent.NativeGesture and self._handle_graphics_view_native_zoom(
+                self.ui.referenceImageView,
+                event,
+            ):
+                return True
+        if watched is self.ui.realImageView:
+            if event.type() == QEvent.NativeGesture:
+                if (
+                    self._active_star_pair_row is not None
+                    and event.modifiers() & Qt.ControlModifier
+                    and self._handle_star_pick_native_zoom(event)
+                ):
+                    return True
+                if self._handle_graphics_view_native_zoom(self.ui.realImageView, event):
+                    return True
         if watched is self.ui.referenceImageView.viewport():
             if event.type() in (QEvent.Enter, QEvent.MouseMove, QEvent.KeyPress, QEvent.KeyRelease):
                 self._update_reference_map_cursor(self._event_ctrl_pressed(event))
@@ -2302,6 +2326,11 @@ class MainWindow(QMainWindow):
                     return True
             if event.type() == QEvent.Wheel:
                 self._apply_graphics_view_zoom(self.ui.referenceImageView, event.angleDelta().y())
+                return True
+            if event.type() == QEvent.NativeGesture and self._handle_graphics_view_native_zoom(
+                self.ui.referenceImageView,
+                event,
+            ):
                 return True
         if watched is self.ui.realImageView.viewport():
             if self._active_star_pair_row is not None:
@@ -2328,10 +2357,21 @@ class MainWindow(QMainWindow):
                         wheel_steps = 1 if wheel_delta > 0 else -1
                     self._adjust_star_pick_circle_diameter(wheel_steps)
                     return True
+                if (
+                    event.type() == QEvent.NativeGesture
+                    and event.modifiers() & Qt.ControlModifier
+                    and self._handle_star_pick_native_zoom(event)
+                ):
+                    return True
                 if event.type() == QEvent.KeyPress and self._handle_star_pick_key_press(event):
                     return True
             if event.type() == QEvent.Wheel:
                 self._apply_graphics_view_zoom(self.ui.realImageView, event.angleDelta().y())
+                return True
+            if event.type() == QEvent.NativeGesture and self._handle_graphics_view_native_zoom(
+                self.ui.realImageView,
+                event,
+            ):
                 return True
         return super().eventFilter(watched, event)
 
@@ -2356,14 +2396,19 @@ class MainWindow(QMainWindow):
         if wheel_delta == 0:
             return
         factor = IMAGE_VIEW_ZOOM_IN_FACTOR if wheel_delta > 0 else IMAGE_VIEW_ZOOM_OUT_FACTOR
-        if wheel_delta < 0:
+        self._apply_graphics_view_zoom_factor(view, factor)
+
+    def _apply_graphics_view_zoom_factor(self, view: QGraphicsView, factor: float) -> None:
+        if factor <= 0.0 or not math.isfinite(factor) or abs(factor - 1.0) <= 1e-4:
+            return
+        if factor < 1.0:
             min_scale = self._graphics_view_fit_scale(view)
             current_scale = self._graphics_view_current_scale(view)
             if current_scale * factor <= min_scale:
                 self._fit_graphics_view_to_scene(view)
                 self._sync_reference_real_view_from(view)
                 return
-        if wheel_delta > 0:
+        if factor > 1.0:
             max_scale = self._graphics_view_max_scale(view)
             current_scale = self._graphics_view_current_scale(view)
             if max_scale is not None and current_scale * factor >= max_scale:
@@ -2374,6 +2419,50 @@ class MainWindow(QMainWindow):
         view.scale(factor, factor)
         self._update_live_star_map_zoom_scale(view)
         self._sync_reference_real_view_from(view)
+
+    def _native_gesture_zoom_value(self, event) -> float:  # type: ignore[no-untyped-def]
+        if event.type() != QEvent.NativeGesture:
+            return 0.0
+
+        zoom_gesture = getattr(Qt, "ZoomNativeGesture", None)
+        if zoom_gesture is None or event.gestureType() != zoom_gesture:
+            return 0.0
+
+        try:
+            value = float(event.value())
+        except (TypeError, ValueError):
+            return 0.0
+        if not math.isfinite(value) or abs(value) <= 1e-6:
+            return 0.0
+        return value
+
+    def _native_gesture_zoom_factor(self, event) -> float:  # type: ignore[no-untyped-def]
+        value = self._native_gesture_zoom_value(event)
+        if value == 0.0:
+            return 1.0
+
+        # macOS 触控板的原生缩放值是连续增量，用指数映射避免小幅捏合过钝或过猛。
+        factor = math.exp(value * TOUCHPAD_ZOOM_SENSITIVITY)
+        return max(TOUCHPAD_ZOOM_MIN_FACTOR, min(TOUCHPAD_ZOOM_MAX_FACTOR, factor))
+
+    def _handle_graphics_view_native_zoom(self, view: QGraphicsView, event) -> bool:  # type: ignore[no-untyped-def]
+        factor = self._native_gesture_zoom_factor(event)
+        if abs(factor - 1.0) <= 1e-4:
+            return False
+        self._apply_graphics_view_zoom_factor(view, factor)
+        return True
+
+    def _handle_star_pick_native_zoom(self, event) -> bool:  # type: ignore[no-untyped-def]
+        value = self._native_gesture_zoom_value(event)
+        if value == 0.0:
+            return False
+
+        self._star_pick_native_zoom_remainder += value * STAR_PICK_TOUCHPAD_STEPS_PER_ZOOM_UNIT
+        wheel_steps = int(self._star_pick_native_zoom_remainder)
+        if wheel_steps != 0:
+            self._star_pick_native_zoom_remainder -= wheel_steps
+            self._adjust_star_pick_circle_diameter(wheel_steps)
+        return True
 
     def _graphics_view_current_scale(self, view: QGraphicsView) -> float:
         transform = view.transform()
