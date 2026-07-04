@@ -652,6 +652,7 @@ class MainWindow(QMainWindow):
     def _refresh_all_elided_labels(self) -> None:
         self._refresh_elided_label(self.ui.labelImportedImagePath)
         self._refresh_elided_label(self.ui.labelSkyMaskStatus)
+        self._refresh_elided_label(self.ui.labelAlignmentTransformStatus)
 
     def _init_defaults(self) -> None:
         self.ui.dateTimeEditObservation.setDateTime(QDateTime.currentDateTime())
@@ -737,6 +738,7 @@ class MainWindow(QMainWindow):
         self.ui.tableWidgetStarPairs.installEventFilter(self)
         self.ui.labelImportedImagePath.installEventFilter(self)
         self.ui.labelSkyMaskStatus.installEventFilter(self)
+        self.ui.labelAlignmentTransformStatus.installEventFilter(self)
         self.ui.pushButtonImportReferenceJson.clicked.connect(self.import_reference_json)
         self.ui.checkBoxOverlayReferenceMap.toggled.connect(self._update_reference_alignment_display)
         self.ui.horizontalSliderReferenceOverlayOpacity.valueChanged.connect(self._handle_reference_overlay_opacity_changed)
@@ -980,12 +982,9 @@ class MainWindow(QMainWindow):
         self.ui.labelReferenceOverlayOpacityValue.setText(f"{opacity}%")
 
     def _set_alignment_status_text(self, text: str, tooltip: str | None = None) -> None:
-        display_text = text.strip()
-        if len(display_text) > ALIGNMENT_STATUS_MAX_CHARS:
-            display_text = f"{display_text[: ALIGNMENT_STATUS_MAX_CHARS - 1]}…"
-        self._set_plain_label_text(
+        self._set_elided_label_text(
             self.ui.labelAlignmentTransformStatus,
-            display_text,
+            text.strip(),
             (tooltip or text).strip(),
         )
 
@@ -3444,7 +3443,11 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self.fit_all_graphics_views)
 
     def eventFilter(self, watched, event) -> bool:  # type: ignore[no-untyped-def]
-        if watched in (self.ui.labelImportedImagePath, self.ui.labelSkyMaskStatus):
+        if watched in (
+            self.ui.labelImportedImagePath,
+            self.ui.labelSkyMaskStatus,
+            self.ui.labelAlignmentTransformStatus,
+        ):
             if event.type() in (QEvent.Resize, QEvent.Show):
                 QTimer.singleShot(0, lambda label=watched: self._refresh_elided_label(label))
             return False
