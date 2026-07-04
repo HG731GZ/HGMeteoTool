@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 from PyQt5.QtCore import QDateTime, QEvent, QObject, QPoint, QPointF, QRectF, QThread, QTimer, Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QBrush, QCursor, QFont, QImage, QPainter, QPen, QPixmap
+from PyQt5.QtGui import QColor, QBrush, QCursor, QFont, QFontMetrics, QImage, QPainter, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -17,6 +17,7 @@ from PyQt5.QtWidgets import (
     QGraphicsScene,
     QGraphicsSimpleTextItem,
     QGraphicsView,
+    QLabel,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -91,6 +92,12 @@ STAR_PAIR_RESIDUAL_COLUMN = 3
 STAR_PAIR_SESSION_FORMAT = "meteoalign_star_pair_session"
 STAR_PAIR_SESSION_VERSION = 1
 STAR_PAIR_SESSION_JSON_FILTER = "MeteoAlign 星点配对 JSON (*.json);;JSON 文件 (*.json);;所有文件 (*)"
+ALIGNMENT_STATUS_MAX_CHARS = 68
+TEXT_FIT_FULL_TEXT_PROPERTY = "meteoalignFullText"
+TEXT_FIT_BASE_POINT_SIZE_PROPERTY = "meteoalignBasePointSize"
+TEXT_FIT_MIN_POINT_SIZE_PROPERTY = "meteoalignMinPointSize"
+TEXT_FIT_MAX_LINES_PROPERTY = "meteoalignMaxLines"
+TEXT_FIT_ELIDE_MODE_PROPERTY = "meteoalignElideMode"
 RESIDUAL_WARNING_MIN_PX = 25.0
 RESIDUAL_SEVERE_MIN_PX = 50.0
 RESIDUAL_SEVERE_RMS_SCALE = 2.0
@@ -486,7 +493,9 @@ class MainWindow(QMainWindow):
         self._syncing_reference_real_views = False
         self._manual_reference_star_ids: list[str] = []
         self._star_pick_native_zoom_remainder = 0.0
+        self._dynamic_fit_labels: tuple[QLabel, ...] = ()
 
+        self._init_dynamic_text_fitting()
         self._init_defaults()
         self._connect_inputs()
         self.schedule_render(delay_ms=0)
@@ -500,6 +509,97 @@ class MainWindow(QMainWindow):
         status_font = QFont(self.ui.statusbar.font())
         status_font.setPointSize(ui_config.status_bar_font_size_pt)
         self.ui.statusbar.setFont(status_font)
+
+    def _init_dynamic_text_fitting(self) -> None:
+        self._dynamic_fit_labels = (
+            self.ui.labelImportedImagePath,
+            self.ui.labelAlignmentTransformStatus,
+        )
+        self._configure_dynamic_fit_label(
+            self.ui.labelImportedImagePath,
+            min_point_size=6.0,
+            max_lines=3,
+            elide_mode=Qt.ElideMiddle,
+        )
+        self._configure_dynamic_fit_label(
+            self.ui.labelAlignmentTransformStatus,
+            min_point_size=7.0,
+            max_lines=1,
+            elide_mode=Qt.ElideRight,
+        )
+
+    def _configure_dynamic_fit_label(
+        self,
+        label: QLabel,
+        min_point_size: float,
+        max_lines: int,
+        elide_mode: int,
+    ) -> None:
+        base_point_size = label.font().pointSizeF()
+        if base_point_size <= 0.0:
+            base_point_size = float(label.font().pointSize())
+        if base_point_size <= 0.0:
+            base_point_size = float(self.ui_config.controls_font_size_pt)
+        label.setProperty(TEXT_FIT_BASE_POINT_SIZE_PROPERTY, base_point_size)
+        label.setProperty(TEXT_FIT_MIN_POINT_SIZE_PROPERTY, min_point_size)
+        label.setProperty(TEXT_FIT_MAX_LINES_PROPERTY, max(1, int(max_lines)))
+        label.setProperty(TEXT_FIT_ELIDE_MODE_PROPERTY, int(elide_mode))
+        label.setProperty(TEXT_FIT_FULL_TEXT_PROPERTY, label.text())
+        label.installEventFilter(self)
+
+    def _set_fitted_label_text(self, label: QLabel, text: str, tooltip: str | None = None) -> None:
+        full_text = text.strip()
+        label.setProperty(TEXT_FIT_FULL_TEXT_PROPERTY, full_text)
+        label.setToolTip((tooltip or full_text).strip())
+        self._fit_label_text(label)
+
+    def _refit_dynamic_labels(self) -> None:
+        for label in self._dynamic_fit_labels:
+            self._fit_label_text(label)
+
+    def _fit_label_text(self, label: QLabel) -> None:
+        full_text = str(label.property(TEXT_FIT_FULL_TEXT_PROPERTY) or label.text())
+        available_rect = label.contentsRect()
+        available_width = max(available_rect.width() - 2, 1)
+        available_height = max(available_rect.height() - 2, 1)
+        base_point_size = float(label.property(TEXT_FIT_BASE_POINT_SIZE_PROPERTY) or label.font().pointSizeF())
+        min_point_size = float(label.property(TEXT_FIT_MIN_POINT_SIZE_PROPERTY) or 7.0)
+        max_lines = max(1, int(label.property(TEXT_FIT_MAX_LINES_PROPERTY) or 1))
+        elide_mode = int(label.property(TEXT_FIT_ELIDE_MODE_PROPERTY) or int(Qt.ElideRight))
+
+        chosen_font = QFont(label.font())
+        chosen_text = full_text
+        for point_size in np.arange(base_point_size, min_point_size - 0.01, -0.5):
+            candidate_font = QFont(label.font())
+            candidate_font.setPointSizeF(float(point_size))
+            if self._label_text_fits(candidate_font, full_text, available_width, available_height, max_lines):
+                chosen_font = candidate_font
+                break
+        else:
+            chosen_font.setPointSizeF(min_point_size)
+            metrics = QFontMetrics(chosen_font)
+            chosen_text = metrics.elidedText(full_text, elide_mode, available_width)
+
+        label.setFont(chosen_font)
+        if label.text() != chosen_text:
+            label.setText(chosen_text)
+
+    def _label_text_fits(
+        self,
+        font: QFont,
+        text: str,
+        available_width: int,
+        available_height: int,
+        max_lines: int,
+    ) -> bool:
+        metrics = QFontMetrics(font)
+        if max_lines <= 1:
+            return metrics.horizontalAdvance(text) <= available_width and metrics.height() <= available_height
+
+        flags = Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignTop
+        wrapped_rect = metrics.boundingRect(0, 0, available_width, 10000, flags, text)
+        max_allowed_height = min(available_height, metrics.lineSpacing() * max_lines + 2)
+        return wrapped_rect.width() <= available_width and wrapped_rect.height() <= max_allowed_height
 
     def _init_defaults(self) -> None:
         self.ui.dateTimeEditObservation.setDateTime(QDateTime.currentDateTime())
@@ -589,11 +689,11 @@ class MainWindow(QMainWindow):
         )
 
     def _reset_imported_image_labels(self) -> None:
-        self.ui.labelImportedImagePath.setText("未导入")
+        self._set_fitted_label_text(self.ui.labelImportedImagePath, "未导入", "")
         self.ui.labelImportedImageSize.setText("-")
 
     def _update_imported_image_labels(self, preview: ImagePreview) -> None:
-        self.ui.labelImportedImagePath.setText(str(preview.path))
+        self._set_fitted_label_text(self.ui.labelImportedImagePath, str(preview.path), str(preview.path))
         self.ui.labelImportedImageSize.setText(f"{preview.original_width} x {preview.original_height} px")
 
     def _reference_star_lookup(self) -> dict[str, ReferenceStar]:
@@ -720,6 +820,16 @@ class MainWindow(QMainWindow):
         opacity = self.ui.horizontalSliderReferenceOverlayOpacity.value()
         self.ui.labelReferenceOverlayOpacityValue.setText(f"{opacity}%")
 
+    def _set_alignment_status_text(self, text: str, tooltip: str | None = None) -> None:
+        display_text = text.strip()
+        if len(display_text) > ALIGNMENT_STATUS_MAX_CHARS:
+            display_text = f"{display_text[: ALIGNMENT_STATUS_MAX_CHARS - 1]}…"
+        self._set_fitted_label_text(
+            self.ui.labelAlignmentTransformStatus,
+            display_text,
+            (tooltip or text).strip(),
+        )
+
     def _handle_reference_overlay_opacity_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
         self._update_reference_overlay_opacity_label()
         self.real_reference_overlay_item.setOpacity(
@@ -756,33 +866,39 @@ class MainWindow(QMainWindow):
 
         sky_transform = self._sky_alignment_transform
         if sky_transform is not None:
-            status_parts: list[str] = []
-            status_parts.append(
-                "实时星空叠加：已用 {count} 对星拟合 RA/Dec {model}，RMS {rms:.2f} px".format(
+            distances = self._alignment_residual_distances()
+            compact_summary = ""
+            residual_summary = "暂无逐星残差"
+            if distances.size > 0:
+                median_distance = float(np.median(distances))
+                max_distance = float(np.max(distances))
+                compact_summary = f"，中位 {median_distance:.2f}，最大 {max_distance:.2f}"
+                residual_summary = f"中位 {median_distance:.2f} px，最大 {max_distance:.2f} px"
+            display_text = (
+                "配准 {count} 对，{model} RMS {rms:.2f}px{summary}".format(
                     count=sky_transform.pair_count,
                     model=sky_transform.display_name,
                     rms=sky_transform.rms_px,
+                    summary=compact_summary,
                 )
             )
-            distances = self._alignment_residual_distances()
-            residual_summary = ""
-            if distances.size > 0:
-                residual_summary = f"，中位 {float(np.median(distances)):.2f} px，最大 {float(np.max(distances)):.2f} px"
-            status_parts.append(
-                "天球残差：RA/Dec {model}，RMS {rms:.2f} px{summary}".format(
+            tooltip = (
+                "实时星空叠加：已用 {count} 对星拟合 RA/Dec {model}，RMS {rms:.2f} px。\n"
+                "天球残差：{residual_summary}。".format(
+                    count=sky_transform.pair_count,
                     model=sky_transform.display_name,
                     rms=sky_transform.rms_px,
-                    summary=residual_summary,
+                    residual_summary=residual_summary,
                 )
             )
-
-            self.ui.labelAlignmentTransformStatus.setText("；".join(status_parts) + "。")
+            self._set_alignment_status_text(display_text, tooltip)
         else:
-            self.ui.labelAlignmentTransformStatus.setText(
+            status_text = (
                 self._sky_alignment_error_message
                 or self._reference_alignment_error_message
                 or f"至少配对 {MIN_ALIGNMENT_PAIRS} 颗星后可自动配准。"
             )
+            self._set_alignment_status_text(status_text)
 
     def _update_reference_alignment_display(self, *unused) -> None:  # type: ignore[no-untyped-def]
         star_map = self._current_star_map
@@ -1169,6 +1285,7 @@ class MainWindow(QMainWindow):
         self._restore_star_pair_annotations_from_table()
         self._refresh_star_pair_table_styles()
         self._update_reference_alignment_transform()
+        QTimer.singleShot(0, table.scrollToBottom)
         return restored_count
 
     def _session_real_image_path(self, payload: dict[str, object], source_path: Path) -> Path:
@@ -2668,8 +2785,11 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().resizeEvent(event)
         QTimer.singleShot(0, self.fit_all_graphics_views)
+        QTimer.singleShot(0, self._refit_dynamic_labels)
 
     def eventFilter(self, watched, event) -> bool:  # type: ignore[no-untyped-def]
+        if watched in self._dynamic_fit_labels and event.type() in (QEvent.Resize, QEvent.Show, QEvent.FontChange):
+            QTimer.singleShot(0, self._refit_dynamic_labels)
         if watched is self.ui.tableWidgetStarPairs and event.type() == QEvent.KeyPress:
             if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
                 return self._clear_selected_star_pair_positions()
