@@ -28,12 +28,17 @@ from PyQt5.QtWidgets import (
 
 from .alignment import (
     MIN_ALIGNMENT_PAIRS,
+    SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT,
+    SKY_MATCHING_MODEL_FISHEYE_EQUISOLID,
+    SKY_MATCHING_MODEL_POLYNOMIAL,
+    SKY_MATCHING_MODEL_RECTILINEAR,
     SkyAlignmentTransform,
     fit_sky_alignment,
 )
 from .catalog_download import ensure_catalogs_ready_or_handle
 from .catalog import load_default_catalog, project_root
 from .config import StarMapUiConfig, load_star_map_ui_config
+from .coordinates import radec_to_unit_vectors
 from .image_preview import IMAGE_FILE_FILTER, ImagePreview, load_image_preview
 from .milky_way import MilkyWayCatalog, load_milky_way
 from .reference import build_reference_payload, save_reference_outputs
@@ -51,10 +56,12 @@ from .simulator import (
     ReferenceStar,
     RECTILINEAR_LENS_MODEL,
     ViewSettings,
+    camera_basis_from_view,
     compute_horizontal_catalog,
     compute_horizontal_milky_way,
     compute_horizontal_solar_system,
     horizontal_fov_deg,
+    local_vectors_from_altaz,
     project_horizontal_catalog,
     select_reference_stars,
     vertical_fov_deg,
@@ -67,6 +74,12 @@ LENS_MODELS = (
     RECTILINEAR_LENS_MODEL,
     FISHEYE_EQUIDISTANT,
     FISHEYE_EQUISOLID,
+)
+SKY_ALIGNMENT_MODELS = (
+    SKY_MATCHING_MODEL_POLYNOMIAL,
+    SKY_MATCHING_MODEL_RECTILINEAR,
+    SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT,
+    SKY_MATCHING_MODEL_FISHEYE_EQUISOLID,
 )
 REFERENCE_LABEL_MODE_FIXED_COUNT = "fixed_count"
 REFERENCE_LABEL_MODE_FIXED_MAG_LIMIT = "fixed_mag_limit"
@@ -609,8 +622,10 @@ class MainWindow(QMainWindow):
         self._sky_alignment_error_message = ""
         self._source_model_error_message = ""
         self._syncing_reference_real_views = False
+        self._syncing_reference_preview_splitter = False
         self._suspend_alignment_updates = False
         self._manual_reference_star_ids: list[str] = []
+        self._excluded_reference_star_ids: list[str] = []
         self._star_pick_native_zoom_remainder = 0.0
         self.current_sky_mask_path: Path | None = None
         self.current_sky_mask: np.ndarray | None = None
@@ -618,6 +633,7 @@ class MainWindow(QMainWindow):
 
         self._init_defaults()
         self._connect_inputs()
+        self._configure_reference_preview_splitter()
         self.schedule_render(delay_ms=0)
 
     def _apply_ui_font_config(self, ui_config: StarMapUiConfig) -> None:
@@ -677,9 +693,11 @@ class MainWindow(QMainWindow):
         self.ui.comboBoxReferenceLabelMode.setCurrentIndex(0)
         self.ui.spinBoxReferenceStarCount.setValue(12)
         self.ui.doubleSpinBoxReferenceMagLimit.setValue(3.0)
-        self.ui.comboBoxAutoMatchMode.setCurrentIndex(0)
-        self.ui.doubleSpinBoxAutoMatchMagLimit.setValue(6.0)
-        self.ui.spinBoxAutoMatchCount.setValue(2000)
+        self.ui.comboBoxSkyAlignmentModel.setCurrentIndex(0)
+        auto_match_mode_index = 1 if self.ui_config.auto_match_default_mode == AUTO_MATCH_MODE_FIXED_COUNT else 0
+        self.ui.comboBoxAutoMatchMode.setCurrentIndex(auto_match_mode_index)
+        self.ui.doubleSpinBoxAutoMatchMagLimit.setValue(self.ui_config.auto_match_default_mag_limit)
+        self.ui.spinBoxAutoMatchCount.setValue(self.ui_config.auto_match_default_fixed_count)
         self.ui.spinBoxAutoMatchRadius.setValue(30)
         self._reset_imported_image_labels()
         self._reset_sky_mask_status()
@@ -726,6 +744,7 @@ class MainWindow(QMainWindow):
         self.ui.pushButtonImportSkyMask.clicked.connect(self.import_sky_mask)
         self.ui.pushButtonClearSkyMask.clicked.connect(self.clear_sky_mask)
         self.ui.checkBoxShowSkyMask.toggled.connect(self._refresh_real_image_display_for_mask)
+        self.ui.comboBoxSkyAlignmentModel.currentIndexChanged.connect(self._handle_alignment_model_changed)
         self.ui.comboBoxAutoMatchMode.currentIndexChanged.connect(self._update_auto_match_controls)
         self.ui.pushButtonAutoMatchFieldStars.clicked.connect(self.auto_match_field_stars)
         self.ui.pushButtonExportSourceModel.clicked.connect(self.export_source_model_json)
@@ -741,8 +760,9 @@ class MainWindow(QMainWindow):
         self.ui.labelAlignmentTransformStatus.installEventFilter(self)
         self.ui.pushButtonImportReferenceJson.clicked.connect(self.import_reference_json)
         self.ui.checkBoxOverlayReferenceMap.toggled.connect(self._update_reference_alignment_display)
-        self.ui.horizontalSliderReferenceOverlayOpacity.valueChanged.connect(self._handle_reference_overlay_opacity_changed)
+        self.ui.doubleSpinBoxReferenceOverlayOpacity.valueChanged.connect(self._handle_reference_overlay_opacity_changed)
         self.ui.checkBoxSyncReferenceAndRealView.toggled.connect(self._handle_reference_real_sync_toggled)
+        self.ui.checkBoxHideAllAnnotations.toggled.connect(self._handle_hide_all_annotations_toggled)
         self.ui.referenceImageView.horizontalScrollBar().valueChanged.connect(
             lambda _value: self._sync_reference_real_view_from(self.ui.referenceImageView)
         )
@@ -755,6 +775,36 @@ class MainWindow(QMainWindow):
         self.ui.realImageView.verticalScrollBar().valueChanged.connect(
             lambda _value: self._sync_reference_real_view_from(self.ui.realImageView)
         )
+
+    def _configure_reference_preview_splitter(self) -> None:
+        splitter = self.ui.splitterReferenceAndRealImage
+        splitter.setChildrenCollapsible(False)
+        splitter.setCollapsible(0, False)
+        splitter.setCollapsible(1, False)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 1)
+        splitter.installEventFilter(self)
+        splitter.splitterMoved.connect(lambda _pos, _index: self._set_equal_reference_preview_sizes())
+        QTimer.singleShot(0, self._set_equal_reference_preview_sizes)
+
+    def _set_equal_reference_preview_sizes(self) -> None:
+        if self._syncing_reference_preview_splitter:
+            return
+        splitter = self.ui.splitterReferenceAndRealImage
+        total_width = sum(splitter.sizes())
+        if total_width <= 0:
+            total_width = max(0, splitter.width() - splitter.handleWidth())
+        if total_width <= 0:
+            return
+
+        # 两个预览区需要并排对照星点，始终把分割器恢复成左右等宽。
+        left_width = total_width // 2
+        right_width = total_width - left_width
+        self._syncing_reference_preview_splitter = True
+        try:
+            splitter.setSizes([left_width, right_width])
+        finally:
+            self._syncing_reference_preview_splitter = False
 
     def _reset_imported_image_labels(self) -> None:
         self._set_elided_label_text(self.ui.labelImportedImagePath, "未导入", "")
@@ -810,6 +860,21 @@ class MainWindow(QMainWindow):
     def _auto_match_mode(self) -> str:
         return AUTO_MATCH_MODE_FIXED_COUNT if self.ui.comboBoxAutoMatchMode.currentIndex() == 1 else AUTO_MATCH_MODE_MAG_LIMIT
 
+    def _alignment_model(self) -> str:
+        index = self.ui.comboBoxSkyAlignmentModel.currentIndex()
+        if index < 0 or index >= len(SKY_ALIGNMENT_MODELS):
+            return SKY_MATCHING_MODEL_POLYNOMIAL
+        return SKY_ALIGNMENT_MODELS[index]
+
+    def _set_alignment_model(self, model: object) -> None:
+        model_text = str(model or "").strip()
+        if model_text not in SKY_ALIGNMENT_MODELS:
+            return
+        self.ui.comboBoxSkyAlignmentModel.setCurrentIndex(SKY_ALIGNMENT_MODELS.index(model_text))
+
+    def _handle_alignment_model_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        self._update_reference_alignment_transform()
+
     def _update_auto_match_controls(self, *unused) -> None:  # type: ignore[no-untyped-def]
         fixed_count = self._auto_match_mode() == AUTO_MATCH_MODE_FIXED_COUNT
         self.ui.labelAutoMatchMagLimit.setEnabled(not fixed_count)
@@ -859,6 +924,51 @@ class MainWindow(QMainWindow):
             sky_points.append((reference_star.ra_deg, reference_star.dec_deg))
             target_points.append(target_position)
         return np.asarray(sky_points, dtype=np.float64), np.asarray(target_points, dtype=np.float64)
+
+    def _initial_projection_rotation_matrix(self) -> np.ndarray | None:
+        reference_stars = [
+            star
+            for star in self._current_reference_stars
+            if all(
+                math.isfinite(value)
+                for value in (star.ra_deg, star.dec_deg, star.alt_deg, star.az_deg)
+            )
+        ]
+        if len(reference_stars) < 3:
+            return None
+
+        world_vectors = radec_to_unit_vectors(
+            np.asarray([star.ra_deg for star in reference_stars], dtype=np.float64),
+            np.asarray([star.dec_deg for star in reference_stars], dtype=np.float64),
+        )
+        local_vectors = local_vectors_from_altaz(
+            np.asarray([star.alt_deg for star in reference_stars], dtype=np.float64),
+            np.asarray([star.az_deg for star in reference_stars], dtype=np.float64),
+        )
+        finite = np.all(np.isfinite(world_vectors), axis=1) & np.all(np.isfinite(local_vectors), axis=1)
+        if np.count_nonzero(finite) < 3:
+            return None
+
+        try:
+            local_from_world_transposed, _residuals, _rank, _singular_values = np.linalg.lstsq(
+                world_vectors[finite],
+                local_vectors[finite],
+                rcond=None,
+            )
+            local_from_world = local_from_world_transposed.T
+            u_matrix, _values, vt_matrix = np.linalg.svd(local_from_world)
+        except np.linalg.LinAlgError:
+            return None
+        local_from_world = u_matrix @ vt_matrix
+        if np.linalg.det(local_from_world) < 0.0:
+            u_matrix[:, -1] *= -1.0
+            local_from_world = u_matrix @ vt_matrix
+
+        camera_from_local = np.vstack(camera_basis_from_view(self._view_settings())).astype(np.float64)
+        rotation_matrix = camera_from_local @ local_from_world
+        if rotation_matrix.shape != (3, 3) or not np.all(np.isfinite(rotation_matrix)):
+            return None
+        return rotation_matrix.astype(np.float64)
 
     def _star_pair_alignment_residual(self, row: int) -> tuple[float, float, float] | None:
         transform = self._sky_alignment_transform
@@ -958,19 +1068,29 @@ class MainWindow(QMainWindow):
             return
 
         try:
+            image = self.current_image_preview.image
+            initial_rotation_matrix = self._initial_projection_rotation_matrix()
             self._sky_alignment_transform = fit_sky_alignment(
                 ra_dec_points=sky_points,
                 target_points=sky_target_points,
+                matching_model=self._alignment_model(),
+                image_size=(image.width(), image.height()),
+                fisheye_fov_deg=self.ui.doubleSpinBoxFisheyeFov.value(),
+                initial_rotation_matrix=initial_rotation_matrix,
             )
         except Exception as exc:  # noqa: BLE001 - 天球残差失败需要直接反馈给交互界面。
             self._sky_alignment_error_message = str(exc)
         if self._sky_alignment_transform is not None and self.current_image_preview is not None:
             try:
                 image = self.current_image_preview.image
+                initial_rotation_matrix = self._initial_projection_rotation_matrix()
                 self._source_astrometric_model = fit_source_astrometric_model(
                     ra_dec_points=sky_points,
                     pixel_points=sky_target_points,
                     image_size=(image.width(), image.height()),
+                    matching_model=self._alignment_model(),
+                    fisheye_fov_deg=self.ui.doubleSpinBoxFisheyeFov.value(),
+                    initial_rotation_matrix=initial_rotation_matrix,
                 )
             except Exception as exc:  # noqa: BLE001 - 源图模型错误要保留给导出按钮和状态栏。
                 self._source_model_error_message = str(exc)
@@ -978,8 +1098,14 @@ class MainWindow(QMainWindow):
         self._update_reference_alignment_display()
 
     def _update_reference_overlay_opacity_label(self) -> None:
-        opacity = self.ui.horizontalSliderReferenceOverlayOpacity.value()
-        self.ui.labelReferenceOverlayOpacityValue.setText(f"{opacity}%")
+        opacity = self.ui.doubleSpinBoxReferenceOverlayOpacity.value()
+        self.ui.doubleSpinBoxReferenceOverlayOpacity.setToolTip(f"实时星空叠加透明度：{opacity:.1f}%")
+
+    def _reference_overlay_opacity(self) -> float:
+        return max(0.0, min(1.0, self.ui.doubleSpinBoxReferenceOverlayOpacity.value() / 100.0))
+
+    def _hide_all_annotations(self) -> bool:
+        return self.ui.checkBoxHideAllAnnotations.isChecked()
 
     def _set_alignment_status_text(self, text: str, tooltip: str | None = None) -> None:
         self._set_elided_label_text(
@@ -990,10 +1116,12 @@ class MainWindow(QMainWindow):
 
     def _handle_reference_overlay_opacity_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
         self._update_reference_overlay_opacity_label()
-        self.real_reference_overlay_item.setOpacity(
-            max(0.0, min(1.0, self.ui.horizontalSliderReferenceOverlayOpacity.value() / 100.0))
-        )
+        self.real_reference_overlay_item.setOpacity(self._reference_overlay_opacity())
         self._update_reference_alignment_controls()
+
+    def _handle_hide_all_annotations_toggled(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        self._update_star_pair_annotation_visibility()
+        self._update_reference_alignment_display()
 
     def _handle_reference_real_sync_toggled(self, checked: bool) -> None:
         if checked and self._can_sync_reference_real_views():
@@ -1012,11 +1140,9 @@ class MainWindow(QMainWindow):
     def _update_reference_alignment_controls(self) -> None:
         has_alignment = self._sky_alignment_transform is not None and self.current_image_preview is not None
         has_source_model = self._source_astrometric_model is not None and self.current_image_preview is not None
-        overlay_checked = self.ui.checkBoxOverlayReferenceMap.isChecked()
         self.ui.checkBoxOverlayReferenceMap.setEnabled(has_alignment)
-        self.ui.labelReferenceOverlayOpacityTitle.setEnabled(has_alignment and overlay_checked)
-        self.ui.horizontalSliderReferenceOverlayOpacity.setEnabled(has_alignment and overlay_checked)
-        self.ui.labelReferenceOverlayOpacityValue.setEnabled(has_alignment and overlay_checked)
+        self.ui.labelReferenceOverlayOpacityTitle.setEnabled(True)
+        self.ui.doubleSpinBoxReferenceOverlayOpacity.setEnabled(True)
         self.ui.checkBoxSyncReferenceAndRealView.setEnabled(has_alignment)
         mask_controls_enabled = self._mask_import_thread is None
         self.ui.pushButtonImportSkyMask.setEnabled(mask_controls_enabled and self.current_image_preview is not None)
@@ -1048,23 +1174,31 @@ class MainWindow(QMainWindow):
                 max_distance = float(np.max(distances))
                 compact_summary = f"，中位 {median_distance:.2f}，最大 {max_distance:.2f}"
                 residual_summary = f"中位 {median_distance:.2f} px，最大 {max_distance:.2f} px"
+            projection_rms = getattr(sky_transform, "projection_rms_px", None)
+            projection_summary = ""
+            projection_tooltip = ""
+            if projection_rms is not None and math.isfinite(float(projection_rms)):
+                projection_summary = f"，投影 {float(projection_rms):.2f}px"
+                projection_tooltip = f"\n已知投影原始 RMS：{float(projection_rms):.2f} px。"
             display_text = (
-                "配准 {count} 对，{model} RMS {rms:.2f}px{summary}{source_model}".format(
+                "配准 {count} 对，{model} RMS {rms:.2f}px{summary}{projection}{source_model}".format(
                     count=sky_transform.pair_count,
                     model=sky_transform.display_name,
                     rms=sky_transform.rms_px,
                     summary=compact_summary,
+                    projection=projection_summary,
                     source_model=source_model_text,
                 )
             )
             tooltip = (
                 "实时星空叠加：已用 {count} 对星拟合 RA/Dec {model}，RMS {rms:.2f} px。\n"
-                "天球残差：{residual_summary}。\n"
+                "天球残差：{residual_summary}。{projection_tooltip}\n"
                 "源图映射：{source_model_summary}".format(
                     count=sky_transform.pair_count,
                     model=sky_transform.display_name,
                     rms=sky_transform.rms_px,
                     residual_summary=residual_summary,
+                    projection_tooltip=projection_tooltip,
                     source_model_summary=(
                         "已可导出 xy→RA/Dec JSON。"
                         if self._source_astrometric_model is not None
@@ -1101,6 +1235,7 @@ class MainWindow(QMainWindow):
             target_size = (int(scene_rect.width()), int(scene_rect.height()))
             display_key: tuple[object, ...] = ("aligned", target_size[0], target_size[1])
             element_scale = self._aligned_star_element_scale(target_size)
+            number_reference_stars = not self._hide_all_annotations()
             self.reference_star_map_item.set_star_map(
                 star_map,
                 reference_stars=self._current_reference_stars,
@@ -1108,13 +1243,14 @@ class MainWindow(QMainWindow):
                 target_size=target_size,
                 element_scale=element_scale,
                 draw_common_names=False,
-                number_reference_stars=True,
+                number_reference_stars=number_reference_stars,
             )
             if not scene_rect.isEmpty():
                 self.reference_scene.setSceneRect(scene_rect)
         else:
             target_size = None
             display_key = ("native", star_map.width, star_map.height)
+            number_reference_stars = not self._hide_all_annotations()
             self.reference_star_map_item.set_star_map(
                 star_map,
                 reference_stars=self._current_reference_stars,
@@ -1122,7 +1258,7 @@ class MainWindow(QMainWindow):
                 target_size=None,
                 element_scale=1.0,
                 draw_common_names=False,
-                number_reference_stars=True,
+                number_reference_stars=number_reference_stars,
             )
             self.reference_scene.setSceneRect(0.0, 0.0, float(star_map.width), float(star_map.height))
         self._fit_reference_map_if_display_changed(display_key)
@@ -1142,11 +1278,9 @@ class MainWindow(QMainWindow):
                 target_size=target_size,
                 element_scale=self._aligned_star_element_scale(target_size),
                 draw_common_names=False,
-                number_reference_stars=True,
+                number_reference_stars=not self._hide_all_annotations(),
             )
-            self.real_reference_overlay_item.setOpacity(
-                max(0.0, min(1.0, self.ui.horizontalSliderReferenceOverlayOpacity.value() / 100.0))
-            )
+            self.real_reference_overlay_item.setOpacity(self._reference_overlay_opacity())
             self.real_reference_overlay_item.setVisible(True)
         else:
             self.real_reference_overlay_item.setVisible(False)
@@ -1323,6 +1457,7 @@ class MainWindow(QMainWindow):
                 "display_width_px": preview.image.width(),
                 "display_height_px": preview.image.height(),
             },
+            "sky_alignment_model": self._alignment_model(),
             "pair_count": len(pair_records),
             "pairs": pair_records,
         }
@@ -1393,6 +1528,8 @@ class MainWindow(QMainWindow):
 
     def _auto_match_settings_payload(self) -> dict[str, object]:
         return {
+            "sky_alignment_model": self._alignment_model(),
+            "fisheye_fov_deg": float(self.ui.doubleSpinBoxFisheyeFov.value()),
             "mode": self._auto_match_mode(),
             "mag_limit": float(self.ui.doubleSpinBoxAutoMatchMagLimit.value()),
             "fixed_count": int(self.ui.spinBoxAutoMatchCount.value()),
@@ -1529,6 +1666,8 @@ class MainWindow(QMainWindow):
             star_id = self._session_pair_star_id(pair_payload)
             if not star_id or star_id in visible_star_ids or star_id in self._manual_reference_star_ids:
                 continue
+            if star_id in self._excluded_reference_star_ids:
+                self._excluded_reference_star_ids.remove(star_id)
             self._manual_reference_star_ids.append(star_id)
             visible_star_ids.add(star_id)
             added_any = True
@@ -1611,6 +1750,7 @@ class MainWindow(QMainWindow):
         previous_suspend_alignment = self._suspend_alignment_updates
         self._suspend_alignment_updates = True
         try:
+            self._set_alignment_model(payload.get("sky_alignment_model"))
             self._apply_reference_payload(reference_payload, source_path)
             self._ensure_pair_record_stars_visible(pair_payloads)
             if preview is None:
@@ -1813,6 +1953,12 @@ class MainWindow(QMainWindow):
             self.real_image_scene.removeItem(label_item)
         self._star_pair_annotations.clear()
 
+    def _update_star_pair_annotation_visibility(self) -> None:
+        visible = not self._hide_all_annotations()
+        for ellipse_item, label_item in self._star_pair_annotations.values():
+            ellipse_item.setVisible(visible)
+            label_item.setVisible(visible)
+
     def _remove_star_pair_annotation(self, star_id: str) -> None:
         items = self._star_pair_annotations.pop(star_id, None)
         if items is None:
@@ -1836,6 +1982,28 @@ class MainWindow(QMainWindow):
         for star_id in tuple(self._star_pair_annotations):
             if star_id not in valid_star_ids:
                 self._remove_star_pair_annotation(star_id)
+
+    def _renumber_star_pair_rows_from_table(self) -> None:
+        table = self.ui.tableWidgetStarPairs
+        star_lookup = self._reference_star_lookup()
+        renumbered_stars: list[ReferenceStar] = []
+        signals_were_blocked = table.blockSignals(True)
+        for row in range(table.rowCount()):
+            star_id = self._star_pair_star_id(row)
+            reference_star = star_lookup.get(star_id)
+            if reference_star is not None:
+                renumbered_stars.append(self._reference_star_with_index(reference_star, row + 1))
+
+            index_item = table.item(row, STAR_PAIR_INDEX_COLUMN)
+            if index_item is None:
+                index_item = self._read_only_table_item("")
+                table.setItem(row, STAR_PAIR_INDEX_COLUMN, index_item)
+            index_item.setText(str(row + 1))
+        table.blockSignals(signals_were_blocked)
+
+        self._current_reference_stars = tuple(renumbered_stars)
+        self._sync_star_pair_annotations_to_table()
+        self._refresh_star_pair_table_styles()
 
     def _restore_star_pair_annotations_from_table(self) -> None:
         if self.current_image_preview is None:
@@ -1899,6 +2067,7 @@ class MainWindow(QMainWindow):
         self.real_image_scene.addItem(ellipse_item)
         self.real_image_scene.addItem(label_item)
         self._star_pair_annotations[star_id] = (ellipse_item, label_item)
+        self._update_star_pair_annotation_visibility()
 
     def _show_star_pair_context_menu(self, point: QPoint) -> None:
         table = self.ui.tableWidgetStarPairs
@@ -1917,6 +2086,7 @@ class MainWindow(QMainWindow):
         clear_action = None
         if self._star_pair_position_text(row):
             clear_action = menu.addAction("清除配对")
+        delete_action = menu.addAction("删除该行")
         selected_action = menu.exec_(table.viewport().mapToGlobal(point))
         if selected_action is pick_action:
             self._enter_star_pick_mode(row)
@@ -1924,6 +2094,8 @@ class MainWindow(QMainWindow):
             self._auto_pair_star(row)
         elif clear_action is not None and selected_action is clear_action:
             self._clear_star_pair_position(row)
+        elif selected_action is delete_action:
+            self._delete_star_pair_row(row)
 
     def _enter_star_pick_mode(self, row: int) -> None:
         if self.current_image_preview is None:
@@ -2047,12 +2219,49 @@ class MainWindow(QMainWindow):
         self._update_reference_alignment_transform()
         self.ui.statusbar.showMessage(f"已清除 {star_label} 的真实图像配对。右键该行可重新点选位置。")
 
-    def _clear_selected_star_pair_positions(self) -> bool:
-        rows = sorted({index.row() for index in self.ui.tableWidgetStarPairs.selectedIndexes()})
+    def _delete_star_pair_row(self, row: int) -> None:
+        table = self.ui.tableWidgetStarPairs
+        if row < 0 or row >= table.rowCount():
+            return
+
+        star_label = self._star_pair_label(row)
+        star_id = self._star_pair_star_id(row)
+        if self._active_star_pair_row is not None:
+            if self._active_star_pair_row == row:
+                self._leave_star_pick_mode()
+            elif self._active_star_pair_row > row:
+                self._active_star_pair_row -= 1
+
+        if star_id:
+            self._remove_star_pair_annotation(star_id)
+            self._manual_reference_star_ids = [
+                manual_star_id for manual_star_id in self._manual_reference_star_ids if manual_star_id != star_id
+            ]
+            if star_id not in self._excluded_reference_star_ids:
+                self._excluded_reference_star_ids.append(star_id)
+
+        signals_were_blocked = table.blockSignals(True)
+        table.removeRow(row)
+        table.blockSignals(signals_were_blocked)
+        self._renumber_star_pair_rows_from_table()
+        if table.rowCount() > 0:
+            table.selectRow(min(row, table.rowCount() - 1))
+        self._update_reference_alignment_transform()
+        self.ui.statusbar.showMessage(f"已删除参考星 {star_label}，后续序号已重新排列。")
+
+    def _handle_star_pair_delete_key(self) -> bool:
+        table = self.ui.tableWidgetStarPairs
+        rows = sorted({index.row() for index in table.selectedIndexes()})
+        if not rows and table.currentRow() >= 0:
+            rows = [table.currentRow()]
         if not rows:
             return False
-        for row in rows:
+        rows_with_position = [row for row in rows if self._star_pair_position_text(row)]
+        rows_without_position = [row for row in rows if not self._star_pair_position_text(row)]
+        for row in rows_with_position:
             self._clear_star_pair_position(row)
+        for row in sorted(rows_without_position, reverse=True):
+            self._delete_star_pair_row(row)
         return True
 
     def _scene_radius_from_screen_radius(
@@ -2149,6 +2358,8 @@ class MainWindow(QMainWindow):
             return
 
         star_id, star_name, distance_px = picked
+        if star_id in self._excluded_reference_star_ids:
+            self._excluded_reference_star_ids.remove(star_id)
         existing_row = self._select_star_pair_row_by_id(star_id)
         if existing_row is not None:
             self.ui.statusbar.showMessage(
@@ -2364,7 +2575,12 @@ class MainWindow(QMainWindow):
         added_any = False
         for reference_star in candidates:
             star_id = reference_star.star_id.strip()
-            if not star_id or star_id in visible_star_ids or star_id in self._manual_reference_star_ids:
+            if (
+                not star_id
+                or star_id in visible_star_ids
+                or star_id in self._manual_reference_star_ids
+                or star_id in self._excluded_reference_star_ids
+            ):
                 continue
             self._manual_reference_star_ids.append(star_id)
             visible_star_ids.add(star_id)
@@ -2844,16 +3060,17 @@ class MainWindow(QMainWindow):
         # 手动点选的参考星以星表编号保存；每次渲染后用当前投影坐标重新生成行。
         ordered_stars: list[ReferenceStar] = []
         seen_star_ids: set[str] = set()
+        excluded_star_ids = set(self._excluded_reference_star_ids)
         for star in auto_reference_stars:
             star_id = star.star_id.strip()
-            if not star_id or star_id in seen_star_ids:
+            if not star_id or star_id in seen_star_ids or star_id in excluded_star_ids:
                 continue
             seen_star_ids.add(star_id)
             ordered_stars.append(star)
 
         manual_lookup = self._projected_reference_star_lookup(star_map)
         for star_id in self._manual_reference_star_ids:
-            if star_id in seen_star_ids:
+            if star_id in seen_star_ids or star_id in excluded_star_ids:
                 continue
             manual_star = manual_lookup.get(star_id)
             if manual_star is None:
@@ -3354,6 +3571,7 @@ class MainWindow(QMainWindow):
                 if star_id and star_id not in restored_manual_star_ids:
                     restored_manual_star_ids.append(star_id)
         self._manual_reference_star_ids = restored_manual_star_ids
+        self._excluded_reference_star_ids = []
         self._update_reference_label_controls()
         self._update_lens_model_controls()
         self.ui.tabWidgetMain.setCurrentWidget(self.ui.tabSimulator)
@@ -3414,6 +3632,7 @@ class MainWindow(QMainWindow):
             self._update_live_star_map_zoom_scale(self.ui.realImageView)
 
     def fit_all_graphics_views(self) -> None:
+        self._set_equal_reference_preview_sizes()
         self.fit_star_map()
         if self._can_sync_reference_real_views():
             self.fit_real_image()
@@ -3439,10 +3658,15 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().resizeEvent(event)
+        QTimer.singleShot(0, self._set_equal_reference_preview_sizes)
         QTimer.singleShot(0, self._refresh_all_elided_labels)
         QTimer.singleShot(0, self.fit_all_graphics_views)
 
     def eventFilter(self, watched, event) -> bool:  # type: ignore[no-untyped-def]
+        if watched is self.ui.splitterReferenceAndRealImage:
+            if event.type() in (QEvent.Resize, QEvent.Show):
+                QTimer.singleShot(0, self._set_equal_reference_preview_sizes)
+            return False
         if watched in (
             self.ui.labelImportedImagePath,
             self.ui.labelSkyMaskStatus,
@@ -3453,7 +3677,7 @@ class MainWindow(QMainWindow):
             return False
         if watched is self.ui.tableWidgetStarPairs and event.type() == QEvent.KeyPress:
             if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
-                return self._clear_selected_star_pair_positions()
+                return self._handle_star_pair_delete_key()
         if watched is self.ui.starMapView.viewport():
             if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
                 self.drag_start = event.pos()

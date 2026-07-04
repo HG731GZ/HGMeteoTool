@@ -6,7 +6,15 @@ from typing import Any
 
 import numpy as np
 
-from .alignment import MAX_ALIGNMENT_CONDITION_NUMBER, MIN_ALIGNMENT_PAIRS
+from .alignment import (
+    MAX_ALIGNMENT_CONDITION_NUMBER,
+    MIN_ALIGNMENT_PAIRS,
+    ProjectionSkyAlignmentTransform,
+    SKY_KNOWN_PROJECTION_MODELS,
+    SKY_MATCHING_MODEL_POLYNOMIAL,
+    SKY_MATCHING_MODELS,
+    fit_projection_sky_alignment,
+)
 from .coordinates import project_radec_to_sky_plane, sky_plane_basis, sky_plane_to_radec, unit_vectors_to_radec
 
 
@@ -134,6 +142,8 @@ class SourceAstrometricModel:
     inverse_median_arcsec: float
     inverse_max_arcsec: float
     wcs: dict[str, Any]
+    model_type: str = "local_sky_plane_polynomial"
+    projection_transform: ProjectionSkyAlignmentTransform | None = None
 
     def direction_to_pixel_points(self, ra_dec_points: np.ndarray) -> np.ndarray:
         ra_dec_array = np.asarray(ra_dec_points, dtype=np.float64)
@@ -141,6 +151,9 @@ class SourceAstrometricModel:
             ra_dec_array = ra_dec_array.reshape(1, 2)
         if ra_dec_array.ndim != 2 or ra_dec_array.shape[1] != 2:
             raise ValueError("direction_to_pixel_points 需要 Nx2 的 RA/Dec 数组。")
+
+        if self.projection_transform is not None:
+            return self.projection_transform.transform_radec_points(ra_dec_array)
 
         plane_points = project_radec_to_sky_plane(
             ra_dec_array[:, 0],
@@ -189,7 +202,7 @@ class SourceAstrometricModel:
             "generated_at_utc": datetime.now(timezone.utc).isoformat(),
             "direction_frame": "ICRS",
             "pixel_convention": "0-based pixel coordinates at pixel centers",
-            "model_type": "local_sky_plane_polynomial",
+            "model_type": self.model_type,
             "image": {
                 "width_px": int(self.image_width_px),
                 "height_px": int(self.image_height_px),
@@ -225,6 +238,12 @@ class SourceAstrometricModel:
             },
             "fits_wcs_compat": self.wcs,
         }
+        if self.projection_transform is not None:
+            payload["known_projection"] = _projection_transform_payload(self.projection_transform)
+            payload["sky_to_pixel"]["role"] = "bootstrap_or_fallback_polynomial"
+            payload["diagnostics"]["projection_rms_px_before_residual"] = float(
+                self.projection_transform.projection_rms_px
+            )
         if source_image is not None:
             payload["source_image"] = source_image
         if mask is not None:
@@ -236,6 +255,41 @@ class SourceAstrometricModel:
         if reference_payload is not None:
             payload["reference_payload"] = reference_payload
         return payload
+
+
+def _projection_transform_payload(transform: ProjectionSkyAlignmentTransform) -> dict[str, Any]:
+    return {
+        "lens_model": transform.lens_model,
+        "fov_deg": None if transform.fov_deg is None else float(transform.fov_deg),
+        "image_width_px": int(transform.image_width_px),
+        "image_height_px": int(transform.image_height_px),
+        "rotation_matrix_world_to_camera": [
+            _as_float_list(row) for row in np.asarray(transform.rotation_matrix, dtype=np.float64)
+        ],
+        "principal_point_px": {
+            "x": float(transform.center_x_px),
+            "y": float(transform.center_y_px),
+        },
+        "scale_px": float(transform.scale_px),
+        "residual_correction": {
+            "kind": transform.residual_kind,
+            "degree": int(transform.residual_degree),
+            "input": "raw projection pixel coordinates normalized by image size",
+            "origin_x_px": float(transform.residual_origin_x_px),
+            "origin_y_px": float(transform.residual_origin_y_px),
+            "scale_x_px": float(transform.residual_scale_x_px),
+            "scale_y_px": float(transform.residual_scale_y_px),
+            "coeff_x_px": _as_float_list(transform.residual_coeff_x),
+            "coeff_y_px": _as_float_list(transform.residual_coeff_y),
+            "anchor_points_normalized": [
+                _as_float_list(row) for row in np.asarray(transform.residual_anchor_points, dtype=np.float64)
+            ],
+            "tps_weights_x_px": _as_float_list(transform.residual_tps_weights_x),
+            "tps_weights_y_px": _as_float_list(transform.residual_tps_weights_y),
+            "tps_affine_x_px": _as_float_list(transform.residual_tps_affine_x),
+            "tps_affine_y_px": _as_float_list(transform.residual_tps_affine_y),
+        },
+    }
 
 
 def _build_wcs_compat(
@@ -283,6 +337,9 @@ def fit_source_astrometric_model(
     ra_dec_points: np.ndarray,
     pixel_points: np.ndarray,
     image_size: tuple[int, int],
+    matching_model: str = SKY_MATCHING_MODEL_POLYNOMIAL,
+    fisheye_fov_deg: float | None = None,
+    initial_rotation_matrix: np.ndarray | None = None,
 ) -> SourceAstrometricModel:
     sky_radec = np.asarray(ra_dec_points, dtype=np.float64)
     pixels = np.asarray(pixel_points, dtype=np.float64)
@@ -292,6 +349,8 @@ def fit_source_astrometric_model(
         raise ValueError("源图模型需要 Nx2 的像素点。")
     if sky_radec.shape[0] != pixels.shape[0]:
         raise ValueError("源图模型的 RA/Dec 点与像素点数量不一致。")
+    if matching_model not in SKY_MATCHING_MODELS:
+        raise ValueError(f"不支持的源图匹配模型：{matching_model}")
 
     finite_mask = _finite_point_mask(sky_radec, pixels)
     sky_radec = sky_radec[finite_mask]
@@ -330,6 +389,19 @@ def fit_source_astrometric_model(
             evaluate_polynomial(sky_plane, sky_to_pixel_coeff_y, sky_to_pixel_degree),
         )
     )
+    projection_transform: ProjectionSkyAlignmentTransform | None = None
+    model_type = "local_sky_plane_polynomial"
+    if matching_model in SKY_KNOWN_PROJECTION_MODELS:
+        projection_transform = fit_projection_sky_alignment(
+            ra_dec_points=sky_radec,
+            target_points=pixels,
+            lens_model=matching_model,
+            image_size=image_size,
+            fisheye_fov_deg=fisheye_fov_deg,
+            initial_rotation_matrix=initial_rotation_matrix,
+        )
+        predicted_pixels = projection_transform.transform_radec_points(sky_radec)
+        model_type = "known_projection_with_residual_correction"
     rms_px, median_px, max_px = _residual_summary(predicted_pixels - pixels)
 
     predicted_plane = np.column_stack(
@@ -370,6 +442,8 @@ def fit_source_astrometric_model(
         inverse_median_arcsec=float(inverse_median_deg * 3600.0),
         inverse_max_arcsec=float(inverse_max_deg * 3600.0),
         wcs=placeholder_wcs,
+        model_type=model_type,
+        projection_transform=projection_transform,
     )
     object.__setattr__(model, "wcs", _build_wcs_compat(model=model, center_pixel=center_pixel))
     return model

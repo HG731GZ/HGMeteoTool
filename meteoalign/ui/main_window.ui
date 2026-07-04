@@ -626,7 +626,7 @@
              <x>0</x>
              <y>0</y>
              <width>360</width>
-             <height>980</height>
+             <height>1020</height>
             </rect>
            </property>
           <layout class="QVBoxLayout" name="verticalLayoutReferencePickSidePanel">
@@ -865,22 +865,46 @@
                </widget>
               </item>
               <item>
-               <widget class="QCheckBox" name="checkBoxShowSkyMask">
-                <property name="text">
-                 <string>显示蒙版</string>
-                </property>
-               </widget>
-              </item>
-              <item>
                <layout class="QFormLayout" name="formLayoutAutoMatch">
                 <item row="0" column="0">
+                 <widget class="QLabel" name="labelSkyAlignmentModel">
+                  <property name="text">
+                   <string>匹配模型</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="0" column="1">
+                 <widget class="QComboBox" name="comboBoxSkyAlignmentModel">
+                  <item>
+                   <property name="text">
+                    <string>普适多项式</string>
+                   </property>
+                  </item>
+                  <item>
+                   <property name="text">
+                    <string>普通广角透视</string>
+                   </property>
+                  </item>
+                  <item>
+                   <property name="text">
+                    <string>等距鱼眼</string>
+                   </property>
+                  </item>
+                  <item>
+                   <property name="text">
+                    <string>等立体角鱼眼</string>
+                   </property>
+                  </item>
+                 </widget>
+                </item>
+                <item row="1" column="0">
                  <widget class="QLabel" name="labelAutoMatchMode">
                   <property name="text">
                    <string>候选星</string>
                   </property>
                  </widget>
                 </item>
-                <item row="0" column="1">
+                <item row="1" column="1">
                  <widget class="QComboBox" name="comboBoxAutoMatchMode">
                   <item>
                    <property name="text">
@@ -894,14 +918,14 @@
                   </item>
                  </widget>
                 </item>
-                <item row="1" column="0">
+                <item row="2" column="0">
                  <widget class="QLabel" name="labelAutoMatchMagLimit">
                   <property name="text">
                    <string>星等上限</string>
                   </property>
                  </widget>
                 </item>
-                <item row="1" column="1">
+                <item row="2" column="1">
                  <widget class="QDoubleSpinBox" name="doubleSpinBoxAutoMatchMagLimit">
                   <property name="decimals">
                    <number>1</number>
@@ -923,14 +947,14 @@
                   </property>
                  </widget>
                 </item>
-                <item row="2" column="0">
+                <item row="3" column="0">
                  <widget class="QLabel" name="labelAutoMatchCount">
                   <property name="text">
                    <string>固定数量</string>
                   </property>
                  </widget>
                 </item>
-                <item row="2" column="1">
+                <item row="3" column="1">
                  <widget class="QSpinBox" name="spinBoxAutoMatchCount">
                   <property name="minimum">
                    <number>10</number>
@@ -946,14 +970,14 @@
                   </property>
                  </widget>
                 </item>
-                <item row="3" column="0">
+                <item row="4" column="0">
                  <widget class="QLabel" name="labelAutoMatchRadius">
                   <property name="text">
                    <string>搜索半径</string>
                   </property>
                  </widget>
                 </item>
-                <item row="3" column="1">
+                <item row="4" column="1">
                  <widget class="QSpinBox" name="spinBoxAutoMatchRadius">
                   <property name="minimum">
                    <number>4</number>
@@ -996,13 +1020,13 @@
              <property name="minimumSize">
               <size>
                <width>0</width>
-               <height>170</height>
+               <height>80</height>
               </size>
              </property>
              <property name="maximumSize">
               <size>
                <width>16777215</width>
-               <height>170</height>
+               <height>80</height>
               </size>
              </property>
              <layout class="QVBoxLayout" name="verticalLayoutReferenceAlignment">
@@ -1034,63 +1058,6 @@
                 </property>
                </widget>
               </item>
-              <item>
-               <widget class="QCheckBox" name="checkBoxOverlayReferenceMap">
-                <property name="text">
-                 <string>叠加实时星空到真实预览</string>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <layout class="QHBoxLayout" name="horizontalLayoutReferenceOverlayOpacity">
-                <item>
-                 <widget class="QLabel" name="labelReferenceOverlayOpacityTitle">
-                  <property name="text">
-                   <string>透明度</string>
-                  </property>
-                 </widget>
-                </item>
-                <item>
-                 <widget class="QSlider" name="horizontalSliderReferenceOverlayOpacity">
-                  <property name="minimum">
-                   <number>0</number>
-                  </property>
-                  <property name="maximum">
-                   <number>100</number>
-                  </property>
-                  <property name="value">
-                   <number>45</number>
-                  </property>
-                  <property name="orientation">
-                   <enum>Qt::Horizontal</enum>
-                  </property>
-                 </widget>
-                </item>
-                <item>
-                 <widget class="QLabel" name="labelReferenceOverlayOpacityValue">
-                  <property name="minimumSize">
-                   <size>
-                    <width>42</width>
-                    <height>0</height>
-                   </size>
-                  </property>
-                  <property name="alignment">
-                   <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
-                  </property>
-                  <property name="text">
-                   <string>45%</string>
-                  </property>
-                 </widget>
-                </item>
-               </layout>
-              </item>
-              <item>
-               <widget class="QCheckBox" name="checkBoxSyncReferenceAndRealView">
-                <property name="text">
-                 <string>同步实时星空与真实预览拖动缩放</string>
-                </property>
-               </widget>
-              </item>
              </layout>
             </widget>
            </item>
@@ -1118,9 +1085,82 @@
           </property>
           <widget class="QGroupBox" name="groupBoxReferencePreview">
            <property name="title">
-            <string>参考星图</string>
+            <string/>
            </property>
            <layout class="QVBoxLayout" name="verticalLayoutReferencePreview">
+            <item>
+             <layout class="QHBoxLayout" name="horizontalLayoutReferencePreviewHeader">
+              <item>
+               <widget class="QLabel" name="labelReferencePreviewTitle">
+                <property name="font">
+                 <font>
+                  <weight>75</weight>
+                  <bold>true</bold>
+                 </font>
+                </property>
+                <property name="text">
+                 <string>参考星图</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QCheckBox" name="checkBoxSyncReferenceAndRealView">
+                <property name="text">
+                 <string>同步拖拽</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QCheckBox" name="checkBoxOverlayReferenceMap">
+                <property name="text">
+                 <string>叠加显示</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QLabel" name="labelReferenceOverlayOpacityTitle">
+                <property name="text">
+                 <string>透明度</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QDoubleSpinBox" name="doubleSpinBoxReferenceOverlayOpacity">
+                <property name="decimals">
+                 <number>1</number>
+                </property>
+                <property name="minimum">
+                 <double>0.000000000000000</double>
+                </property>
+                <property name="maximum">
+                 <double>100.000000000000000</double>
+                </property>
+                <property name="singleStep">
+                 <double>5.000000000000000</double>
+                </property>
+                <property name="value">
+                 <double>45.000000000000000</double>
+                </property>
+                <property name="suffix">
+                 <string> %</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <spacer name="horizontalSpacerReferencePreviewHeader">
+                <property name="orientation">
+                 <enum>Qt::Horizontal</enum>
+                </property>
+                <property name="sizeHint" stdset="0">
+                 <size>
+                  <width>40</width>
+                  <height>20</height>
+                 </size>
+                </property>
+               </spacer>
+              </item>
+             </layout>
+            </item>
             <item>
              <widget class="QGraphicsView" name="referenceImageView">
               <property name="backgroundBrush">
@@ -1147,9 +1187,53 @@
           </widget>
           <widget class="QGroupBox" name="groupBoxRealImagePreview">
            <property name="title">
-            <string>真实图像预览</string>
+            <string/>
            </property>
            <layout class="QVBoxLayout" name="verticalLayoutRealImagePreview">
+            <item>
+             <layout class="QHBoxLayout" name="horizontalLayoutRealImagePreviewHeader">
+              <item>
+               <widget class="QLabel" name="labelRealImagePreviewTitle">
+                <property name="font">
+                 <font>
+                  <weight>75</weight>
+                  <bold>true</bold>
+                 </font>
+                </property>
+                <property name="text">
+                 <string>真实图像预览</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QCheckBox" name="checkBoxShowSkyMask">
+                <property name="text">
+                 <string>显示蒙版</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QCheckBox" name="checkBoxHideAllAnnotations">
+                <property name="text">
+                 <string>隐藏所有标注</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <spacer name="horizontalSpacerRealImagePreviewHeader">
+                <property name="orientation">
+                 <enum>Qt::Horizontal</enum>
+                </property>
+                <property name="sizeHint" stdset="0">
+                 <size>
+                  <width>40</width>
+                  <height>20</height>
+                 </size>
+                </property>
+               </spacer>
+              </item>
+             </layout>
+            </item>
             <item>
              <widget class="QGraphicsView" name="realImageView">
               <property name="backgroundBrush">

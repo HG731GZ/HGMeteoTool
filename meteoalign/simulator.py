@@ -495,6 +495,10 @@ def _local_vectors_from_altaz(alt_deg: np.ndarray, az_deg: np.ndarray) -> np.nda
     )
 
 
+def local_vectors_from_altaz(alt_deg: np.ndarray, az_deg: np.ndarray) -> np.ndarray:
+    return _local_vectors_from_altaz(alt_deg, az_deg)
+
+
 def _project_vectors_onto_camera_basis(
     vectors: np.ndarray,
     basis: tuple[np.ndarray, np.ndarray, np.ndarray],
@@ -537,6 +541,10 @@ def _camera_basis(view: ViewSettings) -> tuple[np.ndarray, np.ndarray, np.ndarra
     rolled_right = right * cos_roll + up * sin_roll
     rolled_up = -right * sin_roll + up * cos_roll
     return rolled_right, rolled_up, forward
+
+
+def camera_basis_from_view(view: ViewSettings) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    return _camera_basis(view)
 
 
 def _star_style(mag_v: np.ndarray, visible_mag_limit: float) -> tuple[np.ndarray, np.ndarray]:
