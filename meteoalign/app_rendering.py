@@ -8,6 +8,7 @@ import numpy as np
 from PyQt5.QtCore import QTimer, Qt
 
 from .app_constants import (
+    AUTO_MATCH_SEARCH_MAG_LIMIT,
     LENS_MODELS,
     PREVIEW_LONG_SIDE_PX,
     REFERENCE_LABEL_MODE_FIXED_COUNT,
@@ -25,9 +26,12 @@ from .simulator import (
     HorizontalStarCatalog,
     ObserverSettings,
     ProjectedStarMap,
+    ProjectedSolarSystemObject,
     RECTILINEAR_LENS_MODEL,
     ReferenceStar,
     ViewSettings,
+    _star_rgb,
+    _star_style,
     compute_horizontal_catalog,
     compute_horizontal_milky_way,
     compute_horizontal_solar_system,
@@ -59,6 +63,7 @@ class RenderingMixin:
     _last_render_size: object
     _last_reference_render_size: object
     _current_star_map: ProjectedStarMap | None
+    _current_reference_star_map: ProjectedStarMap | None
     _current_reference_stars: tuple
     ui_config: object
     render_timer: QTimer
@@ -141,13 +146,21 @@ class RenderingMixin:
     def _projected_reference_star_lookup(self, star_map: ProjectedStarMap) -> dict[str, ReferenceStar]:
         lookup: dict[str, ReferenceStar] = {}
         for star_index in range(len(star_map)):
-            if not bool(star_map.above_horizon[star_index]):
-                continue
             reference_star = self._reference_star_from_star_map_index(star_map, star_index, output_index=0)
             if reference_star.star_id:
                 lookup[reference_star.star_id] = reference_star
 
         return lookup
+
+    def _matched_reference_star_ids_from_table(self) -> list[str]:
+        matched_star_ids: list[str] = []
+        for row in range(self.ui.tableWidgetStarPairs.rowCount()):
+            star_id = self._star_pair_star_id(row)
+            if not star_id or star_id in matched_star_ids:
+                continue
+            if self._parse_star_pair_position_text(row) is not None:
+                matched_star_ids.append(star_id)
+        return matched_star_ids
 
     def _select_current_reference_stars(self, star_map: ProjectedStarMap) -> tuple[ReferenceStar, ...]:
         self._normalize_auto_match_groups()
@@ -176,30 +189,48 @@ class RenderingMixin:
             ordered_stars.append(star)
 
         manual_lookup = self._projected_reference_star_lookup(star_map)
-        for star_id in self._manual_reference_star_ids:
-            if star_id in seen_star_ids or star_id in excluded_star_ids or star_id in auto_match_star_ids:
-                continue
-            manual_star = manual_lookup.get(star_id)
-            if manual_star is None:
-                continue
+
+        def append_lookup_star(
+            star_id: str,
+            *,
+            keep_if_excluded: bool = False,
+            keep_if_auto: bool = False,
+        ) -> None:
+            star_id = star_id.strip()
+            if not star_id or star_id in seen_star_ids:
+                return
+            if not keep_if_auto and star_id in auto_match_star_ids:
+                return
+            if not keep_if_excluded and star_id in excluded_star_ids:
+                return
+            lookup_star = manual_lookup.get(star_id)
+            if lookup_star is None:
+                return
             seen_star_ids.add(star_id)
-            ordered_stars.append(manual_star)
+            ordered_stars.append(lookup_star)
+
+        # 已经配对的星必须保留在表格中，否则参考图切换到全星表投影后会丢失拟合锚点。
+        for star_id in self._matched_reference_star_ids_from_table():
+            append_lookup_star(star_id, keep_if_excluded=True)
+
+        for star_id in self._manual_reference_star_ids:
+            if star_id in auto_match_star_ids:
+                continue
+            append_lookup_star(star_id)
 
         for star_id in self._auto_match_reference_star_ids:
-            if star_id in seen_star_ids or star_id in excluded_star_ids:
-                continue
-            auto_match_star = manual_lookup.get(star_id)
-            if auto_match_star is None:
-                continue
-            seen_star_ids.add(star_id)
-            ordered_stars.append(auto_match_star)
+            append_lookup_star(star_id, keep_if_auto=True)
 
         return tuple(self._reference_star_with_index(star, index) for index, star in enumerate(ordered_stars, start=1))
 
+    def _reference_selection_star_map(self) -> ProjectedStarMap | None:
+        return self._current_reference_star_map or self._current_star_map
+
     def _refresh_reference_stars_from_current_map(self) -> None:
-        if self._current_star_map is None:
+        star_map = self._reference_selection_star_map()
+        if star_map is None:
             return
-        reference_stars = self._select_current_reference_stars(self._current_star_map)
+        reference_stars = self._select_current_reference_stars(star_map)
         self._update_star_pair_table(reference_stars)
 
     def _row_for_star_id(self, star_id: str) -> int | None:
@@ -289,12 +320,13 @@ class RenderingMixin:
     def _update_lens_model_controls(self) -> None:
         lens_model = self._lens_model()
         is_fisheye = lens_model != RECTILINEAR_LENS_MODEL
+        locked = bool(getattr(self, "_simulator_controls_locked", False))
         max_fov = 300.0
         self.ui.doubleSpinBoxFisheyeFov.setMaximum(max_fov)
         if self.ui.doubleSpinBoxFisheyeFov.value() > max_fov:
             self.ui.doubleSpinBoxFisheyeFov.setValue(max_fov)
-        self.ui.labelFisheyeFov.setEnabled(is_fisheye)
-        self.ui.doubleSpinBoxFisheyeFov.setEnabled(is_fisheye)
+        self.ui.labelFisheyeFov.setEnabled(is_fisheye and not locked)
+        self.ui.doubleSpinBoxFisheyeFov.setEnabled(is_fisheye and not locked)
 
     def _handle_lens_model_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
         self._update_lens_model_controls()
@@ -424,6 +456,140 @@ class RenderingMixin:
         )
         return observer, camera, view, mag_limit, star_map
 
+    def _reference_catalog_mag_limit(self, extra_mag_limit: float | None = None) -> float:
+        mag_limit = float(self.ui.doubleSpinBoxMagLimit.value())
+        if self._reference_label_mode() == REFERENCE_LABEL_MODE_FIXED_MAG_LIMIT:
+            mag_limit = max(mag_limit, float(self.ui.doubleSpinBoxReferenceMagLimit.value()))
+        if self._auto_match_reference_star_ids:
+            mag_limit = max(mag_limit, float(AUTO_MATCH_SEARCH_MAG_LIMIT))
+        if extra_mag_limit is not None:
+            mag_limit = max(mag_limit, float(extra_mag_limit))
+        return mag_limit
+
+    def _aligned_solar_system_objects(
+        self,
+        horizontal_solar_system: HorizontalSolarSystemCatalog,
+        transform: object,
+        target_size: tuple[int, int],
+    ) -> tuple[ProjectedSolarSystemObject, ...]:
+        if len(horizontal_solar_system) == 0:
+            return ()
+
+        points = transform.transform_radec_points(
+            np.column_stack((horizontal_solar_system.ra_deg, horizontal_solar_system.dec_deg))
+        )
+        width_px, height_px = target_size
+        inside = (
+            np.all(np.isfinite(points), axis=1)
+            & (points[:, 0] >= 0.0)
+            & (points[:, 0] <= width_px - 1)
+            & (points[:, 1] >= 0.0)
+            & (points[:, 1] <= height_px - 1)
+        )
+
+        objects: list[ProjectedSolarSystemObject] = []
+        for index in np.flatnonzero(inside):
+            color = (
+                int(horizontal_solar_system.color_rgb[index, 0]),
+                int(horizontal_solar_system.color_rgb[index, 1]),
+                int(horizontal_solar_system.color_rgb[index, 2]),
+            )
+            objects.append(
+                ProjectedSolarSystemObject(
+                    object_id=str(horizontal_solar_system.object_ids[index]),
+                    display_name=str(horizontal_solar_system.display_names[index]),
+                    kernel_name=str(horizontal_solar_system.kernel_names[index]),
+                    ra_deg=float(horizontal_solar_system.ra_deg[index]),
+                    dec_deg=float(horizontal_solar_system.dec_deg[index]),
+                    mag_v=float(horizontal_solar_system.mag_v[index]),
+                    sim_x=float(points[index, 0]),
+                    sim_y=float(points[index, 1]),
+                    alt_deg=float(horizontal_solar_system.alt_deg[index]),
+                    az_deg=float(horizontal_solar_system.az_deg[index]),
+                    radius_px=float(horizontal_solar_system.radius_px[index]),
+                    color_rgb=color,
+                    alpha=255,
+                    above_horizon=bool(horizontal_solar_system.alt_deg[index] >= 0.0),
+                    reference_allowed=bool(horizontal_solar_system.reference_allowed[index]),
+                )
+            )
+        return tuple(objects)
+
+    def _build_aligned_reference_star_map(
+        self,
+        transform: object,
+        target_size: tuple[int, int],
+        visible_mag_limit: float | None = None,
+    ) -> ProjectedStarMap:
+        width_px = max(1, int(target_size[0]))
+        height_px = max(1, int(target_size[1]))
+        observer = self._observer_settings()
+        mag_limit = self._reference_catalog_mag_limit(visible_mag_limit)
+        horizontal_catalog = self._get_horizontal_catalog(observer, mag_limit)
+        horizontal_solar_system = self._get_horizontal_solar_system(observer)
+
+        if len(horizontal_catalog) > 0:
+            points = transform.transform_radec_points(
+                np.column_stack((horizontal_catalog.ra_deg, horizontal_catalog.dec_deg))
+            )
+            inside = (
+                np.all(np.isfinite(points), axis=1)
+                & (points[:, 0] >= 0.0)
+                & (points[:, 0] <= width_px - 1)
+                & (points[:, 1] >= 0.0)
+                & (points[:, 1] <= height_px - 1)
+            )
+        else:
+            points = np.empty((0, 2), dtype=np.float64)
+            inside = np.asarray([], dtype=bool)
+
+        radius, intensity = _star_style(horizontal_catalog.mag_v[inside], mag_limit)
+        star_rgb = _star_rgb(
+            mag_v=horizontal_catalog.mag_v[inside],
+            intensity=intensity,
+            color_index_bv=horizontal_catalog.color_index_bv[inside],
+            spectral_type=horizontal_catalog.spectral_type[inside],
+        )
+        star_count = int(np.count_nonzero(inside))
+        alpha = np.full(star_count, 255, dtype=np.uint8)
+        solar_system_objects = self._aligned_solar_system_objects(
+            horizontal_solar_system,
+            transform=transform,
+            target_size=(width_px, height_px),
+        )
+
+        # 参考星图进入配准模式后只表达“当前模型投到真实图像窗口里的星”，不再附带地平线遮罩或模拟视野网格。
+        return ProjectedStarMap(
+            width=width_px,
+            height=height_px,
+            source_name=horizontal_catalog.source_name,
+            x_px=points[inside, 0].astype(np.float64),
+            y_px=points[inside, 1].astype(np.float64),
+            radius_px=radius,
+            intensity=intensity,
+            alpha=alpha,
+            above_horizon=horizontal_catalog.alt_deg[inside] >= 0.0,
+            star_ids=horizontal_catalog.star_ids[inside],
+            display_names=horizontal_catalog.display_names[inside],
+            common_names=horizontal_catalog.common_names[inside],
+            ra_deg=horizontal_catalog.ra_deg[inside],
+            dec_deg=horizontal_catalog.dec_deg[inside],
+            alt_deg=horizontal_catalog.alt_deg[inside].astype(np.float64),
+            az_deg=horizontal_catalog.az_deg[inside].astype(np.float64),
+            mag_v=horizontal_catalog.mag_v[inside],
+            color_index_bv=horizontal_catalog.color_index_bv[inside],
+            spectral_type=horizontal_catalog.spectral_type[inside],
+            star_rgb=star_rgb,
+            grid_lines=(),
+            direction_labels=(),
+            catalog_count=len(horizontal_catalog),
+            lens_model=str(getattr(transform, "lens_model", self._lens_model())),
+            sky_circle_radius_px=None,
+            horizon_shadow_rects=(),
+            milky_way_polygons=(),
+            solar_system_objects=solar_system_objects,
+        )
+
     def _display_star_map(self, star_map: ProjectedStarMap, reference_stars: tuple[ReferenceStar, ...]) -> None:
         render_size = (star_map.width, star_map.height)
         should_fit = self._last_render_size != render_size or self.star_map_item.boundingRect().isEmpty()
@@ -459,6 +625,7 @@ class RenderingMixin:
         try:
             _observer, _camera, view, _mag_limit, star_map = self._build_projected_star_map()
             self._current_star_map = star_map
+            self._current_reference_star_map = star_map
             reference_stars = self._select_current_reference_stars(star_map)
             self._display_star_map(star_map, reference_stars)
             self._update_star_pair_table(reference_stars)

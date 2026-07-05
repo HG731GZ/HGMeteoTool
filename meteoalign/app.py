@@ -221,6 +221,7 @@ class MainWindow(
         self._star_pair_annotations: dict[str, tuple[QGraphicsEllipseItem, QGraphicsSimpleTextItem]] = {}
         self._focused_star_annotations: list[QGraphicsItem] = []
         self._current_star_map: ProjectedStarMap | None = None
+        self._current_reference_star_map: ProjectedStarMap | None = None
         self._current_reference_stars: tuple[ReferenceStar, ...] = ()
         self._sky_alignment_transform: SkyAlignmentTransform | None = None
         self._source_astrometric_model: SourceAstrometricModel | None = None
@@ -230,6 +231,7 @@ class MainWindow(
         self._syncing_reference_real_views = False
         self._syncing_reference_preview_splitter = False
         self._suspend_alignment_updates = False
+        self._simulator_controls_locked = False
         self._manual_match_group_expanded = True
         self._manual_reference_star_ids: list[str] = []
         self._auto_match_reference_star_ids: list[str] = []
@@ -353,7 +355,8 @@ class MainWindow(
         self.ui.checkBoxOverlayReferenceMap.toggled.connect(self._update_reference_alignment_display)
         self.ui.doubleSpinBoxReferenceOverlayOpacity.valueChanged.connect(self._handle_reference_overlay_opacity_changed)
         self.ui.checkBoxSyncReferenceAndRealView.toggled.connect(self._handle_reference_real_sync_toggled)
-        self.ui.checkBoxHideAllAnnotations.toggled.connect(self._handle_hide_all_annotations_toggled)
+        self.ui.checkBoxHideReferenceAnnotations.toggled.connect(self._handle_hide_reference_annotations_toggled)
+        self.ui.checkBoxHideRealImageAnnotations.toggled.connect(self._handle_hide_real_image_annotations_toggled)
         self.ui.referenceImageView.horizontalScrollBar().valueChanged.connect(
             lambda _value: self._sync_reference_real_view_from(self.ui.referenceImageView)
         )

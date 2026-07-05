@@ -138,6 +138,17 @@ class ViewControlsMixin:
             if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
                 return self._handle_star_pair_delete_key()
         if watched is self.ui.starMapView.viewport():
+            if bool(getattr(self, "_simulator_controls_locked", False)):
+                if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+                    self.drag_start = None
+                    self.last_drag_pos = None
+                    self.ui.statusbar.showMessage("已有 4 对或更多有效匹配，星空模拟参数已锁定；清除匹配后可继续调整。")
+                    return True
+                if event.type() in (QEvent.MouseMove, QEvent.MouseButtonRelease):
+                    self.drag_start = None
+                    self.last_drag_pos = None
+                    self.ui.starMapView.viewport().unsetCursor()
+                    return True
             if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
                 self.drag_start = event.pos()
                 self.last_drag_pos = event.pos()

@@ -22,12 +22,16 @@ from .simulator import ProjectedStarMap, ReferenceStar
 from .star_fitting import FittedStarPosition, fit_star_position
 
 
+AUTO_MATCH_MIN_ALTITUDE_DEG = -5.0
+
+
 class AutoMatchMixin:
     """自动匹配 Mixin：参考星图点选、单星自动配对、场星批量匹配。"""
 
     ui: object
     _sky_alignment_transform: SkyAlignmentTransform | None
     _current_star_map: ProjectedStarMap | None
+    _current_reference_star_map: ProjectedStarMap | None
     _current_reference_stars: tuple
     _auto_match_reference_star_ids: list
     _auto_match_constraint_by_star_id: dict
@@ -45,6 +49,8 @@ class AutoMatchMixin:
     ui_config: object
     _sky_alignment_error_message: object
     _reference_alignment_error_message: object
+    _build_aligned_reference_star_map: object  # method
+    _reference_selection_star_map: object  # method
 
     def _scene_radius_from_screen_radius(
         self,
@@ -57,7 +63,7 @@ class AutoMatchMixin:
         return max(1.0, float(np.hypot(scene_edge.x() - scene_center.x(), scene_edge.y() - scene_center.y())))
 
     def _reference_pick_star_positions(self) -> list[tuple[str, str, float, float, float, float]]:
-        star_map = self._current_star_map
+        star_map = self._reference_selection_star_map()
         if star_map is None:
             return []
 
@@ -69,8 +75,6 @@ class AutoMatchMixin:
             else:
                 star_points = transform.transform_radec_points(np.column_stack((star_map.ra_deg, star_map.dec_deg)))
             for star_index in range(len(star_map)):
-                if not bool(star_map.above_horizon[star_index]):
-                    continue
                 x_value = float(star_points[star_index, 0])
                 y_value = float(star_points[star_index, 1])
                 if not np.isfinite(x_value) or not np.isfinite(y_value):
@@ -288,6 +292,22 @@ class AutoMatchMixin:
         elif self._current_star_map is None:
             self.render_now()
 
+    def _auto_match_reference_star_map(
+        self,
+        transform: SkyAlignmentTransform,
+        mag_limit: float,
+    ) -> ProjectedStarMap | None:
+        if self.current_image_preview is None:
+            return None
+        image = self.current_image_preview.image
+        star_map = self._build_aligned_reference_star_map(
+            transform,
+            (image.width(), image.height()),
+            visible_mag_limit=mag_limit,
+        )
+        self._current_reference_star_map = star_map
+        return star_map
+
     def _auto_match_candidate_stars(
         self,
         transform: SkyAlignmentTransform,
@@ -296,8 +316,7 @@ class AutoMatchMixin:
             return [], {}
 
         mag_limit = self._auto_match_required_mag_limit()
-        self._ensure_current_star_map_for_auto_match(mag_limit)
-        star_map = self._current_star_map
+        star_map = self._auto_match_reference_star_map(transform, mag_limit)
         if star_map is None or len(star_map) <= 0:
             return [], {}
 
@@ -311,7 +330,7 @@ class AutoMatchMixin:
             & (predicted[:, 0] < image.width())
             & (predicted[:, 1] >= 0.0)
             & (predicted[:, 1] < image.height())
-            & star_map.above_horizon.astype(bool)
+            & (star_map.alt_deg >= AUTO_MATCH_MIN_ALTITUDE_DEG)
         )
 
         if self.current_sky_mask is not None:

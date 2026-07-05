@@ -216,7 +216,7 @@ class LiveStarMapGraphicsItem(QGraphicsItem):
         if transform is None:
             return
 
-        label_scale = max(self.element_scale, 0.75)
+        label_scale = max(self.element_scale, 0.75) * self.star_radius_zoom_scale()
         font = QFont()
         font.setPointSizeF(self.renderer.ui_config.reference_label_font_size_pt * label_scale)
         font.setBold(True)

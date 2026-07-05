@@ -227,6 +227,27 @@ def test_real_star_pair_json_fisheye_alignment_stays_well_conditioned() -> None:
     assert np.nanmax(predicted[:, 1]) < 12500.0
 
 
+def test_real_star_pair_json_rectilinear_alignment_uses_reference_pose() -> None:
+    json_path = Path("outputs/star_pairs_20260705_210257.json")
+    if not json_path.exists():
+        pytest.skip("缺少 14mm 普通广角配对 JSON，跳过真实数据回归测试。")
+
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    transform, radec, pixels = _fit_real_pair_payload(payload, SKY_MATCHING_MODEL_RECTILINEAR)
+
+    raw_projected = transform.raw_project_radec_points(radec)
+    predicted = transform.transform_radec_points(radec)
+    assert transform.residual_kind == RESIDUAL_CORRECTION_TPS
+    assert transform.projection_rms_px < 20.0
+    assert transform.scale_px > 1000.0
+    assert np.nanmin(raw_projected[:, 0]) > 500.0
+    assert np.nanmax(raw_projected[:, 0]) < 5600.0
+    assert np.nanmin(raw_projected[:, 1]) > 300.0
+    assert np.nanmax(raw_projected[:, 1]) < 3200.0
+    assert transform.rms_px < 1e-6
+    assert np.max(np.linalg.norm(predicted - pixels, axis=1)) < 1e-6
+
+
 def test_single_capture_equisolid_json_anchors_matched_stars() -> None:
     json_path = Path("outputs/star_pairs_20260704_214537.json")
     if not json_path.exists():

@@ -446,6 +446,83 @@ def _initial_projection_basis(ra_dec_points: np.ndarray, target_points: np.ndarr
     return rotation_matrix, center_x, center_y, scale_px
 
 
+def _orthonormalized_rotation_matrix(rotation_matrix: np.ndarray) -> np.ndarray:
+    rotation = np.asarray(rotation_matrix, dtype=np.float64)
+    if rotation.shape != (3, 3) or not np.all(np.isfinite(rotation)):
+        raise ValueError("投影初始旋转矩阵必须是有限的 3x3 数组。")
+    input_determinant = float(np.linalg.det(rotation))
+    if not np.isfinite(input_determinant) or abs(input_determinant) <= 1e-12:
+        raise ValueError("投影初始旋转矩阵接近奇异。")
+    target_handedness = -1.0 if input_determinant < 0.0 else 1.0
+
+    try:
+        u_matrix, _values, vt_matrix = np.linalg.svd(rotation)
+    except np.linalg.LinAlgError as exc:
+        raise ValueError("投影初始旋转矩阵无法正交化。") from exc
+    orthonormal = u_matrix @ vt_matrix
+    if float(np.linalg.det(orthonormal)) * target_handedness < 0.0:
+        u_matrix[:, -1] *= -1.0
+        orthonormal = u_matrix @ vt_matrix
+    return orthonormal.astype(np.float64)
+
+
+def _initial_rectilinear_from_rotation(
+    vectors: np.ndarray,
+    target_points: np.ndarray,
+    rotation_matrix: np.ndarray,
+    point_weights: np.ndarray,
+) -> tuple[np.ndarray, float, float, float]:
+    rotation = _orthonormalized_rotation_matrix(rotation_matrix)
+    camera_vectors = np.asarray(vectors, dtype=np.float64) @ rotation.T
+    cam_x = camera_vectors[:, 0]
+    cam_y = camera_vectors[:, 1]
+    cam_z = camera_vectors[:, 2]
+    valid = (
+        np.all(np.isfinite(camera_vectors), axis=1)
+        & np.all(np.isfinite(target_points), axis=1)
+        & np.isfinite(point_weights)
+        & (cam_z > 1e-6)
+    )
+    if np.count_nonzero(valid) < MIN_ALIGNMENT_PAIRS:
+        raise ValueError("普通广角初值中可见配对星不足。")
+
+    x_over_z = cam_x[valid] / cam_z[valid]
+    y_over_z = -cam_y[valid] / cam_z[valid]
+    valid_targets = target_points[valid]
+    sqrt_weights = np.sqrt(np.clip(point_weights[valid], FIT_WEIGHT_MIN, FIT_WEIGHT_MAX))
+
+    design = np.zeros((int(np.count_nonzero(valid)) * 2, 3), dtype=np.float64)
+    observed = np.zeros(design.shape[0], dtype=np.float64)
+    design[0::2, 0] = 1.0
+    design[0::2, 2] = x_over_z
+    observed[0::2] = valid_targets[:, 0]
+    design[1::2, 1] = 1.0
+    design[1::2, 2] = y_over_z
+    observed[1::2] = valid_targets[:, 1]
+    row_weights = np.repeat(sqrt_weights, 2)
+
+    try:
+        solution, _residuals, _rank, _singular_values = np.linalg.lstsq(
+            design * row_weights[:, None],
+            observed * row_weights,
+            rcond=None,
+        )
+    except np.linalg.LinAlgError as exc:
+        raise ValueError("普通广角主点与尺度初值无法稳定求解。") from exc
+
+    center_x, center_y, scale_px = (float(value) for value in solution)
+    if not all(np.isfinite(value) for value in (center_x, center_y, scale_px)):
+        raise ValueError("普通广角主点与尺度初值包含无效数值。")
+    if abs(scale_px) <= 1e-9:
+        raise ValueError("普通广角尺度初值过小。")
+    if scale_px < 0.0:
+        # 负尺度等价于绕光轴翻转 180 度；转成正尺度可避免 log(scale) 退化。
+        rotation = rotation.copy()
+        rotation[:2] *= -1.0
+        scale_px = -scale_px
+    return rotation.astype(np.float64), center_x, center_y, float(scale_px)
+
+
 def _fixed_fisheye_scale_px(
     lens_model: str,
     image_size: tuple[int, int],
@@ -683,7 +760,7 @@ def _fit_known_projection_parameters(
     width_px = max(float(image_size[0]), 1.0)
     height_px = max(float(image_size[1]), 1.0)
     fixed_scale = _fixed_fisheye_scale_px(lens_model, image_size, fisheye_fov_deg)
-    fixed_center: tuple[float, float] | None = None
+    initial_candidates: list[tuple[np.ndarray, np.ndarray, float | None, tuple[float, float] | None]] = []
     if fixed_scale is not None:
         if initial_rotation_matrix is None:
             initial_rotation = _initial_fisheye_rotation_from_pixels(
@@ -694,73 +771,131 @@ def _fit_known_projection_parameters(
                 scale_px=fixed_scale,
             )
         else:
-            initial_rotation = np.asarray(initial_rotation_matrix, dtype=np.float64)
+            initial_rotation = _orthonormalized_rotation_matrix(initial_rotation_matrix)
         fixed_center = (width_px * 0.5, height_px * 0.5)
         initial = np.asarray((0.0, 0.0, 0.0), dtype=np.float64)
         lower = np.asarray((-np.pi, -np.pi, -np.pi), dtype=np.float64)
         upper = np.asarray((np.pi, np.pi, np.pi), dtype=np.float64)
+        initial_candidates.append((initial_rotation, initial, float(fixed_scale), fixed_center))
     else:
-        initial_rotation, initial_cx, initial_cy, initial_scale = _initial_projection_basis(sky_radec, target_points)
-        initial = np.asarray(
-            (0.0, 0.0, 0.0, np.log(max(initial_scale, 1e-6)), initial_cx, initial_cy),
-            dtype=np.float64,
-        )
         lower = np.asarray((-np.pi, -np.pi, -np.pi, np.log(1e-6), -2.0 * width_px, -2.0 * height_px), dtype=np.float64)
         upper = np.asarray((np.pi, np.pi, np.pi, np.log(1e9), 3.0 * width_px, 3.0 * height_px), dtype=np.float64)
-    initial = np.clip(initial, lower + 1e-9, upper - 1e-9)
 
-    def residual(params: np.ndarray) -> np.ndarray:
+        if lens_model == SKY_MATCHING_MODEL_RECTILINEAR and initial_rotation_matrix is not None:
+            try:
+                initial_rotation, initial_cx, initial_cy, initial_scale = _initial_rectilinear_from_rotation(
+                    vectors,
+                    target_points,
+                    initial_rotation_matrix,
+                    point_weights,
+                )
+                initial_candidates.append(
+                    (
+                        initial_rotation,
+                        np.asarray(
+                            (0.0, 0.0, 0.0, np.log(max(initial_scale, 1e-6)), initial_cx, initial_cy),
+                            dtype=np.float64,
+                        ),
+                        None,
+                        None,
+                    )
+                )
+            except ValueError:
+                pass
+
+        initial_rotation, initial_cx, initial_cy, initial_scale = _initial_projection_basis(sky_radec, target_points)
+        initial_candidates.append(
+            (
+                initial_rotation,
+                np.asarray(
+                    (0.0, 0.0, 0.0, np.log(max(initial_scale, 1e-6)), initial_cx, initial_cy),
+                    dtype=np.float64,
+                ),
+                None,
+                None,
+            )
+        )
+
+    best_result: tuple[float, np.ndarray, np.ndarray, float | None, tuple[float, float] | None, np.ndarray, float] | None = None
+    failure_messages: list[str] = []
+    for candidate_rotation, candidate_initial, candidate_fixed_scale, candidate_fixed_center in initial_candidates:
+        candidate_initial = np.clip(candidate_initial, lower + 1e-9, upper - 1e-9)
+
+        def residual(params: np.ndarray) -> np.ndarray:
+            projected, valid = _projection_points_from_params(
+                vectors,
+                candidate_rotation,
+                params,
+                lens_model,
+                fixed_scale_px=candidate_fixed_scale,
+                fixed_center_px=candidate_fixed_center,
+            )
+            residual_values = projected - target_points
+            invalid = ~valid | ~np.all(np.isfinite(residual_values), axis=1)
+            if np.any(invalid):
+                residual_values[invalid] = PROJECTION_INVALID_RESIDUAL_PX
+            residual_values = np.clip(residual_values, -PROJECTION_INVALID_RESIDUAL_PX, PROJECTION_INVALID_RESIDUAL_PX)
+            return (residual_values * sqrt_weights).ravel()
+
+        result = least_squares(
+            residual,
+            candidate_initial,
+            bounds=(lower, upper),
+            loss="linear",
+            max_nfev=PROJECTION_FIT_MAX_NFEV,
+        )
+        if not result.success:
+            failure_messages.append(str(result.message))
+            continue
+
         projected, valid = _projection_points_from_params(
             vectors,
-            initial_rotation,
-            params,
+            candidate_rotation,
+            result.x,
             lens_model,
-            fixed_scale_px=fixed_scale,
-            fixed_center_px=fixed_center,
+            fixed_scale_px=candidate_fixed_scale,
+            fixed_center_px=candidate_fixed_center,
+            strict_visibility=True,
         )
-        residual_values = projected - target_points
-        invalid = ~valid | ~np.all(np.isfinite(residual_values), axis=1)
-        if np.any(invalid):
-            residual_values[invalid] = PROJECTION_INVALID_RESIDUAL_PX
-        residual_values = np.clip(residual_values, -PROJECTION_INVALID_RESIDUAL_PX, PROJECTION_INVALID_RESIDUAL_PX)
-        return (residual_values * sqrt_weights).ravel()
+        if not np.all(valid):
+            failure_messages.append("拟合后仍有配对星无法投影")
+            continue
+        residual_vectors = projected - target_points
+        if not _array_is_finite(residual_vectors):
+            failure_messages.append("拟合残差包含无效数值")
+            continue
+        squared_distances = np.sum(residual_vectors * residual_vectors, axis=1)
+        rms_px = float(np.sqrt(np.mean(squared_distances)))
+        weighted_rms_px = float(np.sqrt(np.sum(point_weights * squared_distances) / np.sum(point_weights)))
+        if not np.isfinite(rms_px) or not np.isfinite(weighted_rms_px):
+            failure_messages.append("拟合 RMS 包含无效数值")
+            continue
+        if best_result is None or weighted_rms_px < best_result[0]:
+            best_result = (
+                weighted_rms_px,
+                candidate_rotation,
+                result.x.astype(np.float64),
+                candidate_fixed_scale,
+                candidate_fixed_center,
+                projected.astype(np.float64),
+                rms_px,
+            )
 
-    result = least_squares(
-        residual,
-        initial,
-        bounds=(lower, upper),
-        loss="linear",
-        max_nfev=PROJECTION_FIT_MAX_NFEV,
-    )
-    if not result.success:
-        raise ValueError(f"已知投影参数拟合未收敛：{result.message}")
+    if best_result is None:
+        detail = f"：{failure_messages[-1]}" if failure_messages else ""
+        raise ValueError(f"已知投影参数拟合未收敛{detail}")
 
-    projected, valid = _projection_points_from_params(
-        vectors,
-        initial_rotation,
-        result.x,
-        lens_model,
-        fixed_scale_px=fixed_scale,
-        fixed_center_px=fixed_center,
-        strict_visibility=True,
-    )
-    if not np.all(valid):
-        raise ValueError("已知投影拟合后仍有配对星无法投影，请检查投影类型或配对星。")
-    residual_vectors = projected - target_points
-    if not _array_is_finite(residual_vectors):
-        raise ValueError("已知投影拟合残差包含无效数值。")
-    rms_px = float(np.sqrt(np.mean(np.sum(residual_vectors * residual_vectors, axis=1))))
+    _weighted_rms, initial_rotation, result_params, result_fixed_scale, result_fixed_center, projected, rms_px = best_result
     if not np.isfinite(rms_px):
         raise ValueError("已知投影拟合 RMS 包含无效数值。")
-
-    rotation_matrix = _rotation_matrix_from_rotvec(result.x[:3]) @ initial_rotation
-    if fixed_scale is not None and fixed_center is not None:
-        scale_px = float(fixed_scale)
-        center_x, center_y = fixed_center
+    rotation_matrix = _rotation_matrix_from_rotvec(result_params[:3]) @ initial_rotation
+    if result_fixed_scale is not None and result_fixed_center is not None:
+        scale_px = float(result_fixed_scale)
+        center_x, center_y = result_fixed_center
     else:
-        scale_px = float(np.exp(result.x[3]))
-        center_x = float(result.x[4])
-        center_y = float(result.x[5])
+        scale_px = float(np.exp(result_params[3]))
+        center_x = float(result_params[4])
+        center_y = float(result_params[5])
     return rotation_matrix, float(center_x), float(center_y), scale_px, projected, rms_px
 
 

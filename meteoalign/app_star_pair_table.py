@@ -90,7 +90,7 @@ class StarPairTableMixin:
     real_image_scene: object
     reference_scene: object
     _syncing_reference_real_views: bool
-    _hide_all_annotations: object  # method
+    _hide_real_image_annotations: object  # method
     _star_pair_alignment_residual: object  # method
     _residual_warning_thresholds: object  # method
     _update_reference_alignment_transform: object  # method
@@ -1039,7 +1039,7 @@ class StarPairTableMixin:
         self._focused_star_annotations.clear()
 
     def _update_star_pair_annotation_visibility(self) -> None:
-        visible = not self._hide_all_annotations()
+        visible = not self._hide_real_image_annotations()
         for ellipse_item, label_item in self._star_pair_annotations.values():
             ellipse_item.setVisible(visible)
             label_item.setVisible(visible)
@@ -1257,11 +1257,12 @@ class StarPairTableMixin:
         finally:
             self._syncing_reference_real_views = False
 
-    def _set_hide_all_annotations_checked(self) -> None:
-        if self.ui.checkBoxHideAllAnnotations.isChecked():
+    def _set_focus_base_annotations_hidden(self) -> None:
+        if self.ui.checkBoxHideReferenceAnnotations.isChecked() and self.ui.checkBoxHideRealImageAnnotations.isChecked():
             self._clear_focused_star_annotations()
             return
-        self.ui.checkBoxHideAllAnnotations.setChecked(True)
+        self.ui.checkBoxHideReferenceAnnotations.setChecked(True)
+        self.ui.checkBoxHideRealImageAnnotations.setChecked(True)
 
     def _set_reference_real_sync_checked(self) -> None:
         self._update_reference_alignment_controls()
@@ -1309,14 +1310,14 @@ class StarPairTableMixin:
         focus_label = self._star_pair_label(row)
 
         self._set_reference_real_sync_checked()
-        self._set_hide_all_annotations_checked()
+        self._set_focus_base_annotations_hidden()
         self._update_reference_alignment_display()
         self._focus_reference_real_views_on_point(focus_point)
         self._create_focus_annotation_items(self.reference_scene, focus_point, focus_label)
         self._create_focus_annotation_items(self.real_image_scene, focus_point, focus_label)
         self.ui.tableWidgetStarPairs.selectRow(row)
         self.ui.statusbar.showMessage(
-            f"已聚焦 {focus_label} 的理论位置: x={predicted_x:.2f}, y={predicted_y:.2f}。切换\"隐藏所有标注\"可重置标注显示。"
+            f"已聚焦 {focus_label} 的理论位置: x={predicted_x:.2f}, y={predicted_y:.2f}。切换标注隐藏选项可重置标注显示。"
         )
 
     def _selected_star_pair_rows(self) -> list[int]:

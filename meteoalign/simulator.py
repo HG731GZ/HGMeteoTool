@@ -1191,8 +1191,7 @@ def select_reference_stars(
     selected_positions: list[tuple[float, float]] = []
     if len(star_map) > 0 and max_count != 0:
         candidate_mask = (
-            star_map.above_horizon
-            & np.isfinite(star_map.x_px)
+            np.isfinite(star_map.x_px)
             & np.isfinite(star_map.y_px)
             & (star_map.x_px >= edge_margin)
             & (star_map.x_px <= width - edge_margin)

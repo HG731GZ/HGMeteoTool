@@ -1115,6 +1115,13 @@
                </widget>
               </item>
               <item>
+               <widget class="QCheckBox" name="checkBoxHideReferenceAnnotations">
+                <property name="text">
+                 <string>隐藏参考标注</string>
+                </property>
+               </widget>
+              </item>
+              <item>
                <widget class="QLabel" name="labelReferenceOverlayOpacityTitle">
                 <property name="text">
                  <string>透明度</string>
@@ -1210,9 +1217,9 @@
                </widget>
               </item>
               <item>
-               <widget class="QCheckBox" name="checkBoxHideAllAnnotations">
+               <widget class="QCheckBox" name="checkBoxHideRealImageAnnotations">
                 <property name="text">
-                 <string>隐藏所有标注</string>
+                 <string>隐藏真实标注</string>
                 </property>
                </widget>
               </item>

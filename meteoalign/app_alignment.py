@@ -40,7 +40,9 @@ class AlignmentMixin:
     _source_model_error_message: str
     _suspend_alignment_updates: bool
     _current_reference_stars: tuple
+    _current_reference_star_map: object | None
     _last_reference_render_size: object
+    _simulator_controls_locked: bool
     current_image_preview: object | None
     reference_star_map_item: object
     real_reference_overlay_item: object
@@ -56,6 +58,9 @@ class AlignmentMixin:
     _star_pair_position_count: object  # method
     _alignment_residual_distances: object  # method
     _view_settings: object  # method
+    _build_aligned_reference_star_map: object  # method
+    _update_lens_model_controls: object  # method
+    _update_reference_label_controls: object  # method
 
     def _alignment_model(self) -> str:
         index = self.ui.comboBoxSkyAlignmentModel.currentIndex()
@@ -88,6 +93,58 @@ class AlignmentMixin:
         soft_mode = self._auto_match_constraint_mode() == AUTO_MATCH_CONSTRAINT_SOFT
         self.ui.labelAutoMatchSoftWeight.setEnabled(soft_mode)
         self.ui.doubleSpinBoxAutoMatchSoftWeight.setEnabled(soft_mode)
+
+    def _simulator_lock_widgets(self) -> tuple[object, ...]:
+        widget_names = (
+            "doubleSpinBoxSensorWidth",
+            "doubleSpinBoxSensorHeight",
+            "pushButtonSwapOrientation",
+            "spinBoxImageWidth",
+            "spinBoxImageHeight",
+            "doubleSpinBoxFocalLength",
+            "comboBoxLensModel",
+            "doubleSpinBoxFisheyeFov",
+            "doubleSpinBoxMagLimit",
+            "doubleSpinBoxAz",
+            "doubleSpinBoxAlt",
+            "doubleSpinBoxRoll",
+            "pushButtonImportReferenceJson",
+        )
+        label_names = (
+            "labelSensorWidth",
+            "labelSensorHeight",
+            "labelImageWidth",
+            "labelImageHeight",
+            "labelFocalLength",
+            "labelLensModel",
+            "labelFisheyeFov",
+            "labelMagLimit",
+            "labelAz",
+            "labelAlt",
+            "labelRoll",
+        )
+        return tuple(
+            getattr(self.ui, name)
+            for name in (*widget_names, *label_names)
+            if hasattr(self.ui, name)
+        )
+
+    def _update_simulator_controls_lock(self, matched_count: int) -> None:
+        locked = int(matched_count) >= MIN_ALIGNMENT_PAIRS
+        if bool(getattr(self, "_simulator_controls_locked", False)) == locked:
+            return
+
+        self._simulator_controls_locked = locked
+        for widget in self._simulator_lock_widgets():
+            widget.setEnabled(not locked)
+        if locked:
+            self.drag_start = None
+            self.last_drag_pos = None
+            self.ui.starMapView.viewport().unsetCursor()
+            return
+
+        self._update_lens_model_controls()
+        self._update_reference_label_controls()
 
     def _reference_star_lookup(self) -> dict[str, ReferenceStar]:
         return {star.star_id.strip(): star for star in self._current_reference_stars if star.star_id.strip()}
@@ -246,6 +303,8 @@ class AlignmentMixin:
         self._source_model_error_message = ""
         if self._suspend_alignment_updates:
             return
+        sky_points, sky_target_points, fit_weights, anchor_mask = self._matched_sky_alignment_data()
+        self._update_simulator_controls_lock(int(sky_points.shape[0]))
         if self.current_image_preview is None:
             self._reference_alignment_error_message = "导入真实图像后可计算实时星空叠加。"
             self._sky_alignment_error_message = "导入真实图像后可计算天球残差。"
@@ -254,7 +313,6 @@ class AlignmentMixin:
             self._update_reference_alignment_display()
             return
 
-        sky_points, sky_target_points, fit_weights, anchor_mask = self._matched_sky_alignment_data()
         if sky_points.shape[0] < MIN_ALIGNMENT_PAIRS:
             self._reference_alignment_error_message = (
                 f"已配对 {sky_points.shape[0]} 颗星；至少 {MIN_ALIGNMENT_PAIRS} 颗后可实时叠加星空。"
@@ -310,8 +368,11 @@ class AlignmentMixin:
     def _reference_overlay_opacity(self) -> float:
         return max(0.0, min(1.0, self.ui.doubleSpinBoxReferenceOverlayOpacity.value() / 100.0))
 
-    def _hide_all_annotations(self) -> bool:
-        return self.ui.checkBoxHideAllAnnotations.isChecked()
+    def _hide_reference_annotations(self) -> bool:
+        return self.ui.checkBoxHideReferenceAnnotations.isChecked()
+
+    def _hide_real_image_annotations(self) -> bool:
+        return self.ui.checkBoxHideRealImageAnnotations.isChecked()
 
     def _set_alignment_status_text(self, text: str, tooltip: str | None = None) -> None:
         self._set_elided_label_text(
@@ -325,10 +386,13 @@ class AlignmentMixin:
         self.real_reference_overlay_item.setOpacity(self._reference_overlay_opacity())
         self._update_reference_alignment_controls()
 
-    def _handle_hide_all_annotations_toggled(self, *unused) -> None:  # type: ignore[no-untyped-def]
+    def _handle_hide_reference_annotations_toggled(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        self._clear_focused_star_annotations()
+        self._update_reference_alignment_display()
+
+    def _handle_hide_real_image_annotations_toggled(self, *unused) -> None:  # type: ignore[no-untyped-def]
         self._clear_focused_star_annotations()
         self._update_star_pair_annotation_visibility()
-        self._update_reference_alignment_display()
 
     def _handle_reference_real_sync_toggled(self, checked: bool) -> None:
         if checked and self._can_sync_reference_real_views():
@@ -449,15 +513,18 @@ class AlignmentMixin:
             self._last_reference_render_size = None
             return
 
+        display_star_map = star_map
         if has_alignment:
             assert transform is not None
             scene_rect = self._reference_alignment_scene_rect()
             target_size = (int(scene_rect.width()), int(scene_rect.height()))
             display_key: tuple[object, ...] = ("aligned", target_size[0], target_size[1])
             element_scale = self._aligned_star_element_scale(target_size)
-            number_reference_stars = not self._hide_all_annotations()
+            number_reference_stars = not self._hide_reference_annotations()
+            display_star_map = self._build_aligned_reference_star_map(transform, target_size)
+            self._current_reference_star_map = display_star_map
             self.reference_star_map_item.set_star_map(
-                star_map,
+                display_star_map,
                 reference_stars=self._current_reference_stars,
                 sky_transform=transform,
                 target_size=target_size,
@@ -470,7 +537,8 @@ class AlignmentMixin:
         else:
             target_size = None
             display_key = ("native", star_map.width, star_map.height)
-            number_reference_stars = not self._hide_all_annotations()
+            number_reference_stars = not self._hide_reference_annotations()
+            self._current_reference_star_map = star_map
             self.reference_star_map_item.set_star_map(
                 star_map,
                 reference_stars=self._current_reference_stars,
@@ -492,13 +560,13 @@ class AlignmentMixin:
             assert transform is not None
             assert target_size is not None
             self.real_reference_overlay_item.set_star_map(
-                star_map,
+                display_star_map,
                 reference_stars=self._current_reference_stars,
                 sky_transform=transform,
                 target_size=target_size,
                 element_scale=self._aligned_star_element_scale(target_size),
                 draw_common_names=False,
-                number_reference_stars=not self._hide_all_annotations(),
+                number_reference_stars=not self._hide_reference_annotations(),
             )
             self.real_reference_overlay_item.setOpacity(self._reference_overlay_opacity())
             self.real_reference_overlay_item.setVisible(True)
