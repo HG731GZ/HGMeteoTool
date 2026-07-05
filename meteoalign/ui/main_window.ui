@@ -877,7 +877,7 @@
                  <widget class="QComboBox" name="comboBoxSkyAlignmentModel">
                   <item>
                    <property name="text">
-                    <string>普适多项式</string>
+                    <string>普适锚点插值</string>
                    </property>
                   </item>
                   <item>

@@ -10,6 +10,7 @@ MIN_ALIGNMENT_PAIRS = 4
 QUADRATIC_ALIGNMENT_PAIRS = 6
 MAX_ALIGNMENT_CONDITION_NUMBER = 1e10
 MAX_TRANSFORM_ABS_PX = 1e9
+SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION = "anchor_interpolation"
 SKY_MATCHING_MODEL_POLYNOMIAL = "polynomial"
 SKY_MATCHING_MODEL_RECTILINEAR = "rectilinear"
 SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT = "fisheye_equidistant"
@@ -19,12 +20,12 @@ SKY_KNOWN_PROJECTION_MODELS = (
     SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT,
     SKY_MATCHING_MODEL_FISHEYE_EQUISOLID,
 )
-SKY_MATCHING_MODELS = (SKY_MATCHING_MODEL_POLYNOMIAL, *SKY_KNOWN_PROJECTION_MODELS)
+SKY_SKY_PLANE_INTERPOLATION_MODELS = (SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION, SKY_MATCHING_MODEL_POLYNOMIAL)
+SKY_MATCHING_MODELS = (*SKY_SKY_PLANE_INTERPOLATION_MODELS, *SKY_KNOWN_PROJECTION_MODELS)
 PROJECTION_FIT_MAX_NFEV = 2000
 PROJECTION_INVALID_RESIDUAL_PX = 1e6
-RESIDUAL_CORRECTION_CONDITION_NUMBER = 1e8
-RESIDUAL_CORRECTION_POLYNOMIAL = "polynomial"
 RESIDUAL_CORRECTION_TPS = "thin_plate_spline"
+ANCHOR_INTERPOLATION_TPS = "thin_plate_spline"
 
 
 @dataclass(frozen=True)
@@ -69,21 +70,75 @@ class ReferenceAlignmentTransform:
 
 
 @dataclass(frozen=True)
+class AnchorInterpolation2D:
+    kind: str
+    origin_x: float
+    origin_y: float
+    scale_x: float
+    scale_y: float
+    anchor_points: np.ndarray
+    tps_weights_x: np.ndarray
+    tps_weights_y: np.ndarray
+    tps_affine_x: np.ndarray
+    tps_affine_y: np.ndarray
+
+    def normalized_points(self, points: np.ndarray) -> np.ndarray:
+        point_array = np.asarray(points, dtype=np.float64)
+        if point_array.ndim == 1:
+            point_array = point_array.reshape(1, 2)
+        if point_array.ndim != 2 or point_array.shape[1] != 2:
+            raise ValueError("锚点插值输入必须是 Nx2 点数组。")
+        return np.column_stack(
+            (
+                (point_array[:, 0] - self.origin_x) / max(float(self.scale_x), 1e-12),
+                (point_array[:, 1] - self.origin_y) / max(float(self.scale_y), 1e-12),
+            )
+        ).astype(np.float64)
+
+    def evaluate_points(self, points: np.ndarray) -> np.ndarray:
+        point_array = np.asarray(points, dtype=np.float64)
+        if point_array.ndim == 1:
+            point_array = point_array.reshape(1, 2)
+        if point_array.ndim != 2 or point_array.shape[1] != 2:
+            raise ValueError("锚点插值输入必须是 Nx2 点数组。")
+        if self.kind != ANCHOR_INTERPOLATION_TPS:
+            raise ValueError(f"不支持的锚点插值类型：{self.kind}")
+
+        normalized = self.normalized_points(point_array)
+        with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
+            values = np.column_stack(
+                (
+                    _evaluate_thin_plate_spline(
+                        normalized,
+                        self.anchor_points,
+                        self.tps_weights_x,
+                        self.tps_affine_x,
+                    ),
+                    _evaluate_thin_plate_spline(
+                        normalized,
+                        self.anchor_points,
+                        self.tps_weights_y,
+                        self.tps_affine_y,
+                    ),
+                )
+            )
+        values[~np.all(np.isfinite(point_array), axis=1)] = np.nan
+        values[~np.all(np.isfinite(values), axis=1)] = np.nan
+        return values.astype(np.float64)
+
+
+@dataclass(frozen=True)
 class SkyAlignmentTransform:
-    degree: int
     pair_count: int
     center_vector: np.ndarray
     east_vector: np.ndarray
     north_vector: np.ndarray
-    coeff_x: np.ndarray
-    coeff_y: np.ndarray
+    interpolation: AnchorInterpolation2D
     rms_px: float
 
     @property
     def display_name(self) -> str:
-        if self.degree >= 2:
-            return "二阶多项式"
-        return "一次仿射"
+        return "普适锚点插值"
 
     def transform_radec_points(self, ra_dec_points: np.ndarray) -> np.ndarray:
         ra_dec_array = np.asarray(ra_dec_points, dtype=np.float64)
@@ -102,11 +157,7 @@ class SkyAlignmentTransform:
             self.east_vector,
             self.north_vector,
         )
-        with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
-            terms = _polynomial_terms(sky_points[:, 0], sky_points[:, 1], self.degree)
-            x_values = terms @ self.coeff_x
-            y_values = terms @ self.coeff_y
-            transformed = np.column_stack((x_values, y_values)).astype(np.float64)
+        transformed = self.interpolation.evaluate_points(sky_points)
         transformed[~np.all(np.isfinite(transformed), axis=1)] = np.nan
         return transformed
 
@@ -127,13 +178,10 @@ class ProjectionSkyAlignmentTransform:
     center_y_px: float
     scale_px: float
     residual_kind: str
-    residual_degree: int
     residual_origin_x_px: float
     residual_origin_y_px: float
     residual_scale_x_px: float
     residual_scale_y_px: float
-    residual_coeff_x: np.ndarray
-    residual_coeff_y: np.ndarray
     residual_anchor_points: np.ndarray
     residual_tps_weights_x: np.ndarray
     residual_tps_weights_y: np.ndarray
@@ -152,11 +200,7 @@ class ProjectionSkyAlignmentTransform:
         projection_name = projection_names.get(self.lens_model, self.lens_model)
         if self.residual_kind == RESIDUAL_CORRECTION_TPS:
             return f"{projection_name}+锚点插值"
-        if self.residual_degree >= 2:
-            return f"{projection_name}+二阶残差"
-        if self.residual_degree >= 1:
-            return f"{projection_name}+一阶残差"
-        return f"{projection_name}+常量残差"
+        return f"{projection_name}+残差插值"
 
     def raw_project_radec_points(self, ra_dec_points: np.ndarray) -> np.ndarray:
         ra_dec_array = np.asarray(ra_dec_points, dtype=np.float64)
@@ -181,13 +225,10 @@ class ProjectionSkyAlignmentTransform:
         projected = self.raw_project_radec_points(ra_dec_points)
         corrected = _apply_residual_correction(
             projected_points=projected,
-            degree=self.residual_degree,
             origin_x_px=self.residual_origin_x_px,
             origin_y_px=self.residual_origin_y_px,
             scale_x_px=self.residual_scale_x_px,
             scale_y_px=self.residual_scale_y_px,
-            coeff_x=self.residual_coeff_x,
-            coeff_y=self.residual_coeff_y,
             residual_kind=self.residual_kind,
             anchor_points=self.residual_anchor_points,
             tps_weights_x=self.residual_tps_weights_x,
@@ -236,36 +277,30 @@ def _alignment_coefficients_are_valid(coeff_x: np.ndarray, coeff_y: np.ndarray) 
     return _array_is_finite(coeff_x) and _array_is_finite(coeff_y)
 
 
+def _anchor_interpolation_is_valid(interpolation: AnchorInterpolation2D) -> bool:
+    return (
+        interpolation.kind == ANCHOR_INTERPOLATION_TPS
+        and np.isfinite(float(interpolation.origin_x))
+        and np.isfinite(float(interpolation.origin_y))
+        and np.isfinite(float(interpolation.scale_x))
+        and np.isfinite(float(interpolation.scale_y))
+        and float(interpolation.scale_x) > 0.0
+        and float(interpolation.scale_y) > 0.0
+        and _array_is_finite(interpolation.anchor_points)
+        and _array_is_finite(interpolation.tps_weights_x)
+        and _array_is_finite(interpolation.tps_weights_y)
+        and _array_is_finite(interpolation.tps_affine_x)
+        and _array_is_finite(interpolation.tps_affine_y)
+    )
+
+
 def _sky_transform_components_are_valid(transform: SkyAlignmentTransform) -> bool:
     return (
         _array_is_finite(transform.center_vector)
         and _array_is_finite(transform.east_vector)
         and _array_is_finite(transform.north_vector)
-        and _alignment_coefficients_are_valid(transform.coeff_x, transform.coeff_y)
+        and _anchor_interpolation_is_valid(transform.interpolation)
     )
-
-
-def _residual_polynomial_terms(points: np.ndarray, degree: int) -> np.ndarray:
-    point_array = np.asarray(points, dtype=np.float64)
-    if point_array.ndim != 2 or point_array.shape[1] != 2:
-        raise ValueError("残差修正需要 Nx2 点数组。")
-    x_values = point_array[:, 0]
-    y_values = point_array[:, 1]
-    if degree >= 2:
-        with np.errstate(over="ignore", invalid="ignore"):
-            return np.column_stack(
-                (
-                    np.ones_like(x_values),
-                    x_values,
-                    y_values,
-                    x_values * x_values,
-                    x_values * y_values,
-                    y_values * y_values,
-                )
-            )
-    if degree >= 1:
-        return np.column_stack((np.ones_like(x_values), x_values, y_values))
-    return np.ones((point_array.shape[0], 1), dtype=np.float64)
 
 
 def _radec_to_unit_vectors(ra_deg: np.ndarray, dec_deg: np.ndarray) -> np.ndarray:
@@ -687,31 +722,6 @@ def _normalize_residual_points(
     return normalized.astype(np.float64), origin_x, origin_y, scale_x, scale_y
 
 
-def _fit_residual_coefficients(
-    normalized_points: np.ndarray,
-    residual_values: np.ndarray,
-    degree: int,
-) -> np.ndarray:
-    design = _residual_polynomial_terms(normalized_points, degree)
-    if not _array_is_finite(design) or not _array_is_finite(residual_values):
-        raise ValueError("残差修正点包含无效数值。")
-    try:
-        condition_number = float(np.linalg.cond(design))
-    except np.linalg.LinAlgError as exc:
-        raise ValueError("残差修正矩阵无法稳定求解。") from exc
-    if not np.isfinite(condition_number) or condition_number > RESIDUAL_CORRECTION_CONDITION_NUMBER:
-        raise ValueError("残差修正点分布过于集中，无法稳定求解。")
-    try:
-        coefficients, _residuals, rank, _singular_values = np.linalg.lstsq(design, residual_values, rcond=None)
-    except np.linalg.LinAlgError as exc:
-        raise ValueError("残差修正矩阵无法稳定求解。") from exc
-    if rank < design.shape[1]:
-        raise ValueError("残差修正矩阵秩不足。")
-    if not _array_is_finite(coefficients):
-        raise ValueError("残差修正系数包含无效数值。")
-    return coefficients.astype(np.float64)
-
-
 def _thin_plate_spline_kernel_from_squared_distance(distance_squared: np.ndarray) -> np.ndarray:
     distance_squared = np.asarray(distance_squared, dtype=np.float64)
     with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
@@ -798,22 +808,103 @@ def _evaluate_thin_plate_spline(
     return values.astype(np.float64)
 
 
-def _residual_degree_candidates(pair_count: int) -> tuple[int, ...]:
-    if pair_count >= 6:
-        return 1, 0
-    return (0,)
+def _default_interpolation_normalization(points: np.ndarray) -> tuple[float, float, float, float]:
+    point_array = np.asarray(points, dtype=np.float64)
+    if point_array.ndim != 2 or point_array.shape[1] != 2:
+        raise ValueError("锚点插值归一化需要 Nx2 点数组。")
+    if not _array_is_finite(point_array):
+        raise ValueError("锚点插值输入点包含无效数值。")
+
+    origin_x = float(np.median(point_array[:, 0]))
+    origin_y = float(np.median(point_array[:, 1]))
+    span_x = float(np.ptp(point_array[:, 0]))
+    span_y = float(np.ptp(point_array[:, 1]))
+    scale_x = span_x if np.isfinite(span_x) and span_x > 1e-12 else 1.0
+    scale_y = span_y if np.isfinite(span_y) and span_y > 1e-12 else 1.0
+    return origin_x, origin_y, scale_x, scale_y
+
+
+def _normalized_interpolation_points(
+    points: np.ndarray,
+    origin_x: float,
+    origin_y: float,
+    scale_x: float,
+    scale_y: float,
+) -> np.ndarray:
+    point_array = np.asarray(points, dtype=np.float64)
+    normalized = np.column_stack(
+        (
+            (point_array[:, 0] - origin_x) / max(float(scale_x), 1e-12),
+            (point_array[:, 1] - origin_y) / max(float(scale_y), 1e-12),
+        )
+    )
+    return normalized.astype(np.float64)
+
+
+def fit_anchor_interpolation(
+    source_points: np.ndarray,
+    target_points: np.ndarray,
+    *,
+    origin_x: float | None = None,
+    origin_y: float | None = None,
+    scale_x: float | None = None,
+    scale_y: float | None = None,
+) -> AnchorInterpolation2D:
+    source = np.asarray(source_points, dtype=np.float64)
+    target = np.asarray(target_points, dtype=np.float64)
+    if source.ndim != 2 or target.ndim != 2 or source.shape[1] != 2 or target.shape[1] != 2:
+        raise ValueError("锚点插值需要 Nx2 的源点与目标点。")
+    if source.shape[0] != target.shape[0]:
+        raise ValueError("锚点插值源点与目标点数量不一致。")
+    if source.shape[0] < 3:
+        raise ValueError("锚点插值至少需要 3 个锚点。")
+    if not _array_is_finite(source) or not _array_is_finite(target):
+        raise ValueError("锚点插值点包含无效数值。")
+
+    default_origin_x, default_origin_y, default_scale_x, default_scale_y = _default_interpolation_normalization(source)
+    input_origin_x = default_origin_x if origin_x is None else float(origin_x)
+    input_origin_y = default_origin_y if origin_y is None else float(origin_y)
+    input_scale_x = default_scale_x if scale_x is None else float(scale_x)
+    input_scale_y = default_scale_y if scale_y is None else float(scale_y)
+    if (
+        not np.isfinite(input_origin_x)
+        or not np.isfinite(input_origin_y)
+        or not np.isfinite(input_scale_x)
+        or not np.isfinite(input_scale_y)
+        or input_scale_x <= 0.0
+        or input_scale_y <= 0.0
+    ):
+        raise ValueError("锚点插值归一化参数无效。")
+
+    normalized = _normalized_interpolation_points(source, input_origin_x, input_origin_y, input_scale_x, input_scale_y)
+    weights_x, affine_x = _fit_thin_plate_spline_coefficients(normalized, target[:, 0])
+    weights_y, affine_y = _fit_thin_plate_spline_coefficients(normalized, target[:, 1])
+    interpolation = AnchorInterpolation2D(
+        kind=ANCHOR_INTERPOLATION_TPS,
+        origin_x=input_origin_x,
+        origin_y=input_origin_y,
+        scale_x=input_scale_x,
+        scale_y=input_scale_y,
+        anchor_points=normalized.astype(np.float64),
+        tps_weights_x=weights_x,
+        tps_weights_y=weights_y,
+        tps_affine_x=affine_x,
+        tps_affine_y=affine_y,
+    )
+    interpolated = interpolation.evaluate_points(source)
+    max_anchor_error = float(np.max(np.abs(interpolated - target)))
+    if not np.isfinite(max_anchor_error) or max_anchor_error > 1e-5:
+        raise ValueError("锚点插值未能精确穿过配对点。")
+    return interpolation
 
 
 @dataclass(frozen=True)
 class ResidualCorrectionResult:
     residual_kind: str
-    degree: int
     origin_x_px: float
     origin_y_px: float
     scale_x_px: float
     scale_y_px: float
-    coeff_x: np.ndarray
-    coeff_y: np.ndarray
     anchor_points: np.ndarray
     tps_weights_x: np.ndarray
     tps_weights_y: np.ndarray
@@ -827,87 +918,42 @@ def _fit_residual_correction(
     target_points: np.ndarray,
     image_size: tuple[int, int],
 ) -> ResidualCorrectionResult:
-    normalized, origin_x, origin_y, scale_x, scale_y = _normalize_residual_points(projected_points, image_size)
+    _normalized, origin_x, origin_y, scale_x, scale_y = _normalize_residual_points(projected_points, image_size)
     residual = target_points - projected_points
-
-    try:
-        weights_x, affine_x = _fit_thin_plate_spline_coefficients(normalized, residual[:, 0])
-        weights_y, affine_y = _fit_thin_plate_spline_coefficients(normalized, residual[:, 1])
-        corrected = projected_points + np.column_stack(
-            (
-                _evaluate_thin_plate_spline(normalized, normalized, weights_x, affine_x),
-                _evaluate_thin_plate_spline(normalized, normalized, weights_y, affine_y),
-            )
-        )
-        if not _array_is_finite(corrected):
-            raise ValueError("薄板样条锚点插值结果包含无效数值。")
-        return ResidualCorrectionResult(
-            residual_kind=RESIDUAL_CORRECTION_TPS,
-            degree=-1,
-            origin_x_px=origin_x,
-            origin_y_px=origin_y,
-            scale_x_px=scale_x,
-            scale_y_px=scale_y,
-            coeff_x=np.asarray([], dtype=np.float64),
-            coeff_y=np.asarray([], dtype=np.float64),
-            anchor_points=normalized.astype(np.float64),
-            tps_weights_x=weights_x,
-            tps_weights_y=weights_y,
-            tps_affine_x=affine_x,
-            tps_affine_y=affine_y,
-            corrected_projected=corrected.astype(np.float64),
-        )
-    except ValueError as exc:
-        last_error: ValueError | None = exc
-
-    for degree in _residual_degree_candidates(projected_points.shape[0]):
-        try:
-            coeff_x = _fit_residual_coefficients(normalized, residual[:, 0], degree)
-            coeff_y = _fit_residual_coefficients(normalized, residual[:, 1], degree)
-        except ValueError as exc:
-            last_error = exc
-            continue
-        corrected = projected_points + np.column_stack(
-            (
-                _residual_polynomial_terms(normalized, degree) @ coeff_x,
-                _residual_polynomial_terms(normalized, degree) @ coeff_y,
-            )
-        )
-        if not _array_is_finite(corrected):
-            last_error = ValueError("残差修正结果包含无效数值。")
-            continue
-        return ResidualCorrectionResult(
-            residual_kind=RESIDUAL_CORRECTION_POLYNOMIAL,
-            degree=degree,
-            origin_x_px=origin_x,
-            origin_y_px=origin_y,
-            scale_x_px=scale_x,
-            scale_y_px=scale_y,
-            coeff_x=coeff_x,
-            coeff_y=coeff_y,
-            anchor_points=np.empty((0, 2), dtype=np.float64),
-            tps_weights_x=np.asarray([], dtype=np.float64),
-            tps_weights_y=np.asarray([], dtype=np.float64),
-            tps_affine_x=np.asarray([], dtype=np.float64),
-            tps_affine_y=np.asarray([], dtype=np.float64),
-            corrected_projected=corrected.astype(np.float64),
-        )
-    if last_error is not None:
-        raise last_error
-    raise ValueError("无法计算残差修正。")
+    interpolation = fit_anchor_interpolation(
+        projected_points,
+        residual,
+        origin_x=origin_x,
+        origin_y=origin_y,
+        scale_x=scale_x,
+        scale_y=scale_y,
+    )
+    corrected = projected_points + interpolation.evaluate_points(projected_points)
+    if not _array_is_finite(corrected):
+        raise ValueError("薄板样条锚点插值结果包含无效数值。")
+    return ResidualCorrectionResult(
+        residual_kind=RESIDUAL_CORRECTION_TPS,
+        origin_x_px=origin_x,
+        origin_y_px=origin_y,
+        scale_x_px=scale_x,
+        scale_y_px=scale_y,
+        anchor_points=interpolation.anchor_points.astype(np.float64),
+        tps_weights_x=interpolation.tps_weights_x.astype(np.float64),
+        tps_weights_y=interpolation.tps_weights_y.astype(np.float64),
+        tps_affine_x=interpolation.tps_affine_x.astype(np.float64),
+        tps_affine_y=interpolation.tps_affine_y.astype(np.float64),
+        corrected_projected=corrected.astype(np.float64),
+    )
 
 
 def _apply_residual_correction(
     *,
     projected_points: np.ndarray,
     residual_kind: str,
-    degree: int,
     origin_x_px: float,
     origin_y_px: float,
     scale_x_px: float,
     scale_y_px: float,
-    coeff_x: np.ndarray,
-    coeff_y: np.ndarray,
     anchor_points: np.ndarray,
     tps_weights_x: np.ndarray,
     tps_weights_y: np.ndarray,
@@ -930,9 +976,7 @@ def _apply_residual_correction(
                 )
             )
     else:
-        with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
-            terms = _residual_polynomial_terms(normalized, degree)
-            corrected = points + np.column_stack((terms @ coeff_x, terms @ coeff_y))
+        raise ValueError(f"不支持的残差插值类型：{residual_kind}")
     corrected[~np.all(np.isfinite(points), axis=1)] = np.nan
     return corrected.astype(np.float64)
 
@@ -1034,7 +1078,7 @@ def fit_reference_alignment(
 def fit_sky_alignment(
     ra_dec_points: np.ndarray,
     target_points: np.ndarray,
-    matching_model: str = SKY_MATCHING_MODEL_POLYNOMIAL,
+    matching_model: str = SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION,
     image_size: tuple[int, int] | None = None,
     fisheye_fov_deg: float | None = None,
     initial_rotation_matrix: np.ndarray | None = None,
@@ -1071,16 +1115,18 @@ def fit_sky_alignment(
     sky_points = _project_radec_to_sky_plane(sky_radec[:, 0], sky_radec[:, 1], center, east, north)
     if not _array_is_finite(sky_points):
         raise ValueError("天球投影包含无效数值，请检查配对星坐标。")
-    preferred_degree = 2 if pair_count >= QUADRATIC_ALIGNMENT_PAIRS else 1
-    degree, coeff_x, coeff_y, rms_px = _fit_image_polynomial(sky_points, target, preferred_degree)
+    interpolation = fit_anchor_interpolation(sky_points, target)
+    predicted = interpolation.evaluate_points(sky_points)
+    residual = predicted - target
+    rms_px = float(np.sqrt(np.mean(np.sum(residual * residual, axis=1))))
+    if not np.isfinite(rms_px):
+        raise ValueError("天球锚点插值残差包含无效数值，请检查配对星位置。")
     return SkyAlignmentTransform(
-        degree=degree,
         pair_count=pair_count,
         center_vector=center,
         east_vector=east,
         north_vector=north,
-        coeff_x=coeff_x,
-        coeff_y=coeff_y,
+        interpolation=interpolation,
         rms_px=rms_px,
     )
 
@@ -1139,13 +1185,10 @@ def fit_projection_sky_alignment(
         center_y_px=float(center_y),
         scale_px=float(scale_px),
         residual_kind=residual_correction.residual_kind,
-        residual_degree=int(residual_correction.degree),
         residual_origin_x_px=float(residual_correction.origin_x_px),
         residual_origin_y_px=float(residual_correction.origin_y_px),
         residual_scale_x_px=float(residual_correction.scale_x_px),
         residual_scale_y_px=float(residual_correction.scale_y_px),
-        residual_coeff_x=residual_correction.coeff_x.astype(np.float64),
-        residual_coeff_y=residual_correction.coeff_y.astype(np.float64),
         residual_anchor_points=residual_correction.anchor_points.astype(np.float64),
         residual_tps_weights_x=residual_correction.tps_weights_x.astype(np.float64),
         residual_tps_weights_y=residual_correction.tps_weights_y.astype(np.float64),

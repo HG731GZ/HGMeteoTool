@@ -7,19 +7,20 @@ from typing import Any
 import numpy as np
 
 from .alignment import (
-    MAX_ALIGNMENT_CONDITION_NUMBER,
+    AnchorInterpolation2D,
     MIN_ALIGNMENT_PAIRS,
     ProjectionSkyAlignmentTransform,
     SKY_KNOWN_PROJECTION_MODELS,
-    SKY_MATCHING_MODEL_POLYNOMIAL,
+    SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION,
     SKY_MATCHING_MODELS,
+    fit_anchor_interpolation,
     fit_projection_sky_alignment,
 )
 from .coordinates import project_radec_to_sky_plane, sky_plane_basis, sky_plane_to_radec, unit_vectors_to_radec
 
 
 SOURCE_MODEL_FORMAT = "meteoalign_source_astrometric_model"
-SOURCE_MODEL_VERSION = 1
+SOURCE_MODEL_VERSION = 2
 
 
 def _as_float_list(values: np.ndarray) -> list[float]:
@@ -35,70 +36,6 @@ def _finite_point_mask(*arrays: np.ndarray) -> np.ndarray:
     return mask
 
 
-def polynomial_terms(x_values: np.ndarray, y_values: np.ndarray, degree: int) -> np.ndarray:
-    x_values = np.asarray(x_values, dtype=np.float64)
-    y_values = np.asarray(y_values, dtype=np.float64)
-    if degree >= 2:
-        with np.errstate(over="ignore", invalid="ignore"):
-            return np.column_stack(
-                (
-                    np.ones_like(x_values),
-                    x_values,
-                    y_values,
-                    x_values * x_values,
-                    x_values * y_values,
-                    y_values * y_values,
-                )
-            )
-    return np.column_stack((np.ones_like(x_values), x_values, y_values))
-
-
-def evaluate_polynomial(points: np.ndarray, coeff: np.ndarray, degree: int) -> np.ndarray:
-    point_array = np.asarray(points, dtype=np.float64)
-    if point_array.ndim == 1:
-        point_array = point_array.reshape(1, 2)
-    if point_array.ndim != 2 or point_array.shape[1] != 2:
-        raise ValueError("多项式求值需要 Nx2 点数组。")
-
-    with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
-        values = polynomial_terms(point_array[:, 0], point_array[:, 1], degree) @ np.asarray(coeff, dtype=np.float64)
-    values = values.astype(np.float64)
-    values[~np.isfinite(values)] = np.nan
-    return values
-
-
-def _fit_polynomial_coefficients(source_points: np.ndarray, target_values: np.ndarray, degree: int) -> np.ndarray:
-    design = polynomial_terms(source_points[:, 0], source_points[:, 1], degree)
-    if not np.all(np.isfinite(design)) or not np.all(np.isfinite(target_values)):
-        raise ValueError("源图模型拟合点包含无效数值。")
-    try:
-        condition_number = float(np.linalg.cond(design))
-    except np.linalg.LinAlgError as exc:
-        raise ValueError("源图模型矩阵无法稳定求解，请检查配对星分布。") from exc
-    if not np.isfinite(condition_number) or condition_number > MAX_ALIGNMENT_CONDITION_NUMBER:
-        raise ValueError("配对星几何分布过于集中，无法稳定求解源图模型。")
-
-    try:
-        coefficients, _residuals, rank, _singular_values = np.linalg.lstsq(design, target_values, rcond=None)
-    except np.linalg.LinAlgError as exc:
-        raise ValueError("源图模型矩阵无法稳定求解，请检查配对星位置。") from exc
-    if rank < design.shape[1]:
-        raise ValueError("配对星几何分布过于集中，源图模型矩阵秩不足。")
-    if not np.all(np.isfinite(coefficients)):
-        raise ValueError("源图模型拟合结果包含无效系数。")
-    return coefficients.astype(np.float64)
-
-
-def _fit_polynomial_pair(source_points: np.ndarray, target_points: np.ndarray, degree: int) -> tuple[np.ndarray, np.ndarray]:
-    coeff_x = _fit_polynomial_coefficients(source_points, target_points[:, 0], degree)
-    coeff_y = _fit_polynomial_coefficients(source_points, target_points[:, 1], degree)
-    return coeff_x, coeff_y
-
-
-def _preferred_polynomial_degree(pair_count: int) -> int:
-    return 2 if pair_count >= 6 else 1
-
-
 def _residual_summary(residual_vectors: np.ndarray) -> tuple[float, float, float]:
     if residual_vectors.size == 0:
         return float("nan"), float("nan"), float("nan")
@@ -110,15 +47,46 @@ def _residual_summary(residual_vectors: np.ndarray) -> tuple[float, float, float
     )
 
 
-def _polynomial_derivative_at_point(coeff: np.ndarray, degree: int, x_value: float, y_value: float) -> tuple[float, float]:
-    coeff = np.asarray(coeff, dtype=np.float64)
-    if degree >= 2 and coeff.size >= 6:
-        d_dx = coeff[1] + 2.0 * coeff[3] * x_value + coeff[4] * y_value
-        d_dy = coeff[2] + coeff[4] * x_value + 2.0 * coeff[5] * y_value
-        return float(d_dx), float(d_dy)
-    if coeff.size >= 3:
-        return float(coeff[1]), float(coeff[2])
-    raise ValueError("多项式系数数量不足。")
+def _interpolation_payload(
+    interpolation: AnchorInterpolation2D,
+    *,
+    input_units: str,
+    output_units: str,
+    input_axis_order: list[str],
+    output_axis_order: list[str],
+    weight_names: tuple[str, str],
+    affine_names: tuple[str, str],
+) -> dict[str, Any]:
+    return {
+        "kind": interpolation.kind,
+        "input_units": input_units,
+        "output_units": output_units,
+        "input_axis_order": input_axis_order,
+        "output_axis_order": output_axis_order,
+        "normalization": {
+            "origin_x": float(interpolation.origin_x),
+            "origin_y": float(interpolation.origin_y),
+            "scale_x": float(interpolation.scale_x),
+            "scale_y": float(interpolation.scale_y),
+        },
+        "anchor_count": int(interpolation.anchor_points.shape[0]),
+        "anchor_points_normalized": [
+            _as_float_list(row) for row in np.asarray(interpolation.anchor_points, dtype=np.float64)
+        ],
+        weight_names[0]: _as_float_list(interpolation.tps_weights_x),
+        weight_names[1]: _as_float_list(interpolation.tps_weights_y),
+        affine_names[0]: _as_float_list(interpolation.tps_affine_x),
+        affine_names[1]: _as_float_list(interpolation.tps_affine_y),
+    }
+
+
+def _known_projection_sky_to_pixel_payload() -> dict[str, Any]:
+    return {
+        "kind": "known_projection_with_residual_anchor_interpolation",
+        "input": "ICRS RA/Dec direction",
+        "projection": "see known_projection",
+        "residual_correction": "see known_projection.residual_correction",
+    }
 
 
 @dataclass(frozen=True)
@@ -126,15 +94,11 @@ class SourceAstrometricModel:
     image_width_px: int
     image_height_px: int
     pair_count: int
-    sky_to_pixel_degree: int
-    pixel_to_sky_degree: int
     center_vector: np.ndarray
     east_vector: np.ndarray
     north_vector: np.ndarray
-    sky_to_pixel_coeff_x: np.ndarray
-    sky_to_pixel_coeff_y: np.ndarray
-    pixel_to_sky_coeff_u: np.ndarray
-    pixel_to_sky_coeff_v: np.ndarray
+    sky_to_pixel_interpolation: AnchorInterpolation2D | None
+    pixel_to_sky_plane_interpolation: AnchorInterpolation2D
     rms_px: float
     median_residual_px: float
     max_residual_px: float
@@ -142,7 +106,7 @@ class SourceAstrometricModel:
     inverse_median_arcsec: float
     inverse_max_arcsec: float
     wcs: dict[str, Any]
-    model_type: str = "local_sky_plane_polynomial"
+    model_type: str = "local_sky_plane_anchor_interpolation"
     projection_transform: ProjectionSkyAlignmentTransform | None = None
 
     def direction_to_pixel_points(self, ra_dec_points: np.ndarray) -> np.ndarray:
@@ -154,6 +118,8 @@ class SourceAstrometricModel:
 
         if self.projection_transform is not None:
             return self.projection_transform.transform_radec_points(ra_dec_array)
+        if self.sky_to_pixel_interpolation is None:
+            return np.full((ra_dec_array.shape[0], 2), np.nan, dtype=np.float64)
 
         plane_points = project_radec_to_sky_plane(
             ra_dec_array[:, 0],
@@ -162,9 +128,7 @@ class SourceAstrometricModel:
             self.east_vector,
             self.north_vector,
         )
-        x_values = evaluate_polynomial(plane_points, self.sky_to_pixel_coeff_x, self.sky_to_pixel_degree)
-        y_values = evaluate_polynomial(plane_points, self.sky_to_pixel_coeff_y, self.sky_to_pixel_degree)
-        return np.column_stack((x_values, y_values)).astype(np.float64)
+        return self.sky_to_pixel_interpolation.evaluate_points(plane_points)
 
     def pixel_to_radec_points(self, pixel_points: np.ndarray) -> np.ndarray:
         pixel_array = np.asarray(pixel_points, dtype=np.float64)
@@ -173,10 +137,9 @@ class SourceAstrometricModel:
         if pixel_array.ndim != 2 or pixel_array.shape[1] != 2:
             raise ValueError("pixel_to_radec_points 需要 Nx2 的像素坐标数组。")
 
-        u_deg = evaluate_polynomial(pixel_array, self.pixel_to_sky_coeff_u, self.pixel_to_sky_degree)
-        v_deg = evaluate_polynomial(pixel_array, self.pixel_to_sky_coeff_v, self.pixel_to_sky_degree)
+        plane_points = self.pixel_to_sky_plane_interpolation.evaluate_points(pixel_array)
         return sky_plane_to_radec(
-            np.column_stack((u_deg, v_deg)),
+            plane_points,
             self.center_vector,
             self.east_vector,
             self.north_vector,
@@ -196,6 +159,21 @@ class SourceAstrometricModel:
         reference_payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         center_radec = unit_vectors_to_radec(self.center_vector)[0]
+        if self.projection_transform is None and self.sky_to_pixel_interpolation is None:
+            raise ValueError("普适源图模型缺少 sky→pixel 锚点插值。")
+        sky_to_pixel_payload = (
+            _known_projection_sky_to_pixel_payload()
+            if self.projection_transform is not None
+            else _interpolation_payload(
+                self.sky_to_pixel_interpolation,
+                input_units="deg in local sky plane",
+                output_units="px",
+                input_axis_order=["u_deg", "v_deg"],
+                output_axis_order=["x_px", "y_px"],
+                weight_names=("tps_weights_x_px", "tps_weights_y_px"),
+                affine_names=("tps_affine_x_px", "tps_affine_y_px"),
+            )
+        )
         payload: dict[str, Any] = {
             "format": SOURCE_MODEL_FORMAT,
             "version": SOURCE_MODEL_VERSION,
@@ -215,18 +193,16 @@ class SourceAstrometricModel:
                 "center_ra_deg": float(center_radec[0]),
                 "center_dec_deg": float(center_radec[1]),
             },
-            "sky_to_pixel": {
-                "degree": int(self.sky_to_pixel_degree),
-                "input_units": "deg in local sky plane",
-                "coeff_x": _as_float_list(self.sky_to_pixel_coeff_x),
-                "coeff_y": _as_float_list(self.sky_to_pixel_coeff_y),
-            },
-            "pixel_to_sky_plane": {
-                "degree": int(self.pixel_to_sky_degree),
-                "output_units": "deg in local sky plane",
-                "coeff_u_deg": _as_float_list(self.pixel_to_sky_coeff_u),
-                "coeff_v_deg": _as_float_list(self.pixel_to_sky_coeff_v),
-            },
+            "sky_to_pixel": sky_to_pixel_payload,
+            "pixel_to_sky_plane": _interpolation_payload(
+                self.pixel_to_sky_plane_interpolation,
+                input_units="px",
+                output_units="deg in local sky plane",
+                input_axis_order=["x_px", "y_px"],
+                output_axis_order=["u_deg", "v_deg"],
+                weight_names=("tps_weights_u_deg", "tps_weights_v_deg"),
+                affine_names=("tps_affine_u_deg", "tps_affine_v_deg"),
+            ),
             "diagnostics": {
                 "pair_count": int(self.pair_count),
                 "rms_px": float(self.rms_px),
@@ -240,7 +216,6 @@ class SourceAstrometricModel:
         }
         if self.projection_transform is not None:
             payload["known_projection"] = _projection_transform_payload(self.projection_transform)
-            payload["sky_to_pixel"]["role"] = "bootstrap_or_fallback_polynomial"
             payload["diagnostics"]["projection_rms_px_before_residual"] = float(
                 self.projection_transform.projection_rms_px
             )
@@ -273,23 +248,46 @@ def _projection_transform_payload(transform: ProjectionSkyAlignmentTransform) ->
         "scale_px": float(transform.scale_px),
         "residual_correction": {
             "kind": transform.residual_kind,
-            "degree": int(transform.residual_degree),
             "input": "raw projection pixel coordinates normalized by image size",
-            "origin_x_px": float(transform.residual_origin_x_px),
-            "origin_y_px": float(transform.residual_origin_y_px),
-            "scale_x_px": float(transform.residual_scale_x_px),
-            "scale_y_px": float(transform.residual_scale_y_px),
-            "coeff_x_px": _as_float_list(transform.residual_coeff_x),
-            "coeff_y_px": _as_float_list(transform.residual_coeff_y),
+            "normalization": {
+                "origin_x_px": float(transform.residual_origin_x_px),
+                "origin_y_px": float(transform.residual_origin_y_px),
+                "scale_x_px": float(transform.residual_scale_x_px),
+                "scale_y_px": float(transform.residual_scale_y_px),
+            },
+            "anchor_count": int(transform.residual_anchor_points.shape[0]),
             "anchor_points_normalized": [
                 _as_float_list(row) for row in np.asarray(transform.residual_anchor_points, dtype=np.float64)
             ],
-            "tps_weights_x_px": _as_float_list(transform.residual_tps_weights_x),
-            "tps_weights_y_px": _as_float_list(transform.residual_tps_weights_y),
-            "tps_affine_x_px": _as_float_list(transform.residual_tps_affine_x),
-            "tps_affine_y_px": _as_float_list(transform.residual_tps_affine_y),
+            "tps_weights_dx_px": _as_float_list(transform.residual_tps_weights_x),
+            "tps_weights_dy_px": _as_float_list(transform.residual_tps_weights_y),
+            "tps_affine_dx_px": _as_float_list(transform.residual_tps_affine_x),
+            "tps_affine_dy_px": _as_float_list(transform.residual_tps_affine_y),
         },
     }
+
+
+def _finite_difference_pixel_to_sky_jacobian(
+    interpolation: AnchorInterpolation2D,
+    x_px: float,
+    y_px: float,
+) -> tuple[float, float, float, float]:
+    step_px = max(min(float(interpolation.scale_x), float(interpolation.scale_y)) * 1e-4, 1.0)
+    sample_points = np.asarray(
+        (
+            (x_px + step_px, y_px),
+            (x_px - step_px, y_px),
+            (x_px, y_px + step_px),
+            (x_px, y_px - step_px),
+        ),
+        dtype=np.float64,
+    )
+    samples = interpolation.evaluate_points(sample_points)
+    if not np.all(np.isfinite(samples)):
+        return float("nan"), float("nan"), float("nan"), float("nan")
+    du_dx, dv_dx = (samples[0] - samples[1]) / (2.0 * step_px)
+    du_dy, dv_dy = (samples[2] - samples[3]) / (2.0 * step_px)
+    return float(du_dx), float(du_dy), float(dv_dx), float(dv_dy)
 
 
 def _build_wcs_compat(
@@ -300,8 +298,11 @@ def _build_wcs_compat(
     center_radec = unit_vectors_to_radec(model.center_vector)[0]
     x0 = float(center_pixel[0])
     y0 = float(center_pixel[1])
-    du_dx, du_dy = _polynomial_derivative_at_point(model.pixel_to_sky_coeff_u, model.pixel_to_sky_degree, x0, y0)
-    dv_dx, dv_dy = _polynomial_derivative_at_point(model.pixel_to_sky_coeff_v, model.pixel_to_sky_degree, x0, y0)
+    du_dx, du_dy, dv_dx, dv_dy = _finite_difference_pixel_to_sky_jacobian(
+        model.pixel_to_sky_plane_interpolation,
+        x0,
+        y0,
+    )
     header_cards = {
         "WCSAXES": 2,
         "CTYPE1": "RA---TAN",
@@ -323,8 +324,8 @@ def _build_wcs_compat(
         "approximate": True,
         "standard": "FITS WCS TAN local approximation",
         "note": (
-            "header_cards 是局部线性 TAN WCS 近似；完整高阶映射请使用 pixel_to_sky_plane "
-            "多项式与 projection_basis。"
+            "header_cards 是局部线性 TAN WCS 近似；完整映射请使用 pixel_to_sky_plane "
+            "锚点插值与 projection_basis。"
         ),
         "header_cards": header_cards,
         "crpix_is_one_based": True,
@@ -337,7 +338,7 @@ def fit_source_astrometric_model(
     ra_dec_points: np.ndarray,
     pixel_points: np.ndarray,
     image_size: tuple[int, int],
-    matching_model: str = SKY_MATCHING_MODEL_POLYNOMIAL,
+    matching_model: str = SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION,
     fisheye_fov_deg: float | None = None,
     initial_rotation_matrix: np.ndarray | None = None,
 ) -> SourceAstrometricModel:
@@ -357,84 +358,57 @@ def fit_source_astrometric_model(
     pixels = pixels[finite_mask]
     pair_count = int(sky_radec.shape[0])
     if pair_count < MIN_ALIGNMENT_PAIRS:
-        raise ValueError(f"至少需要 {MIN_ALIGNMENT_PAIRS} 对星点才能拟合源图映射。")
+        raise ValueError(f"至少需要 {MIN_ALIGNMENT_PAIRS} 对星点才能生成源图映射。")
+    image_width = int(image_size[0])
+    image_height = int(image_size[1])
+    if image_width <= 0 or image_height <= 0:
+        raise ValueError("源图尺寸无效，无法生成源图映射。")
 
     center, east, north = sky_plane_basis(sky_radec)
     sky_plane = project_radec_to_sky_plane(sky_radec[:, 0], sky_radec[:, 1], center, east, north)
     if not np.all(np.isfinite(sky_plane)):
         raise ValueError("源图模型的天球平面坐标包含无效数值。")
 
-    preferred_degree = _preferred_polynomial_degree(pair_count)
-    sky_to_pixel_degree = preferred_degree
-    pixel_to_sky_degree = preferred_degree
-    try:
-        sky_to_pixel_coeff_x, sky_to_pixel_coeff_y = _fit_polynomial_pair(sky_plane, pixels, sky_to_pixel_degree)
-    except ValueError:
-        if preferred_degree <= 1:
-            raise
-        sky_to_pixel_degree = 1
-        sky_to_pixel_coeff_x, sky_to_pixel_coeff_y = _fit_polynomial_pair(sky_plane, pixels, sky_to_pixel_degree)
-
-    try:
-        pixel_to_sky_coeff_u, pixel_to_sky_coeff_v = _fit_polynomial_pair(pixels, sky_plane, pixel_to_sky_degree)
-    except ValueError:
-        if preferred_degree <= 1:
-            raise
-        pixel_to_sky_degree = 1
-        pixel_to_sky_coeff_u, pixel_to_sky_coeff_v = _fit_polynomial_pair(pixels, sky_plane, pixel_to_sky_degree)
-
-    predicted_pixels = np.column_stack(
-        (
-            evaluate_polynomial(sky_plane, sky_to_pixel_coeff_x, sky_to_pixel_degree),
-            evaluate_polynomial(sky_plane, sky_to_pixel_coeff_y, sky_to_pixel_degree),
-        )
-    )
+    pixel_to_sky_plane_interpolation = fit_anchor_interpolation(pixels, sky_plane)
+    sky_to_pixel_interpolation: AnchorInterpolation2D | None = None
     projection_transform: ProjectionSkyAlignmentTransform | None = None
-    model_type = "local_sky_plane_polynomial"
     if matching_model in SKY_KNOWN_PROJECTION_MODELS:
         projection_transform = fit_projection_sky_alignment(
             ra_dec_points=sky_radec,
             target_points=pixels,
             lens_model=matching_model,
-            image_size=image_size,
+            image_size=(image_width, image_height),
             fisheye_fov_deg=fisheye_fov_deg,
             initial_rotation_matrix=initial_rotation_matrix,
         )
         predicted_pixels = projection_transform.transform_radec_points(sky_radec)
-        model_type = "known_projection_with_residual_correction"
+        model_type = "known_projection_with_residual_interpolation"
+    else:
+        sky_to_pixel_interpolation = fit_anchor_interpolation(sky_plane, pixels)
+        predicted_pixels = sky_to_pixel_interpolation.evaluate_points(sky_plane)
+        model_type = "local_sky_plane_anchor_interpolation"
     rms_px, median_px, max_px = _residual_summary(predicted_pixels - pixels)
 
-    predicted_plane = np.column_stack(
-        (
-            evaluate_polynomial(pixels, pixel_to_sky_coeff_u, pixel_to_sky_degree),
-            evaluate_polynomial(pixels, pixel_to_sky_coeff_v, pixel_to_sky_degree),
-        )
-    )
+    predicted_plane = pixel_to_sky_plane_interpolation.evaluate_points(pixels)
     inverse_rms_deg, inverse_median_deg, inverse_max_deg = _residual_summary(predicted_plane - sky_plane)
-    center_pixel = np.asarray(
-        [
-            evaluate_polynomial(np.asarray([[0.0, 0.0]], dtype=np.float64), sky_to_pixel_coeff_x, sky_to_pixel_degree)[0],
-            evaluate_polynomial(np.asarray([[0.0, 0.0]], dtype=np.float64), sky_to_pixel_coeff_y, sky_to_pixel_degree)[0],
-        ],
-        dtype=np.float64,
-    )
+    if projection_transform is not None:
+        center_radec = sky_plane_to_radec(np.asarray([[0.0, 0.0]], dtype=np.float64), center, east, north)
+        center_pixel = projection_transform.transform_radec_points(center_radec)[0]
+    else:
+        center_pixel = sky_to_pixel_interpolation.evaluate_points(np.asarray([[0.0, 0.0]], dtype=np.float64))[0]
     if not np.all(np.isfinite(center_pixel)):
-        center_pixel = np.asarray([image_size[0] / 2.0, image_size[1] / 2.0], dtype=np.float64)
+        center_pixel = np.asarray([image_width / 2.0, image_height / 2.0], dtype=np.float64)
 
     placeholder_wcs: dict[str, Any] = {}
     model = SourceAstrometricModel(
-        image_width_px=int(image_size[0]),
-        image_height_px=int(image_size[1]),
+        image_width_px=image_width,
+        image_height_px=image_height,
         pair_count=pair_count,
-        sky_to_pixel_degree=sky_to_pixel_degree,
-        pixel_to_sky_degree=pixel_to_sky_degree,
         center_vector=center,
         east_vector=east,
         north_vector=north,
-        sky_to_pixel_coeff_x=sky_to_pixel_coeff_x,
-        sky_to_pixel_coeff_y=sky_to_pixel_coeff_y,
-        pixel_to_sky_coeff_u=pixel_to_sky_coeff_u,
-        pixel_to_sky_coeff_v=pixel_to_sky_coeff_v,
+        sky_to_pixel_interpolation=sky_to_pixel_interpolation,
+        pixel_to_sky_plane_interpolation=pixel_to_sky_plane_interpolation,
         rms_px=float(rms_px),
         median_residual_px=float(median_px),
         max_residual_px=float(max_px),

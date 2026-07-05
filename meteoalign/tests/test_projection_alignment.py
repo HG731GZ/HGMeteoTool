@@ -8,6 +8,7 @@ import pytest
 
 from meteoalign.alignment import (
     RESIDUAL_CORRECTION_TPS,
+    SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION,
     SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT,
     SKY_MATCHING_MODEL_FISHEYE_EQUISOLID,
     SKY_MATCHING_MODEL_RECTILINEAR,
@@ -79,6 +80,28 @@ def test_known_projection_alignment_round_trip(lens_model: str) -> None:
     assert np.max(np.linalg.norm(predicted - pixels, axis=1)) < 1e-5
 
 
+def test_universal_alignment_uses_anchor_interpolation() -> None:
+    radec, pixels = _projection_fixture(SKY_MATCHING_MODEL_RECTILINEAR)
+    warped_pixels = pixels + np.column_stack(
+        (
+            0.015 * (pixels[:, 0] - 500.0) * (pixels[:, 1] - 400.0) / 100.0,
+            0.01 * (pixels[:, 0] - 500.0) ** 2 / 100.0,
+        )
+    )
+
+    transform = fit_sky_alignment(
+        radec,
+        warped_pixels,
+        matching_model=SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION,
+        image_size=(1000, 800),
+    )
+
+    predicted = transform.transform_radec_points(radec)
+    assert transform.display_name == "普适锚点插值"
+    assert transform.rms_px < 1e-6
+    assert np.max(np.linalg.norm(predicted - warped_pixels, axis=1)) < 1e-5
+
+
 def test_source_model_exports_known_projection_payload() -> None:
     radec, pixels = _projection_fixture(SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT)
 
@@ -90,9 +113,14 @@ def test_source_model_exports_known_projection_payload() -> None:
     )
 
     payload = model.to_json_payload()
-    assert payload["model_type"] == "known_projection_with_residual_correction"
+    assert payload["model_type"] == "known_projection_with_residual_interpolation"
+    assert payload["sky_to_pixel"]["kind"] == "known_projection_with_residual_anchor_interpolation"
+    assert "degree" not in payload["sky_to_pixel"]
+    assert "coeff_x" not in payload["sky_to_pixel"]
     assert payload["known_projection"]["lens_model"] == SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT
     assert payload["known_projection"]["residual_correction"]["kind"] == RESIDUAL_CORRECTION_TPS
+    assert "degree" not in payload["known_projection"]["residual_correction"]
+    assert "coeff_x_px" not in payload["known_projection"]["residual_correction"]
     assert payload["diagnostics"]["rms_px"] < 1e-6
 
 

@@ -28,6 +28,7 @@ from PyQt5.QtWidgets import (
 
 from .alignment import (
     MIN_ALIGNMENT_PAIRS,
+    SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION,
     SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT,
     SKY_MATCHING_MODEL_FISHEYE_EQUISOLID,
     SKY_MATCHING_MODEL_POLYNOMIAL,
@@ -76,11 +77,14 @@ LENS_MODELS = (
     FISHEYE_EQUISOLID,
 )
 SKY_ALIGNMENT_MODELS = (
-    SKY_MATCHING_MODEL_POLYNOMIAL,
+    SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION,
     SKY_MATCHING_MODEL_RECTILINEAR,
     SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT,
     SKY_MATCHING_MODEL_FISHEYE_EQUISOLID,
 )
+SKY_ALIGNMENT_MODEL_ALIASES = {
+    SKY_MATCHING_MODEL_POLYNOMIAL: SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION,
+}
 REFERENCE_LABEL_MODE_FIXED_COUNT = "fixed_count"
 REFERENCE_LABEL_MODE_FIXED_MAG_LIMIT = "fixed_mag_limit"
 REFERENCE_LABEL_MODES = (
@@ -104,6 +108,11 @@ STAR_PAIR_INDEX_COLUMN = 0
 STAR_PAIR_NAME_COLUMN = 1
 STAR_PAIR_POSITION_COLUMN = 2
 STAR_PAIR_RESIDUAL_COLUMN = 3
+STAR_PAIR_ROW_TYPE_ROLE = Qt.UserRole + 1
+STAR_PAIR_FIT_ROLE = Qt.UserRole + 2
+STAR_PAIR_ROW_TYPE_MANUAL = "manual"
+STAR_PAIR_ROW_TYPE_AUTO_GROUP = "auto_match_group"
+STAR_PAIR_ROW_TYPE_AUTO_MATCH = "auto_match"
 STAR_PAIR_SESSION_FORMAT = "meteoalign_star_pair_session"
 STAR_PAIR_SESSION_VERSION = 1
 STAR_PAIR_SESSION_JSON_FILTER = "MeteoAlign 星点配对 JSON (*.json);;JSON 文件 (*.json);;所有文件 (*)"
@@ -120,6 +129,13 @@ AUTO_MATCH_DEFAULT_FIXED_COUNT_MAG_LIMIT = 8.0
 AUTO_MATCH_MIN_AMPLITUDE = 2.0
 AUTO_MATCH_DUPLICATE_MIN_DISTANCE_PX = 4.0
 AUTO_MATCH_ANNOTATION_LIMIT = 250
+STAR_ANNOTATION_PSF_SIGMA_SCALE = 3.0
+STAR_ANNOTATION_MIN_RADIUS_PX = 5.0
+STAR_ANNOTATION_FALLBACK_RADIUS_PX = 8.0
+STAR_ANNOTATION_MAX_RADIUS_PX = 80.0
+STAR_PAIR_FOCUS_MIN_MATCHED_COUNT = 6
+STAR_PAIR_FOCUS_ZOOM_FIT_SCALE = 8.0
+STAR_PAIR_FOCUS_MARKER_RADIUS_PX = 24.0
 
 
 def _session_image_candidate(path_value: object, source_path: Path) -> Path | None:
@@ -614,6 +630,7 @@ class MainWindow(QMainWindow):
         self._star_pick_circle_diameter_px = self.ui_config.star_pick_circle_default_diameter_px
         self._star_pick_previous_drag_mode = self.ui.realImageView.dragMode()
         self._star_pair_annotations: dict[str, tuple[QGraphicsEllipseItem, QGraphicsSimpleTextItem]] = {}
+        self._focused_star_annotations: list[QGraphicsItem] = []
         self._current_star_map: ProjectedStarMap | None = None
         self._current_reference_stars: tuple[ReferenceStar, ...] = ()
         self._sky_alignment_transform: SkyAlignmentTransform | None = None
@@ -625,6 +642,8 @@ class MainWindow(QMainWindow):
         self._syncing_reference_preview_splitter = False
         self._suspend_alignment_updates = False
         self._manual_reference_star_ids: list[str] = []
+        self._auto_match_reference_star_ids: list[str] = []
+        self._auto_match_group_expanded = False
         self._excluded_reference_star_ids: list[str] = []
         self._star_pick_native_zoom_remainder = 0.0
         self.current_sky_mask_path: Path | None = None
@@ -754,6 +773,8 @@ class MainWindow(QMainWindow):
         self.ui.tableWidgetStarPairs.setContextMenuPolicy(Qt.CustomContextMenu)
         self.ui.tableWidgetStarPairs.customContextMenuRequested.connect(self._show_star_pair_context_menu)
         self.ui.tableWidgetStarPairs.itemChanged.connect(self._handle_star_pair_item_changed)
+        self.ui.tableWidgetStarPairs.cellClicked.connect(self._handle_star_pair_cell_clicked)
+        self.ui.tableWidgetStarPairs.cellDoubleClicked.connect(self._handle_star_pair_cell_double_clicked)
         self.ui.tableWidgetStarPairs.installEventFilter(self)
         self.ui.labelImportedImagePath.installEventFilter(self)
         self.ui.labelSkyMaskStatus.installEventFilter(self)
@@ -863,11 +884,12 @@ class MainWindow(QMainWindow):
     def _alignment_model(self) -> str:
         index = self.ui.comboBoxSkyAlignmentModel.currentIndex()
         if index < 0 or index >= len(SKY_ALIGNMENT_MODELS):
-            return SKY_MATCHING_MODEL_POLYNOMIAL
+            return SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION
         return SKY_ALIGNMENT_MODELS[index]
 
     def _set_alignment_model(self, model: object) -> None:
         model_text = str(model or "").strip()
+        model_text = SKY_ALIGNMENT_MODEL_ALIASES.get(model_text, model_text)
         if model_text not in SKY_ALIGNMENT_MODELS:
             return
         self.ui.comboBoxSkyAlignmentModel.setCurrentIndex(SKY_ALIGNMENT_MODELS.index(model_text))
@@ -1034,6 +1056,7 @@ class MainWindow(QMainWindow):
         table.blockSignals(signals_were_blocked)
 
         table.resizeColumnToContents(STAR_PAIR_RESIDUAL_COLUMN)
+        self._update_auto_match_group_row_text()
         self._refresh_star_pair_table_styles()
 
     def _update_reference_alignment_transform(self) -> None:
@@ -1047,7 +1070,7 @@ class MainWindow(QMainWindow):
         if self.current_image_preview is None:
             self._reference_alignment_error_message = "导入真实图像后可计算实时星空叠加。"
             self._sky_alignment_error_message = "导入真实图像后可计算天球残差。"
-            self._source_model_error_message = "导入真实图像后可拟合 xy→RA/Dec 映射。"
+            self._source_model_error_message = "导入真实图像后可生成 xy→RA/Dec 映射。"
             self._update_star_pair_residual_columns()
             self._update_reference_alignment_display()
             return
@@ -1061,7 +1084,7 @@ class MainWindow(QMainWindow):
                 f"已配对 {sky_points.shape[0]} 颗星；至少 {MIN_ALIGNMENT_PAIRS} 颗后可计算天球残差。"
             )
             self._source_model_error_message = (
-                f"已配对 {sky_points.shape[0]} 颗星；至少 {MIN_ALIGNMENT_PAIRS} 颗后可拟合 xy→RA/Dec 映射。"
+                f"已配对 {sky_points.shape[0]} 颗星；至少 {MIN_ALIGNMENT_PAIRS} 颗后可生成 xy→RA/Dec 映射。"
             )
             self._update_star_pair_residual_columns()
             self._update_reference_alignment_display()
@@ -1120,6 +1143,7 @@ class MainWindow(QMainWindow):
         self._update_reference_alignment_controls()
 
     def _handle_hide_all_annotations_toggled(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        self._clear_focused_star_annotations()
         self._update_star_pair_annotation_visibility()
         self._update_reference_alignment_display()
 
@@ -1191,7 +1215,7 @@ class MainWindow(QMainWindow):
                 )
             )
             tooltip = (
-                "实时星空叠加：已用 {count} 对星拟合 RA/Dec {model}，RMS {rms:.2f} px。\n"
+                "实时星空叠加：已用 {count} 对星建立 RA/Dec {model}，RMS {rms:.2f} px。\n"
                 "天球残差：{residual_summary}。{projection_tooltip}\n"
                 "源图映射：{source_model_summary}".format(
                     count=sky_transform.pair_count,
@@ -1318,8 +1342,75 @@ class MainWindow(QMainWindow):
         finally:
             self._syncing_reference_real_views = False
 
-    def _collect_star_pair_positions(self) -> dict[str, str]:
-        positions: dict[str, str] = {}
+    def _star_pair_row_type(self, row: int) -> str:
+        item = self.ui.tableWidgetStarPairs.item(row, STAR_PAIR_INDEX_COLUMN)
+        if item is None:
+            return STAR_PAIR_ROW_TYPE_MANUAL
+        row_type = str(item.data(STAR_PAIR_ROW_TYPE_ROLE) or STAR_PAIR_ROW_TYPE_MANUAL)
+        if row_type not in {
+            STAR_PAIR_ROW_TYPE_MANUAL,
+            STAR_PAIR_ROW_TYPE_AUTO_GROUP,
+            STAR_PAIR_ROW_TYPE_AUTO_MATCH,
+        }:
+            return STAR_PAIR_ROW_TYPE_MANUAL
+        return row_type
+
+    def _is_auto_match_group_row(self, row: int) -> bool:
+        return self._star_pair_row_type(row) == STAR_PAIR_ROW_TYPE_AUTO_GROUP
+
+    def _is_auto_match_row(self, row: int) -> bool:
+        return self._star_pair_row_type(row) == STAR_PAIR_ROW_TYPE_AUTO_MATCH
+
+    def _set_star_pair_item_row_type(self, item: QTableWidgetItem, row_type: str) -> QTableWidgetItem:
+        item.setData(STAR_PAIR_ROW_TYPE_ROLE, row_type)
+        return item
+
+    def _star_pair_fit_payload(self, row: int) -> dict[str, float] | None:
+        position_item = self.ui.tableWidgetStarPairs.item(row, STAR_PAIR_POSITION_COLUMN)
+        if position_item is None:
+            return None
+        payload = position_item.data(STAR_PAIR_FIT_ROLE)
+        if not isinstance(payload, dict):
+            return None
+
+        fit_payload: dict[str, float] = {}
+        for key in ("x", "y", "amplitude", "background", "sigma_x", "sigma_y"):
+            try:
+                value = float(payload[key])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if math.isfinite(value):
+                fit_payload[key] = value
+        return fit_payload or None
+
+    def _fit_payload_from_position(self, fitted_position: FittedStarPosition) -> dict[str, float]:
+        return {
+            "x": float(fitted_position.x),
+            "y": float(fitted_position.y),
+            "amplitude": float(fitted_position.amplitude),
+            "background": float(fitted_position.background),
+            "sigma_x": float(fitted_position.sigma_x),
+            "sigma_y": float(fitted_position.sigma_y),
+        }
+
+    def _fitted_position_for_row(self, row: int) -> FittedStarPosition | None:
+        position = self._parse_star_pair_position_text(row)
+        if position is None:
+            return None
+
+        fit_payload = self._star_pair_fit_payload(row) or {}
+        image_x, image_y = position
+        return FittedStarPosition(
+            x=image_x,
+            y=image_y,
+            amplitude=float(fit_payload.get("amplitude", 0.0)),
+            background=float(fit_payload.get("background", 0.0)),
+            sigma_x=float(fit_payload.get("sigma_x", 0.0)),
+            sigma_y=float(fit_payload.get("sigma_y", 0.0)),
+        )
+
+    def _collect_star_pair_states(self) -> dict[str, dict[str, object]]:
+        states: dict[str, dict[str, object]] = {}
         table = self.ui.tableWidgetStarPairs
         for row in range(table.rowCount()):
             name_item = table.item(row, STAR_PAIR_NAME_COLUMN)
@@ -1329,6 +1420,17 @@ class MainWindow(QMainWindow):
             star_id = str(name_item.data(Qt.UserRole) or "")
             position_text = position_item.text().strip()
             if star_id and position_text:
+                states[star_id] = {
+                    "position_text": position_text,
+                    "fit_payload": self._star_pair_fit_payload(row),
+                }
+        return states
+
+    def _collect_star_pair_positions(self) -> dict[str, str]:
+        positions: dict[str, str] = {}
+        for star_id, state in self._collect_star_pair_states().items():
+            position_text = str(state.get("position_text", "")).strip()
+            if position_text:
                 positions[star_id] = position_text
         return positions
 
@@ -1420,7 +1522,13 @@ class MainWindow(QMainWindow):
                 "sim_x": reference_star.sim_x,
                 "sim_y": reference_star.sim_y,
                 "object_type": "star",
+                "pair_origin": "auto_match" if self._is_auto_match_row(row) else "manual",
             }
+            fit_payload = self._star_pair_fit_payload(row)
+            if fit_payload is not None:
+                for key in ("amplitude", "background", "sigma_x", "sigma_y"):
+                    if key in fit_payload:
+                        record[key] = fit_payload[key]
             residual = self._star_pair_alignment_residual(row)
             if residual is not None:
                 dx, dy, distance = residual
@@ -1458,6 +1566,7 @@ class MainWindow(QMainWindow):
                 "display_height_px": preview.image.height(),
             },
             "sky_alignment_model": self._alignment_model(),
+            "auto_match_star_ids": list(self._auto_match_reference_star_ids),
             "pair_count": len(pair_records),
             "pairs": pair_records,
         }
@@ -1586,7 +1695,7 @@ class MainWindow(QMainWindow):
                 "映射 JSON 已导出",
                 f"JSON：{json_path}\n配对数：{pair_count}\nRMS：{rms_px:.2f} px",
             )
-        except Exception as exc:  # noqa: BLE001 - 导出入口需要把拟合与文件错误直接反馈给用户。
+        except Exception as exc:  # noqa: BLE001 - 导出入口需要把模型生成与文件错误直接反馈给用户。
             self.ui.statusbar.showMessage(f"导出 xy→RA/Dec 映射 JSON 失败: {exc}")
             QMessageBox.critical(self, "导出 xy→RA/Dec 映射 JSON 失败", str(exc))
 
@@ -1655,20 +1764,63 @@ class MainWindow(QMainWindow):
             return None
         return image_x, image_y
 
+    def _session_pair_fit_payload(self, pair_payload: object) -> dict[str, float] | None:
+        if not isinstance(pair_payload, dict):
+            return None
+
+        fit_payload: dict[str, float] = {}
+        for key in ("amplitude", "background", "sigma_x", "sigma_y"):
+            try:
+                value = float(pair_payload[key])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if math.isfinite(value):
+                fit_payload[key] = value
+        return fit_payload or None
+
+    def _session_auto_match_star_ids(self, payload: dict[str, object], pair_payloads: list[object]) -> list[str]:
+        auto_match_star_ids: list[str] = []
+        raw_star_ids = payload.get("auto_match_star_ids")
+        if isinstance(raw_star_ids, list):
+            for raw_star_id in raw_star_ids:
+                star_id = str(raw_star_id).strip()
+                if star_id and star_id not in auto_match_star_ids:
+                    auto_match_star_ids.append(star_id)
+
+        for pair_payload in pair_payloads:
+            if not isinstance(pair_payload, dict):
+                continue
+            if str(pair_payload.get("pair_origin", "")).strip() != "auto_match":
+                continue
+            star_id = self._session_pair_star_id(pair_payload)
+            if star_id and star_id not in auto_match_star_ids:
+                auto_match_star_ids.append(star_id)
+        return auto_match_star_ids
+
     def _ensure_pair_record_stars_visible(self, pair_payloads: list[object]) -> None:
         visible_star_ids = {
             self._star_pair_star_id(row)
             for row in range(self.ui.tableWidgetStarPairs.rowCount())
             if self._star_pair_star_id(row)
         }
+        auto_match_star_ids = set(self._auto_match_reference_star_ids)
         added_any = False
         for pair_payload in pair_payloads:
             star_id = self._session_pair_star_id(pair_payload)
-            if not star_id or star_id in visible_star_ids or star_id in self._manual_reference_star_ids:
+            if (
+                not star_id
+                or star_id in visible_star_ids
+                or star_id in self._manual_reference_star_ids
+                or star_id in auto_match_star_ids
+            ):
                 continue
             if star_id in self._excluded_reference_star_ids:
                 self._excluded_reference_star_ids.remove(star_id)
-            self._manual_reference_star_ids.append(star_id)
+            if isinstance(pair_payload, dict) and str(pair_payload.get("pair_origin", "")).strip() == "auto_match":
+                self._auto_match_reference_star_ids.append(star_id)
+                auto_match_star_ids.add(star_id)
+            else:
+                self._manual_reference_star_ids.append(star_id)
             visible_star_ids.add(star_id)
             added_any = True
         if added_any:
@@ -1676,11 +1828,17 @@ class MainWindow(QMainWindow):
 
     def _restore_star_pair_records(self, pair_payloads: list[object], update_alignment: bool = True) -> int:
         recorded_positions: dict[str, tuple[float, float]] = {}
+        recorded_fit_payloads: dict[str, dict[str, float] | None] = {}
         for pair_payload in pair_payloads:
             star_id = self._session_pair_star_id(pair_payload)
             position = self._session_pair_position(pair_payload)
             if star_id and position is not None:
                 recorded_positions[star_id] = position
+                fit_payload = self._session_pair_fit_payload(pair_payload)
+                if fit_payload is not None:
+                    fit_payload["x"] = position[0]
+                    fit_payload["y"] = position[1]
+                recorded_fit_payloads[star_id] = fit_payload
 
         table = self.ui.tableWidgetStarPairs
         signals_were_blocked = table.blockSignals(True)
@@ -1696,9 +1854,11 @@ class MainWindow(QMainWindow):
             position = recorded_positions.get(star_id)
             if position is None:
                 position_item.setText("")
+                position_item.setData(STAR_PAIR_FIT_ROLE, None)
                 continue
             image_x, image_y = position
             position_item.setText(f"{image_x:.2f}, {image_y:.2f}")
+            position_item.setData(STAR_PAIR_FIT_ROLE, recorded_fit_payloads.get(star_id))
             restored_count += 1
         table.blockSignals(signals_were_blocked)
 
@@ -1744,6 +1904,7 @@ class MainWindow(QMainWindow):
         pair_payloads = payload.get("pairs", [])
         if not isinstance(pair_payloads, list):
             raise ValueError("JSON 中 pairs 字段必须是列表。")
+        auto_match_star_ids = self._session_auto_match_star_ids(payload, pair_payloads)
 
         image_path = self._session_real_image_path(payload, source_path)
         self._active_star_pair_row = None
@@ -1752,6 +1913,9 @@ class MainWindow(QMainWindow):
         try:
             self._set_alignment_model(payload.get("sky_alignment_model"))
             self._apply_reference_payload(reference_payload, source_path)
+            self._auto_match_reference_star_ids = auto_match_star_ids
+            if self._auto_match_reference_star_ids:
+                self._refresh_reference_stars_from_current_map()
             self._ensure_pair_record_stars_visible(pair_payloads)
             if preview is None:
                 preview = load_image_preview(image_path, max_long_side_px=None)
@@ -1770,30 +1934,165 @@ class MainWindow(QMainWindow):
         item.setFlags(item.flags() & ~Qt.ItemIsEditable)
         return item
 
+    def _auto_match_group_row(self) -> int | None:
+        table = self.ui.tableWidgetStarPairs
+        for row in range(table.rowCount()):
+            if self._is_auto_match_group_row(row):
+                return row
+        return None
+
+    def _auto_match_group_counts(self) -> tuple[int, int]:
+        total_count = 0
+        paired_count = 0
+        table = self.ui.tableWidgetStarPairs
+        for row in range(table.rowCount()):
+            if not self._is_auto_match_row(row):
+                continue
+            total_count += 1
+            if self._star_pair_position_text(row):
+                paired_count += 1
+        return total_count, paired_count
+
+    def _update_auto_match_group_row_text(self) -> None:
+        group_row = self._auto_match_group_row()
+        if group_row is None:
+            return
+        table = self.ui.tableWidgetStarPairs
+        total_count, paired_count = self._auto_match_group_counts()
+        arrow_text = "▼" if self._auto_match_group_expanded else "▶"
+        values = {
+            STAR_PAIR_INDEX_COLUMN: arrow_text,
+            STAR_PAIR_NAME_COLUMN: f"自动扩展匹配 ({total_count})",
+            STAR_PAIR_POSITION_COLUMN: f"已配对 {paired_count}/{total_count}",
+            STAR_PAIR_RESIDUAL_COLUMN: "",
+        }
+        signals_were_blocked = table.blockSignals(True)
+        for column, text in values.items():
+            item = table.item(group_row, column)
+            if item is not None:
+                item.setText(text)
+        table.blockSignals(signals_were_blocked)
+
+    def _apply_auto_match_group_visibility(self) -> None:
+        table = self.ui.tableWidgetStarPairs
+        group_row = self._auto_match_group_row()
+        for row in range(table.rowCount()):
+            if self._is_auto_match_row(row):
+                table.setRowHidden(row, group_row is not None and not self._auto_match_group_expanded)
+            else:
+                table.setRowHidden(row, False)
+        self._update_auto_match_group_row_text()
+
+    def _toggle_auto_match_group(self) -> None:
+        if self._auto_match_group_row() is None:
+            return
+        self._auto_match_group_expanded = not self._auto_match_group_expanded
+        self._apply_auto_match_group_visibility()
+
+    def _handle_star_pair_cell_clicked(self, row: int, _column: int) -> None:
+        if self._is_auto_match_group_row(row):
+            self._toggle_auto_match_group()
+
+    def _handle_star_pair_cell_double_clicked(self, row: int, _column: int) -> None:
+        if self._is_auto_match_group_row(row):
+            return
+        self._focus_star_pair_theoretical_position(row)
+
+    def _make_star_pair_table_item(
+        self,
+        text: str,
+        row_type: str,
+        star_id: str = "",
+        editable: bool = False,
+    ) -> QTableWidgetItem:
+        item = QTableWidgetItem(text)
+        if not editable:
+            item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+        item.setData(STAR_PAIR_ROW_TYPE_ROLE, row_type)
+        if star_id:
+            item.setData(Qt.UserRole, star_id)
+        return item
+
+    def _set_star_pair_table_row(
+        self,
+        row: int,
+        star: ReferenceStar,
+        index_text: str,
+        row_type: str,
+        saved_states: dict[str, dict[str, object]],
+    ) -> None:
+        table = self.ui.tableWidgetStarPairs
+        star_id = star.star_id.strip()
+        star_name = star.common_name.strip() or star_id
+        saved_state = saved_states.get(star_id, {})
+        position_text = str(saved_state.get("position_text", "")).strip()
+
+        index_item = self._make_star_pair_table_item(index_text, row_type, star_id)
+        name_item = self._make_star_pair_table_item(star_name, row_type, star_id)
+        position_item = self._make_star_pair_table_item(position_text, row_type, star_id, editable=True)
+        fit_payload = saved_state.get("fit_payload")
+        position_item.setData(STAR_PAIR_FIT_ROLE, fit_payload if isinstance(fit_payload, dict) else None)
+        residual_item = self._make_star_pair_table_item("", row_type, star_id)
+
+        table.setItem(row, STAR_PAIR_INDEX_COLUMN, index_item)
+        table.setItem(row, STAR_PAIR_NAME_COLUMN, name_item)
+        table.setItem(row, STAR_PAIR_POSITION_COLUMN, position_item)
+        table.setItem(row, STAR_PAIR_RESIDUAL_COLUMN, residual_item)
+
+    def _set_auto_match_group_table_row(self, row: int) -> None:
+        table = self.ui.tableWidgetStarPairs
+        for column, text in (
+            (STAR_PAIR_INDEX_COLUMN, "▶"),
+            (STAR_PAIR_NAME_COLUMN, "自动扩展匹配"),
+            (STAR_PAIR_POSITION_COLUMN, ""),
+            (STAR_PAIR_RESIDUAL_COLUMN, ""),
+        ):
+            item = self._make_star_pair_table_item(text, STAR_PAIR_ROW_TYPE_AUTO_GROUP)
+            font = QFont(item.font())
+            font.setBold(True)
+            item.setFont(font)
+            table.setItem(row, column, item)
+
     def _update_star_pair_table(self, reference_stars: tuple[ReferenceStar, ...]) -> None:
         self._current_reference_stars = tuple(reference_stars)
         table = self.ui.tableWidgetStarPairs
-        saved_positions = self._collect_star_pair_positions()
-        table.blockSignals(True)
-        table.setRowCount(len(reference_stars))
-        for row, star in enumerate(reference_stars):
-            star_id = star.star_id.strip()
-            star_name = star.common_name.strip() or star_id
+        saved_states = self._collect_star_pair_states()
+        auto_match_star_ids = set(self._auto_match_reference_star_ids)
+        regular_stars = [star for star in reference_stars if star.star_id.strip() not in auto_match_star_ids]
+        auto_match_stars = [star for star in reference_stars if star.star_id.strip() in auto_match_star_ids]
+        row_count = len(regular_stars) + len(auto_match_stars)
+        if auto_match_stars:
+            row_count += 1
 
-            index_item = self._read_only_table_item(str(star.index))
-            name_item = self._read_only_table_item(star_name)
-            name_item.setData(Qt.UserRole, star_id)
-            position_item = QTableWidgetItem(saved_positions.get(star_id, ""))
-            position_item.setData(Qt.UserRole, star_id)
-            residual_item = self._read_only_table_item("")
+        signals_were_blocked = table.blockSignals(True)
+        table.setRowCount(row_count)
+        row = 0
+        for display_index, star in enumerate(regular_stars, start=1):
+            self._set_star_pair_table_row(
+                row,
+                star,
+                str(display_index),
+                STAR_PAIR_ROW_TYPE_MANUAL,
+                saved_states,
+            )
+            row += 1
 
-            table.setItem(row, STAR_PAIR_INDEX_COLUMN, index_item)
-            table.setItem(row, STAR_PAIR_NAME_COLUMN, name_item)
-            table.setItem(row, STAR_PAIR_POSITION_COLUMN, position_item)
-            table.setItem(row, STAR_PAIR_RESIDUAL_COLUMN, residual_item)
-        table.blockSignals(False)
+        if auto_match_stars:
+            self._set_auto_match_group_table_row(row)
+            row += 1
+            for auto_index, star in enumerate(auto_match_stars, start=1):
+                self._set_star_pair_table_row(
+                    row,
+                    star,
+                    f"A{auto_index}",
+                    STAR_PAIR_ROW_TYPE_AUTO_MATCH,
+                    saved_states,
+                )
+                row += 1
+        table.blockSignals(signals_were_blocked)
         table.resizeColumnToContents(STAR_PAIR_INDEX_COLUMN)
         table.resizeColumnToContents(STAR_PAIR_NAME_COLUMN)
+        self._apply_auto_match_group_visibility()
         self._sync_star_pair_annotations_to_table()
         self._refresh_star_pair_table_styles()
         self._restore_star_pair_annotations_from_table()
@@ -1802,6 +2101,11 @@ class MainWindow(QMainWindow):
     def _handle_star_pair_item_changed(self, item: QTableWidgetItem) -> None:
         if item.column() != STAR_PAIR_POSITION_COLUMN:
             return
+        if self._is_auto_match_group_row(item.row()):
+            return
+        signals_were_blocked = self.ui.tableWidgetStarPairs.blockSignals(True)
+        item.setData(STAR_PAIR_FIT_ROLE, None)
+        self.ui.tableWidgetStarPairs.blockSignals(signals_were_blocked)
         star_id = self._star_pair_star_id(item.row())
         if star_id and not item.text().strip():
             self._remove_star_pair_annotation(star_id)
@@ -1834,6 +2138,8 @@ class MainWindow(QMainWindow):
             return None
 
     def _star_pair_label(self, row: int) -> str:
+        if self._is_auto_match_group_row(row):
+            return "自动扩展匹配"
         index_item = self.ui.tableWidgetStarPairs.item(row, STAR_PAIR_INDEX_COLUMN)
         index_text = index_item.text() if index_item is not None else str(row + 1)
         star_name = self._star_pair_name(row)
@@ -1860,15 +2166,21 @@ class MainWindow(QMainWindow):
         if row < 0 or row >= self.ui.tableWidgetStarPairs.rowCount():
             return
         table = self.ui.tableWidgetStarPairs
-        residual_background = self._star_pair_residual_background(row)
-        if self._active_star_pair_row == row:
-            background = QColor(255, 242, 153)
-        elif residual_background is not None:
-            background = residual_background
-        elif self._star_pair_position_text(row):
-            background = QColor(210, 244, 214)
+        if self._is_auto_match_group_row(row):
+            background = QColor(232, 236, 244)
         else:
-            background = QColor(255, 255, 255)
+            residual_background = self._star_pair_residual_background(row)
+            if self._active_star_pair_row == row:
+                background = QColor(255, 242, 153)
+            elif residual_background is not None:
+                background = residual_background
+            elif self._star_pair_position_text(row):
+                background = QColor(210, 244, 214)
+            else:
+                background = QColor(255, 255, 255)
+
+        if self._active_star_pair_row == row and not self._is_auto_match_group_row(row):
+            background = QColor(255, 242, 153)
 
         signals_were_blocked = table.blockSignals(True)
         for column in range(table.columnCount()):
@@ -1948,10 +2260,18 @@ class MainWindow(QMainWindow):
         )
 
     def _clear_star_pair_annotations(self) -> None:
+        self._clear_focused_star_annotations()
         for ellipse_item, label_item in self._star_pair_annotations.values():
             self.real_image_scene.removeItem(ellipse_item)
             self.real_image_scene.removeItem(label_item)
         self._star_pair_annotations.clear()
+
+    def _clear_focused_star_annotations(self) -> None:
+        for item in self._focused_star_annotations:
+            scene = item.scene()
+            if scene is not None:
+                scene.removeItem(item)
+        self._focused_star_annotations.clear()
 
     def _update_star_pair_annotation_visibility(self) -> None:
         visible = not self._hide_all_annotations()
@@ -1987,21 +2307,35 @@ class MainWindow(QMainWindow):
         table = self.ui.tableWidgetStarPairs
         star_lookup = self._reference_star_lookup()
         renumbered_stars: list[ReferenceStar] = []
+        regular_index = 1
+        auto_index = 1
         signals_were_blocked = table.blockSignals(True)
         for row in range(table.rowCount()):
+            if self._is_auto_match_group_row(row):
+                index_item = table.item(row, STAR_PAIR_INDEX_COLUMN)
+                if index_item is not None:
+                    index_item.setText("▼" if self._auto_match_group_expanded else "▶")
+                continue
+
             star_id = self._star_pair_star_id(row)
             reference_star = star_lookup.get(star_id)
             if reference_star is not None:
-                renumbered_stars.append(self._reference_star_with_index(reference_star, row + 1))
+                renumbered_stars.append(self._reference_star_with_index(reference_star, len(renumbered_stars) + 1))
 
             index_item = table.item(row, STAR_PAIR_INDEX_COLUMN)
             if index_item is None:
                 index_item = self._read_only_table_item("")
                 table.setItem(row, STAR_PAIR_INDEX_COLUMN, index_item)
-            index_item.setText(str(row + 1))
+            if self._is_auto_match_row(row):
+                index_item.setText(f"A{auto_index}")
+                auto_index += 1
+            else:
+                index_item.setText(str(regular_index))
+                regular_index += 1
         table.blockSignals(signals_were_blocked)
 
         self._current_reference_stars = tuple(renumbered_stars)
+        self._update_auto_match_group_row_text()
         self._sync_star_pair_annotations_to_table()
         self._refresh_star_pair_table_styles()
 
@@ -2009,40 +2343,40 @@ class MainWindow(QMainWindow):
         if self.current_image_preview is None:
             return
         for row in range(self.ui.tableWidgetStarPairs.rowCount()):
-            position = self._parse_star_pair_position_text(row)
-            if position is None:
+            if self._is_auto_match_group_row(row):
                 continue
-            image_x, image_y = position
+            fitted_position = self._fitted_position_for_row(row)
+            if fitted_position is None:
+                continue
+            image_x, image_y = fitted_position.x, fitted_position.y
             if not (0.0 <= image_x < self.current_image_preview.image.width()):
                 continue
             if not (0.0 <= image_y < self.current_image_preview.image.height()):
                 continue
-            fitted_position = FittedStarPosition(
-                x=image_x,
-                y=image_y,
-                amplitude=0.0,
-                background=0.0,
-                sigma_x=0.0,
-                sigma_y=0.0,
-            )
-            self._add_or_update_star_pair_annotation(
-                row,
-                fitted_position,
-                image_radius_px=self.ui_config.star_pick_psf_max_radius_px,
-            )
+            self._add_or_update_star_pair_annotation(row, fitted_position)
+
+    def _star_pair_annotation_radius_px(self, fitted_position: FittedStarPosition) -> float:
+        sigma_radius = max(abs(float(fitted_position.sigma_x)), abs(float(fitted_position.sigma_y)))
+        if sigma_radius > 0.0 and math.isfinite(sigma_radius):
+            radius = sigma_radius * STAR_ANNOTATION_PSF_SIGMA_SCALE
+        else:
+            radius = STAR_ANNOTATION_FALLBACK_RADIUS_PX
+        return min(
+            max(radius, STAR_ANNOTATION_MIN_RADIUS_PX),
+            STAR_ANNOTATION_MAX_RADIUS_PX,
+        )
 
     def _add_or_update_star_pair_annotation(
         self,
         row: int,
         fitted_position: FittedStarPosition,
-        image_radius_px: int,
     ) -> None:
         star_id = self._star_pair_star_id(row)
         if not star_id:
             return
 
         self._remove_star_pair_annotation(star_id)
-        radius = max(float(image_radius_px), 1.0)
+        radius = self._star_pair_annotation_radius_px(fitted_position)
         ellipse_item = QGraphicsEllipseItem(
             fitted_position.x - radius,
             fitted_position.y - radius,
@@ -2069,6 +2403,146 @@ class MainWindow(QMainWindow):
         self._star_pair_annotations[star_id] = (ellipse_item, label_item)
         self._update_star_pair_annotation_visibility()
 
+    def _create_focus_annotation_items(
+        self,
+        scene: QGraphicsScene,
+        point: QPointF,
+        label: str,
+    ) -> None:
+        radius = STAR_PAIR_FOCUS_MARKER_RADIUS_PX
+        ellipse_item = QGraphicsEllipseItem(
+            point.x() - radius,
+            point.y() - radius,
+            radius * 2.0,
+            radius * 2.0,
+        )
+        shadow_pen = QPen(QColor(0, 0, 0, 235), 5)
+        shadow_pen.setCosmetic(True)
+        marker_pen = QPen(QColor(80, 220, 255), 2)
+        marker_pen.setCosmetic(True)
+        ellipse_item.setPen(marker_pen)
+        ellipse_item.setBrush(QBrush(Qt.NoBrush))
+        ellipse_item.setZValue(40.0)
+
+        shadow_item = QGraphicsEllipseItem(
+            point.x() - radius,
+            point.y() - radius,
+            radius * 2.0,
+            radius * 2.0,
+        )
+        shadow_item.setPen(shadow_pen)
+        shadow_item.setBrush(QBrush(Qt.NoBrush))
+        shadow_item.setZValue(39.0)
+
+        label_item = QGraphicsSimpleTextItem(label)
+        label_font = QFont(self.font())
+        label_font.setPointSize(self.ui_config.star_name_font_size_pt)
+        label_font.setBold(True)
+        label_item.setFont(label_font)
+        label_item.setBrush(QBrush(QColor(80, 220, 255)))
+        label_item.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+        label_item.setPos(point.x() + radius + 6.0, point.y() - radius)
+        label_item.setZValue(41.0)
+
+        for item in (shadow_item, ellipse_item, label_item):
+            scene.addItem(item)
+            self._focused_star_annotations.append(item)
+
+    def _set_graphics_view_scale_centered(
+        self,
+        view: QGraphicsView,
+        target_scale: float,
+        center: QPointF,
+    ) -> None:
+        view.resetTransform()
+        view.scale(target_scale, target_scale)
+        view.centerOn(center)
+        self._cap_graphics_view_to_max_scale(view)
+        view.centerOn(center)
+        self._update_live_star_map_zoom_scale(view)
+
+    def _focus_reference_real_views_on_point(self, point: QPointF) -> None:
+        target_scale = max(
+            self._graphics_view_fit_scale(self.ui.realImageView) * STAR_PAIR_FOCUS_ZOOM_FIT_SCALE,
+            self._graphics_view_current_scale(self.ui.realImageView),
+        )
+        max_scale = self._graphics_view_max_scale(self.ui.realImageView)
+        if max_scale is not None:
+            target_scale = min(target_scale, max_scale)
+
+        self._syncing_reference_real_views = True
+        try:
+            self._set_graphics_view_scale_centered(self.ui.realImageView, target_scale, point)
+            self.ui.referenceImageView.setTransform(self.ui.realImageView.transform())
+            self.ui.referenceImageView.centerOn(point)
+            self._cap_graphics_view_to_max_scale(self.ui.referenceImageView)
+            self.ui.referenceImageView.centerOn(point)
+            self._update_live_star_map_zoom_scale(self.ui.referenceImageView)
+        finally:
+            self._syncing_reference_real_views = False
+
+    def _set_hide_all_annotations_checked(self) -> None:
+        if self.ui.checkBoxHideAllAnnotations.isChecked():
+            self._clear_focused_star_annotations()
+            return
+        self.ui.checkBoxHideAllAnnotations.setChecked(True)
+
+    def _set_reference_real_sync_checked(self) -> None:
+        self._update_reference_alignment_controls()
+        if self.ui.checkBoxSyncReferenceAndRealView.isEnabled() and not self.ui.checkBoxSyncReferenceAndRealView.isChecked():
+            self.ui.checkBoxSyncReferenceAndRealView.setChecked(True)
+
+    def _focus_star_pair_theoretical_position(self, row: int) -> None:
+        matched_count = self._star_pair_position_count()
+        if matched_count < STAR_PAIR_FOCUS_MIN_MATCHED_COUNT:
+            self.ui.statusbar.showMessage(
+                f"当前已有 {matched_count} 个匹配；至少 {STAR_PAIR_FOCUS_MIN_MATCHED_COUNT} 个后可双击聚焦理论位置。"
+            )
+            return
+        if self.current_image_preview is None:
+            self.ui.statusbar.showMessage("请先导入真实图像，再双击聚焦匹配星。")
+            return
+
+        transform = self._sky_alignment_transform
+        if transform is None:
+            self._update_reference_alignment_transform()
+            transform = self._sky_alignment_transform
+        if transform is None:
+            self.ui.statusbar.showMessage(self._sky_alignment_error_message or "当前配准模型尚未就绪，无法聚焦理论位置。")
+            return
+
+        reference_star = self._reference_star_for_row(row)
+        if reference_star is None:
+            self.ui.statusbar.showMessage("当前行没有可聚焦的参考星。")
+            return
+
+        predicted_x, predicted_y = transform.transform_radec(reference_star.ra_deg, reference_star.dec_deg)
+        if not all(math.isfinite(value) for value in (predicted_x, predicted_y)):
+            self.ui.statusbar.showMessage(f"{self._star_pair_label(row)} 的理论位置不是有效坐标。")
+            return
+
+        image = self.current_image_preview.image
+        if not (0.0 <= predicted_x < image.width() and 0.0 <= predicted_y < image.height()):
+            self.ui.statusbar.showMessage(f"{self._star_pair_label(row)} 的理论位置在真实图像外。")
+            return
+
+        if self._active_star_pair_row is not None:
+            self._leave_star_pick_mode()
+        self.ui.tabWidgetMain.setCurrentWidget(self.ui.tabReferenceImage)
+        focus_point = QPointF(float(predicted_x), float(predicted_y))
+        focus_label = self._star_pair_label(row)
+
+        self._set_reference_real_sync_checked()
+        self._set_hide_all_annotations_checked()
+        self._update_reference_alignment_display()
+        self._focus_reference_real_views_on_point(focus_point)
+        self._create_focus_annotation_items(self.reference_scene, focus_point, focus_label)
+        self._create_focus_annotation_items(self.real_image_scene, focus_point, focus_label)
+        self.ui.tableWidgetStarPairs.selectRow(row)
+        self.ui.statusbar.showMessage(
+            f"已聚焦 {focus_label} 的理论位置: x={predicted_x:.2f}, y={predicted_y:.2f}。切换“隐藏所有标注”可重置标注显示。"
+        )
+
     def _show_star_pair_context_menu(self, point: QPoint) -> None:
         table = self.ui.tableWidgetStarPairs
         row = table.rowAt(point.y())
@@ -2077,6 +2551,16 @@ class MainWindow(QMainWindow):
 
         table.selectRow(row)
         menu = QMenu(self)
+        if self._is_auto_match_group_row(row):
+            toggle_action = menu.addAction("折叠列表" if self._auto_match_group_expanded else "展开列表")
+            delete_group_action = menu.addAction("删除自动扩展列表")
+            selected_action = menu.exec_(table.viewport().mapToGlobal(point))
+            if selected_action is toggle_action:
+                self._toggle_auto_match_group()
+            elif selected_action is delete_group_action:
+                self._delete_auto_match_group()
+            return
+
         pick_action = menu.addAction("点选位置")
         pick_action.setEnabled(self.current_image_preview is not None)
         auto_pair_action = None
@@ -2173,11 +2657,30 @@ class MainWindow(QMainWindow):
         name_item = table.item(row, STAR_PAIR_NAME_COLUMN)
         if name_item is not None:
             position_item.setData(Qt.UserRole, name_item.data(Qt.UserRole))
+        signals_were_blocked = table.blockSignals(True)
+        position_item.setData(STAR_PAIR_FIT_ROLE, self._fit_payload_from_position(fitted_position))
         position_item.setText(f"{fitted_position.x:.2f}, {fitted_position.y:.2f}")
+        table.blockSignals(signals_were_blocked)
         table.selectRow(row)
         self._refresh_star_pair_row_style(row)
+        self._update_auto_match_group_row_text()
         if update_alignment:
             self._update_reference_alignment_transform()
+
+    def _clear_star_pair_position_data(self, row: int) -> str:
+        table = self.ui.tableWidgetStarPairs
+        if row < 0 or row >= table.rowCount():
+            return ""
+        star_id = self._star_pair_star_id(row)
+        position_item = table.item(row, STAR_PAIR_POSITION_COLUMN)
+        if position_item is not None:
+            signals_were_blocked = table.blockSignals(True)
+            position_item.setText("")
+            position_item.setData(STAR_PAIR_FIT_ROLE, None)
+            table.blockSignals(signals_were_blocked)
+        if star_id:
+            self._remove_star_pair_annotation(star_id)
+        return star_id
 
     def _clear_star_pair_positions(self) -> int:
         cleared_count = self._star_pair_position_count()
@@ -2189,9 +2692,11 @@ class MainWindow(QMainWindow):
             position_item = table.item(row, STAR_PAIR_POSITION_COLUMN)
             if position_item is not None:
                 position_item.setText("")
+                position_item.setData(STAR_PAIR_FIT_ROLE, None)
         table.blockSignals(False)
         self._clear_star_pair_annotations()
         self._refresh_star_pair_table_styles()
+        self._update_auto_match_group_row_text()
         self._update_reference_alignment_transform()
         return cleared_count
 
@@ -2207,21 +2712,18 @@ class MainWindow(QMainWindow):
         if row < 0 or row >= table.rowCount():
             return
         star_label = self._star_pair_label(row)
-        star_id = self._star_pair_star_id(row)
-        position_item = table.item(row, STAR_PAIR_POSITION_COLUMN)
-        if position_item is not None:
-            signals_were_blocked = table.blockSignals(True)
-            position_item.setText("")
-            table.blockSignals(signals_were_blocked)
-        if star_id:
-            self._remove_star_pair_annotation(star_id)
+        self._clear_star_pair_position_data(row)
         self._refresh_star_pair_row_style(row)
+        self._update_auto_match_group_row_text()
         self._update_reference_alignment_transform()
         self.ui.statusbar.showMessage(f"已清除 {star_label} 的真实图像配对。右键该行可重新点选位置。")
 
     def _delete_star_pair_row(self, row: int) -> None:
         table = self.ui.tableWidgetStarPairs
         if row < 0 or row >= table.rowCount():
+            return
+        if self._is_auto_match_group_row(row):
+            self._delete_auto_match_group()
             return
 
         star_label = self._star_pair_label(row)
@@ -2233,21 +2735,56 @@ class MainWindow(QMainWindow):
                 self._active_star_pair_row -= 1
 
         if star_id:
+            self._clear_star_pair_position_data(row)
             self._remove_star_pair_annotation(star_id)
-            self._manual_reference_star_ids = [
-                manual_star_id for manual_star_id in self._manual_reference_star_ids if manual_star_id != star_id
-            ]
-            if star_id not in self._excluded_reference_star_ids:
-                self._excluded_reference_star_ids.append(star_id)
+            if self._is_auto_match_row(row):
+                self._auto_match_reference_star_ids = [
+                    auto_star_id for auto_star_id in self._auto_match_reference_star_ids if auto_star_id != star_id
+                ]
+            else:
+                self._manual_reference_star_ids = [
+                    manual_star_id for manual_star_id in self._manual_reference_star_ids if manual_star_id != star_id
+                ]
+                if star_id not in self._excluded_reference_star_ids:
+                    self._excluded_reference_star_ids.append(star_id)
 
-        signals_were_blocked = table.blockSignals(True)
-        table.removeRow(row)
-        table.blockSignals(signals_were_blocked)
-        self._renumber_star_pair_rows_from_table()
-        if table.rowCount() > 0:
-            table.selectRow(min(row, table.rowCount() - 1))
+        if self._is_auto_match_row(row):
+            self._refresh_reference_stars_from_current_map()
+            table = self.ui.tableWidgetStarPairs
+            if table.rowCount() > 0:
+                table.selectRow(min(row, table.rowCount() - 1))
+        else:
+            signals_were_blocked = table.blockSignals(True)
+            table.removeRow(row)
+            table.blockSignals(signals_were_blocked)
+            self._renumber_star_pair_rows_from_table()
+            if table.rowCount() > 0:
+                table.selectRow(min(row, table.rowCount() - 1))
         self._update_reference_alignment_transform()
         self.ui.statusbar.showMessage(f"已删除参考星 {star_label}，后续序号已重新排列。")
+
+    def _delete_auto_match_group(self) -> None:
+        auto_star_ids = list(self._auto_match_reference_star_ids)
+        if not auto_star_ids:
+            self.ui.statusbar.showMessage("当前没有自动扩展匹配列表可删除。")
+            return
+
+        table = self.ui.tableWidgetStarPairs
+        if self._active_star_pair_row is not None:
+            active_star_id = self._star_pair_star_id(self._active_star_pair_row)
+            if active_star_id in auto_star_ids:
+                self._leave_star_pick_mode()
+
+        for row in range(table.rowCount()):
+            if self._star_pair_star_id(row) in auto_star_ids:
+                self._clear_star_pair_position_data(row)
+
+        deleted_count = len(auto_star_ids)
+        self._auto_match_reference_star_ids = []
+        self._auto_match_group_expanded = False
+        self._refresh_reference_stars_from_current_map()
+        self._update_reference_alignment_transform()
+        self.ui.statusbar.showMessage(f"已删除自动扩展匹配列表，共 {deleted_count} 颗星。")
 
     def _handle_star_pair_delete_key(self) -> bool:
         table = self.ui.tableWidgetStarPairs
@@ -2256,6 +2793,9 @@ class MainWindow(QMainWindow):
             rows = [table.currentRow()]
         if not rows:
             return False
+        if any(self._is_auto_match_group_row(row) for row in rows):
+            self._delete_auto_match_group()
+            return True
         rows_with_position = [row for row in rows if self._star_pair_position_text(row)]
         rows_without_position = [row for row in rows if not self._star_pair_position_text(row)]
         for row in rows_with_position:
@@ -2406,7 +2946,7 @@ class MainWindow(QMainWindow):
         row = self._active_star_pair_row
         star_name = self._star_pair_name(row)
         self._set_star_pair_position(row, fitted_position)
-        self._add_or_update_star_pair_annotation(row, fitted_position, image_radius_px)
+        self._add_or_update_star_pair_annotation(row, fitted_position)
         self._leave_star_pick_mode()
         self.ui.statusbar.showMessage(
             "已记录 {name} 的图像坐标: x={x:.2f}, y={y:.2f}；拟合窗口半径 {radius} px，"
@@ -2479,7 +3019,7 @@ class MainWindow(QMainWindow):
 
         distance_px = ((fitted_position.x - predicted_x) ** 2 + (fitted_position.y - predicted_y) ** 2) ** 0.5
         self._set_star_pair_position(row, fitted_position)
-        self._add_or_update_star_pair_annotation(row, fitted_position, search_radius_px)
+        self._add_or_update_star_pair_annotation(row, fitted_position)
         self.ui.tableWidgetStarPairs.selectRow(row)
         self.ui.statusbar.showMessage(
             "{label} 自动配对完成: x={x:.2f}, y={y:.2f}；预测偏差 {distance:.2f} px，搜索半径 {radius} px。".format(
@@ -2566,27 +3106,49 @@ class MainWindow(QMainWindow):
             predicted_by_id[star_id] = (float(predicted[star_index, 0]), float(predicted[star_index, 1]))
         return candidates, predicted_by_id
 
-    def _ensure_auto_match_candidates_visible(self, candidates: list[ReferenceStar]) -> None:
+    def _ensure_auto_match_candidates_visible(self, candidates: list[ReferenceStar]) -> set[str]:
         visible_star_ids = {
             self._star_pair_star_id(row)
             for row in range(self.ui.tableWidgetStarPairs.rowCount())
             if self._star_pair_star_id(row)
         }
+        candidate_auto_star_ids: set[str] = set()
         added_any = False
         for reference_star in candidates:
             star_id = reference_star.star_id.strip()
             if (
                 not star_id
                 or star_id in visible_star_ids
-                or star_id in self._manual_reference_star_ids
+                or star_id in self._auto_match_reference_star_ids
                 or star_id in self._excluded_reference_star_ids
             ):
                 continue
-            self._manual_reference_star_ids.append(star_id)
+            self._auto_match_reference_star_ids.append(star_id)
+            candidate_auto_star_ids.add(star_id)
             visible_star_ids.add(star_id)
             added_any = True
         if added_any:
+            self._auto_match_group_expanded = False
             self._refresh_reference_stars_from_current_map()
+        return candidate_auto_star_ids
+
+    def _remove_unmatched_auto_match_candidates(self, candidate_star_ids: set[str]) -> int:
+        if not candidate_star_ids:
+            return 0
+        matched_positions = self._collect_star_pair_positions()
+        remove_star_ids = {
+            star_id
+            for star_id in candidate_star_ids
+            if star_id in self._auto_match_reference_star_ids and star_id not in matched_positions
+        }
+        if not remove_star_ids:
+            return 0
+
+        self._auto_match_reference_star_ids = [
+            star_id for star_id in self._auto_match_reference_star_ids if star_id not in remove_star_ids
+        ]
+        self._refresh_reference_stars_from_current_map()
+        return len(remove_star_ids)
 
     def _existing_matched_positions(self) -> list[tuple[float, float]]:
         positions: list[tuple[float, float]] = []
@@ -2626,7 +3188,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "没有候选星", "当前视场、星等/数量设置和蒙版下没有可匹配的候选星。")
             return
 
-        self._ensure_auto_match_candidates_visible(candidates)
+        candidate_auto_star_ids = self._ensure_auto_match_candidates_visible(candidates)
         image = self.current_image_preview.image
         search_radius_px = self.ui.spinBoxAutoMatchRadius.value()
         annotate_matches = len(candidates) <= AUTO_MATCH_ANNOTATION_LIMIT
@@ -2702,7 +3264,7 @@ class MainWindow(QMainWindow):
 
                 self._set_star_pair_position(row, fitted_position, update_alignment=False)
                 if annotate_matches:
-                    self._add_or_update_star_pair_annotation(row, fitted_position, search_radius_px)
+                    self._add_or_update_star_pair_annotation(row, fitted_position)
                 accepted_positions.append(fitted_xy)
                 matched_count += 1
         finally:
@@ -2710,6 +3272,7 @@ class MainWindow(QMainWindow):
             progress.setValue(len(candidates))
             progress.close()
 
+        self._remove_unmatched_auto_match_candidates(candidate_auto_star_ids)
         self._refresh_star_pair_table_styles()
         self._update_reference_alignment_transform()
         status_prefix = "自动扩展匹配已取消" if canceled else "自动扩展匹配完成"
@@ -3061,22 +3624,32 @@ class MainWindow(QMainWindow):
         ordered_stars: list[ReferenceStar] = []
         seen_star_ids: set[str] = set()
         excluded_star_ids = set(self._excluded_reference_star_ids)
+        auto_match_star_ids = set(self._auto_match_reference_star_ids)
         for star in auto_reference_stars:
             star_id = star.star_id.strip()
-            if not star_id or star_id in seen_star_ids or star_id in excluded_star_ids:
+            if not star_id or star_id in seen_star_ids or star_id in excluded_star_ids or star_id in auto_match_star_ids:
                 continue
             seen_star_ids.add(star_id)
             ordered_stars.append(star)
 
         manual_lookup = self._projected_reference_star_lookup(star_map)
         for star_id in self._manual_reference_star_ids:
-            if star_id in seen_star_ids or star_id in excluded_star_ids:
+            if star_id in seen_star_ids or star_id in excluded_star_ids or star_id in auto_match_star_ids:
                 continue
             manual_star = manual_lookup.get(star_id)
             if manual_star is None:
                 continue
             seen_star_ids.add(star_id)
             ordered_stars.append(manual_star)
+
+        for star_id in self._auto_match_reference_star_ids:
+            if star_id in seen_star_ids or star_id in excluded_star_ids:
+                continue
+            auto_match_star = manual_lookup.get(star_id)
+            if auto_match_star is None:
+                continue
+            seen_star_ids.add(star_id)
+            ordered_stars.append(auto_match_star)
 
         return tuple(self._reference_star_with_index(star, index) for index, star in enumerate(ordered_stars, start=1))
 
@@ -3571,6 +4144,8 @@ class MainWindow(QMainWindow):
                 if star_id and star_id not in restored_manual_star_ids:
                     restored_manual_star_ids.append(star_id)
         self._manual_reference_star_ids = restored_manual_star_ids
+        self._auto_match_reference_star_ids = []
+        self._auto_match_group_expanded = False
         self._excluded_reference_star_ids = []
         self._update_reference_label_controls()
         self._update_lens_model_controls()

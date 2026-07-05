@@ -628,7 +628,7 @@ class Ui_MainWindow(object):
         self.pushButtonClearSkyMask.setText(_translate("MainWindow", "清除蒙版"))
         self.labelSkyMaskStatus.setText(_translate("MainWindow", "未使用蒙版"))
         self.labelSkyAlignmentModel.setText(_translate("MainWindow", "匹配模型"))
-        self.comboBoxSkyAlignmentModel.setItemText(0, _translate("MainWindow", "普适多项式"))
+        self.comboBoxSkyAlignmentModel.setItemText(0, _translate("MainWindow", "普适锚点插值"))
         self.comboBoxSkyAlignmentModel.setItemText(1, _translate("MainWindow", "普通广角透视"))
         self.comboBoxSkyAlignmentModel.setItemText(2, _translate("MainWindow", "等距鱼眼"))
         self.comboBoxSkyAlignmentModel.setItemText(3, _translate("MainWindow", "等立体角鱼眼"))
