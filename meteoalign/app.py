@@ -111,6 +111,12 @@ STAR_PAIR_NAME_COLUMN = 1
 STAR_PAIR_POSITION_COLUMN = 2
 STAR_PAIR_RESIDUAL_COLUMN = 3
 STAR_PAIR_RESIDUAL_WIDTH_SAMPLE = "999.99"
+STAR_PAIR_SORT_KEY_INDEX = "index"
+STAR_PAIR_SORT_KEY_RESIDUAL = "residual"
+STAR_PAIR_SORTABLE_COLUMNS = {
+    STAR_PAIR_INDEX_COLUMN: STAR_PAIR_SORT_KEY_INDEX,
+    STAR_PAIR_RESIDUAL_COLUMN: STAR_PAIR_SORT_KEY_RESIDUAL,
+}
 STAR_PAIR_ROW_TYPE_ROLE = Qt.UserRole + 1
 STAR_PAIR_FIT_ROLE = Qt.UserRole + 2
 STAR_PAIR_CONSTRAINT_MODE_ROLE = Qt.UserRole + 3
@@ -118,8 +124,10 @@ STAR_PAIR_FIT_WEIGHT_ROLE = Qt.UserRole + 4
 STAR_PAIR_POSITION_ROLE = Qt.UserRole + 5
 STAR_PAIR_AUTO_GROUP_ROLE = Qt.UserRole + 6
 STAR_PAIR_ROW_TYPE_MANUAL = "manual"
+STAR_PAIR_ROW_TYPE_MANUAL_GROUP = "manual_group"
 STAR_PAIR_ROW_TYPE_AUTO_GROUP = "auto_match_group"
 STAR_PAIR_ROW_TYPE_AUTO_MATCH = "auto_match"
+STAR_PAIR_MANUAL_GROUP_LABEL = "手动匹配"
 STAR_PAIR_SESSION_FORMAT = "meteoalign_star_pair_session"
 STAR_PAIR_SESSION_VERSION = 1
 STAR_PAIR_SESSION_JSON_FILTER = "MeteoAlign 星点配对 JSON (*.json);;JSON 文件 (*.json);;所有文件 (*)"
@@ -653,6 +661,7 @@ class MainWindow(QMainWindow):
         self._syncing_reference_real_views = False
         self._syncing_reference_preview_splitter = False
         self._suspend_alignment_updates = False
+        self._manual_match_group_expanded = True
         self._manual_reference_star_ids: list[str] = []
         self._auto_match_reference_star_ids: list[str] = []
         self._auto_match_constraint_by_star_id: dict[str, tuple[str, float]] = {}
@@ -660,6 +669,8 @@ class MainWindow(QMainWindow):
         self._auto_match_group_by_star_id: dict[str, str] = {}
         self._auto_match_group_expanded_by_id: dict[str, bool] = {}
         self._auto_match_next_group_index = 0
+        self._star_pair_sort_key: str | None = None
+        self._star_pair_sort_descending = True
         self._excluded_reference_star_ids: list[str] = []
         self._star_pick_native_zoom_remainder = 0.0
         self.current_sky_mask_path: Path | None = None
@@ -796,6 +807,7 @@ class MainWindow(QMainWindow):
         self.ui.tableWidgetStarPairs.itemChanged.connect(self._handle_star_pair_item_changed)
         self.ui.tableWidgetStarPairs.cellClicked.connect(self._handle_star_pair_cell_clicked)
         self.ui.tableWidgetStarPairs.cellDoubleClicked.connect(self._handle_star_pair_cell_double_clicked)
+        self.ui.tableWidgetStarPairs.horizontalHeader().sectionClicked.connect(self._handle_star_pair_header_clicked)
         self.ui.tableWidgetStarPairs.installEventFilter(self)
         self.ui.labelImportedImagePath.installEventFilter(self)
         self.ui.labelSkyMaskStatus.installEventFilter(self)
@@ -835,12 +847,47 @@ class MainWindow(QMainWindow):
     def _configure_star_pair_table_columns(self) -> None:
         table = self.ui.tableWidgetStarPairs
         header = table.horizontalHeader()
+        header.setSectionsClickable(True)
         header.setStretchLastSection(False)
         header.setSectionResizeMode(STAR_PAIR_INDEX_COLUMN, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(STAR_PAIR_NAME_COLUMN, QHeaderView.Stretch)
         header.setSectionResizeMode(STAR_PAIR_POSITION_COLUMN, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(STAR_PAIR_RESIDUAL_COLUMN, QHeaderView.Fixed)
         self._apply_star_pair_table_column_widths()
+        self._update_star_pair_sort_indicator()
+
+    def _update_star_pair_sort_indicator(self) -> None:
+        header = self.ui.tableWidgetStarPairs.horizontalHeader()
+        column_by_sort_key = {
+            STAR_PAIR_SORT_KEY_INDEX: STAR_PAIR_INDEX_COLUMN,
+            STAR_PAIR_SORT_KEY_RESIDUAL: STAR_PAIR_RESIDUAL_COLUMN,
+        }
+        column = column_by_sort_key.get(self._star_pair_sort_key or "")
+        if column is None:
+            header.setSortIndicatorShown(False)
+            return
+        # Qt 的表头三角方向在当前样式下与排序直觉相反，这里只反转显示，不改变实际排序逻辑。
+        sort_order = Qt.AscendingOrder if self._star_pair_sort_descending else Qt.DescendingOrder
+        header.setSortIndicator(column, sort_order)
+        header.setSortIndicatorShown(True)
+
+    def _handle_star_pair_header_clicked(self, column: int) -> None:
+        sort_key = STAR_PAIR_SORTABLE_COLUMNS.get(column)
+        if sort_key is None:
+            return
+        if self._star_pair_sort_key == sort_key:
+            self._star_pair_sort_descending = not self._star_pair_sort_descending
+        else:
+            self._star_pair_sort_key = sort_key
+            self._star_pair_sort_descending = True
+        self._update_star_pair_sort_indicator()
+        if self._current_reference_stars:
+            self._update_star_pair_table(self._current_reference_stars)
+
+        header_item = self.ui.tableWidgetStarPairs.horizontalHeaderItem(column)
+        header_text = header_item.text() if header_item is not None else ""
+        order_text = "从大到小" if self._star_pair_sort_descending else "从小到大"
+        self.ui.statusbar.showMessage(f"已按“{header_text}”{order_text}排序；自动匹配组保持不变。")
 
     def _configure_reference_preview_splitter(self) -> None:
         splitter = self.ui.splitterReferenceAndRealImage
@@ -1431,14 +1478,24 @@ class MainWindow(QMainWindow):
         row_type = str(item.data(STAR_PAIR_ROW_TYPE_ROLE) or STAR_PAIR_ROW_TYPE_MANUAL)
         if row_type not in {
             STAR_PAIR_ROW_TYPE_MANUAL,
+            STAR_PAIR_ROW_TYPE_MANUAL_GROUP,
             STAR_PAIR_ROW_TYPE_AUTO_GROUP,
             STAR_PAIR_ROW_TYPE_AUTO_MATCH,
         }:
             return STAR_PAIR_ROW_TYPE_MANUAL
         return row_type
 
+    def _is_manual_match_group_row(self, row: int) -> bool:
+        return self._star_pair_row_type(row) == STAR_PAIR_ROW_TYPE_MANUAL_GROUP
+
     def _is_auto_match_group_row(self, row: int) -> bool:
         return self._star_pair_row_type(row) == STAR_PAIR_ROW_TYPE_AUTO_GROUP
+
+    def _is_star_pair_group_row(self, row: int) -> bool:
+        return self._star_pair_row_type(row) in {
+            STAR_PAIR_ROW_TYPE_MANUAL_GROUP,
+            STAR_PAIR_ROW_TYPE_AUTO_GROUP,
+        }
 
     def _is_auto_match_row(self, row: int) -> bool:
         return self._star_pair_row_type(row) == STAR_PAIR_ROW_TYPE_AUTO_MATCH
@@ -1561,7 +1618,7 @@ class MainWindow(QMainWindow):
     def _refresh_star_pair_mode_cell(self, row: int) -> None:
         if row < 0 or row >= self.ui.tableWidgetStarPairs.rowCount():
             return
-        if self._is_auto_match_group_row(row):
+        if self._is_star_pair_group_row(row):
             return
         table = self.ui.tableWidgetStarPairs
         position_item = table.item(row, STAR_PAIR_POSITION_COLUMN)
@@ -1571,7 +1628,7 @@ class MainWindow(QMainWindow):
         position_item.setText(self._star_pair_mode_display_text(row))
 
     def _set_star_pair_constraint(self, row: int, mode: str, fit_weight: float | None = None) -> None:
-        if row < 0 or row >= self.ui.tableWidgetStarPairs.rowCount() or self._is_auto_match_group_row(row):
+        if row < 0 or row >= self.ui.tableWidgetStarPairs.rowCount() or self._is_star_pair_group_row(row):
             return
 
         normalized_mode, normalized_weight = self._normalized_auto_match_constraint(mode, fit_weight)
@@ -1604,7 +1661,7 @@ class MainWindow(QMainWindow):
         signals_were_blocked = self.ui.tableWidgetStarPairs.blockSignals(True)
         try:
             for row in rows:
-                if self._is_auto_match_group_row(row) or self._parse_star_pair_position_text(row) is None:
+                if self._is_star_pair_group_row(row) or self._parse_star_pair_position_text(row) is None:
                     continue
                 self._set_star_pair_constraint(row, mode, fit_weight)
                 changed_count += 1
@@ -2382,6 +2439,52 @@ class MainWindow(QMainWindow):
         item.setFlags(item.flags() & ~Qt.ItemIsEditable)
         return item
 
+    def _manual_match_group_row(self) -> int | None:
+        table = self.ui.tableWidgetStarPairs
+        for row in range(table.rowCount()):
+            if self._is_manual_match_group_row(row):
+                return row
+        return None
+
+    def _manual_match_group_counts(self) -> tuple[int, int, int]:
+        total_count = 0
+        paired_count = 0
+        soft_count = 0
+        table = self.ui.tableWidgetStarPairs
+        for row in range(table.rowCount()):
+            if self._star_pair_row_type(row) != STAR_PAIR_ROW_TYPE_MANUAL:
+                continue
+            total_count += 1
+            if self._star_pair_position_text(row):
+                paired_count += 1
+            mode, _fit_weight = self._star_pair_fit_constraint(row)
+            if mode == AUTO_MATCH_CONSTRAINT_SOFT:
+                soft_count += 1
+        return total_count, paired_count, soft_count
+
+    def _update_manual_match_group_row_text(self) -> None:
+        group_row = self._manual_match_group_row()
+        if group_row is None:
+            return
+        table = self.ui.tableWidgetStarPairs
+        total_count, paired_count, soft_count = self._manual_match_group_counts()
+        arrow_text = "▼" if self._manual_match_group_expanded else "▶"
+        mode_text = f"已匹配 {paired_count}/{total_count}"
+        if soft_count > 0:
+            mode_text = f"{mode_text}，软 {soft_count}"
+        values = {
+            STAR_PAIR_INDEX_COLUMN: arrow_text,
+            STAR_PAIR_NAME_COLUMN: STAR_PAIR_MANUAL_GROUP_LABEL,
+            STAR_PAIR_POSITION_COLUMN: mode_text,
+            STAR_PAIR_RESIDUAL_COLUMN: "",
+        }
+        signals_were_blocked = table.blockSignals(True)
+        for column, text in values.items():
+            item = table.item(group_row, column)
+            if item is not None:
+                item.setText(text)
+        table.blockSignals(signals_were_blocked)
+
     def _auto_match_group_row(self, group_id: str | None = None) -> int | None:
         table = self.ui.tableWidgetStarPairs
         for row in range(table.rowCount()):
@@ -2409,6 +2512,7 @@ class MainWindow(QMainWindow):
 
     def _update_auto_match_group_row_text(self, group_id: str | None = None) -> None:
         if group_id is None:
+            self._update_manual_match_group_row_text()
             for current_group_id in self._auto_match_group_order:
                 self._update_auto_match_group_row_text(current_group_id)
             return
@@ -2437,12 +2541,26 @@ class MainWindow(QMainWindow):
     def _apply_auto_match_group_visibility(self) -> None:
         table = self.ui.tableWidgetStarPairs
         for row in range(table.rowCount()):
-            if self._is_auto_match_row(row):
+            if self._star_pair_row_type(row) == STAR_PAIR_ROW_TYPE_MANUAL:
+                table.setRowHidden(row, not self._manual_match_group_expanded)
+            elif self._is_auto_match_row(row):
                 group_id = self._row_auto_match_group_id(row)
                 table.setRowHidden(row, not self._auto_match_group_expanded_by_id.get(group_id, True))
             else:
                 table.setRowHidden(row, False)
         self._update_auto_match_group_row_text()
+
+    def _toggle_manual_match_group(self) -> None:
+        if self._manual_match_group_row() is None:
+            return
+        self._manual_match_group_expanded = not self._manual_match_group_expanded
+        self._apply_auto_match_group_visibility()
+
+    def _collapse_manual_match_group(self) -> None:
+        if self._manual_match_group_row() is None:
+            return
+        self._manual_match_group_expanded = False
+        self._apply_auto_match_group_visibility()
 
     def _toggle_auto_match_group(self, group_id: str) -> None:
         if self._auto_match_group_row(group_id) is None:
@@ -2457,11 +2575,13 @@ class MainWindow(QMainWindow):
         self._apply_auto_match_group_visibility()
 
     def _handle_star_pair_cell_clicked(self, row: int, _column: int) -> None:
-        if self._is_auto_match_group_row(row):
+        if self._is_manual_match_group_row(row):
+            self._toggle_manual_match_group()
+        elif self._is_auto_match_group_row(row):
             self._toggle_auto_match_group(self._row_auto_match_group_id(row))
 
     def _handle_star_pair_cell_double_clicked(self, row: int, _column: int) -> None:
-        if self._is_auto_match_group_row(row):
+        if self._is_star_pair_group_row(row):
             return
         self._focus_star_pair_theoretical_position(row)
 
@@ -2550,6 +2670,73 @@ class MainWindow(QMainWindow):
             item.setFont(font)
             table.setItem(row, column, item)
 
+    def _set_manual_match_group_table_row(self, row: int) -> None:
+        table = self.ui.tableWidgetStarPairs
+        for column, text in (
+            (STAR_PAIR_INDEX_COLUMN, "▶"),
+            (STAR_PAIR_NAME_COLUMN, STAR_PAIR_MANUAL_GROUP_LABEL),
+            (STAR_PAIR_POSITION_COLUMN, ""),
+            (STAR_PAIR_RESIDUAL_COLUMN, ""),
+        ):
+            item = self._make_star_pair_table_item(text, STAR_PAIR_ROW_TYPE_MANUAL_GROUP)
+            font = QFont(item.font())
+            font.setBold(True)
+            item.setFont(font)
+            table.setItem(row, column, item)
+
+    def _saved_star_pair_position(self, saved_state: dict[str, object]) -> tuple[float, float] | None:
+        position_value = saved_state.get("position")
+        if not isinstance(position_value, (tuple, list)) or len(position_value) != 2:
+            return None
+        try:
+            image_x = float(position_value[0])
+            image_y = float(position_value[1])
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(image_x) or not math.isfinite(image_y):
+            return None
+        return image_x, image_y
+
+    def _star_pair_residual_distance_for_entry(
+        self,
+        star: ReferenceStar,
+        saved_state: dict[str, object],
+    ) -> float | None:
+        transform = self._sky_alignment_transform
+        if transform is None:
+            return None
+        target_position = self._saved_star_pair_position(saved_state)
+        if target_position is None:
+            return None
+        predicted_x, predicted_y = transform.transform_radec(star.ra_deg, star.dec_deg)
+        if not all(math.isfinite(value) for value in (predicted_x, predicted_y)):
+            return None
+        return float(np.hypot(predicted_x - target_position[0], predicted_y - target_position[1]))
+
+    def _sort_star_pair_entries(
+        self,
+        entries: list[tuple[int, ReferenceStar, str, str, str]],
+        saved_states: dict[str, dict[str, object]],
+    ) -> list[tuple[int, ReferenceStar, str, str, str]]:
+        if self._star_pair_sort_key not in {STAR_PAIR_SORT_KEY_INDEX, STAR_PAIR_SORT_KEY_RESIDUAL}:
+            return entries
+
+        if self._star_pair_sort_key == STAR_PAIR_SORT_KEY_INDEX:
+            return sorted(
+                entries,
+                key=lambda entry: -entry[0] if self._star_pair_sort_descending else entry[0],
+            )
+
+        def residual_sort_key(entry: tuple[int, ReferenceStar, str, str, str]) -> tuple[int, float, int]:
+            sequence_number, star, _index_text, _row_type, _group_id = entry
+            residual = self._star_pair_residual_distance_for_entry(star, saved_states.get(star.star_id.strip(), {}))
+            if residual is None:
+                return 1, 0.0, sequence_number
+            sort_value = -residual if self._star_pair_sort_descending else residual
+            return 0, sort_value, sequence_number
+
+        return sorted(entries, key=residual_sort_key)
+
     def _update_star_pair_table(self, reference_stars: tuple[ReferenceStar, ...]) -> None:
         self._current_reference_stars = tuple(reference_stars)
         table = self.ui.tableWidgetStarPairs
@@ -2557,6 +2744,11 @@ class MainWindow(QMainWindow):
         self._normalize_auto_match_groups()
         auto_match_star_ids = set(self._auto_match_reference_star_ids)
         regular_stars = [star for star in reference_stars if star.star_id.strip() not in auto_match_star_ids]
+        regular_entries = [
+            (display_index, star, str(display_index), STAR_PAIR_ROW_TYPE_MANUAL, "")
+            for display_index, star in enumerate(regular_stars, start=1)
+        ]
+        regular_entries = self._sort_star_pair_entries(regular_entries, saved_states)
         auto_match_stars_by_group: dict[str, list[ReferenceStar]] = {
             group_id: [] for group_id in self._auto_match_group_order
         }
@@ -2571,17 +2763,23 @@ class MainWindow(QMainWindow):
             group_id for group_id in self._auto_match_group_order if auto_match_stars_by_group.get(group_id)
         ]
         row_count = len(regular_stars) + sum(1 + len(auto_match_stars_by_group[group_id]) for group_id in visible_groups)
+        if regular_stars:
+            row_count += 1
 
         signals_were_blocked = table.blockSignals(True)
         table.setRowCount(row_count)
         row = 0
-        for display_index, star in enumerate(regular_stars, start=1):
+        if regular_entries:
+            self._set_manual_match_group_table_row(row)
+            row += 1
+        for _sequence_number, star, index_text, row_type, group_id in regular_entries:
             self._set_star_pair_table_row(
                 row,
                 star,
-                str(display_index),
-                STAR_PAIR_ROW_TYPE_MANUAL,
+                index_text,
+                row_type,
                 saved_states,
+                group_id=group_id,
             )
             row += 1
 
@@ -2589,14 +2787,19 @@ class MainWindow(QMainWindow):
             self._set_auto_match_group_table_row(row, group_id)
             row += 1
             auto_match_stars = auto_match_stars_by_group[group_id]
-            for auto_index, star in enumerate(auto_match_stars, start=1):
+            auto_entries = [
+                (auto_index, star, f"{group_id}{auto_index}", STAR_PAIR_ROW_TYPE_AUTO_MATCH, group_id)
+                for auto_index, star in enumerate(auto_match_stars, start=1)
+            ]
+            auto_entries = self._sort_star_pair_entries(auto_entries, saved_states)
+            for _sequence_number, star, index_text, row_type, entry_group_id in auto_entries:
                 self._set_star_pair_table_row(
                     row,
                     star,
-                    f"{group_id}{auto_index}",
-                    STAR_PAIR_ROW_TYPE_AUTO_MATCH,
+                    index_text,
+                    row_type,
                     saved_states,
-                    group_id=group_id,
+                    group_id=entry_group_id,
                 )
                 row += 1
         table.blockSignals(signals_were_blocked)
@@ -2612,7 +2815,7 @@ class MainWindow(QMainWindow):
     def _handle_star_pair_item_changed(self, item: QTableWidgetItem) -> None:
         if item.column() != STAR_PAIR_POSITION_COLUMN:
             return
-        if self._is_auto_match_group_row(item.row()):
+        if self._is_star_pair_group_row(item.row()):
             return
         signals_were_blocked = self.ui.tableWidgetStarPairs.blockSignals(True)
         item.setData(STAR_PAIR_POSITION_ROLE, None)
@@ -2672,6 +2875,8 @@ class MainWindow(QMainWindow):
             return None
 
     def _star_pair_label(self, row: int) -> str:
+        if self._is_manual_match_group_row(row):
+            return STAR_PAIR_MANUAL_GROUP_LABEL
         if self._is_auto_match_group_row(row):
             return self._auto_match_group_label(self._row_auto_match_group_id(row))
         index_item = self.ui.tableWidgetStarPairs.item(row, STAR_PAIR_INDEX_COLUMN)
@@ -2700,7 +2905,7 @@ class MainWindow(QMainWindow):
         if row < 0 or row >= self.ui.tableWidgetStarPairs.rowCount():
             return
         table = self.ui.tableWidgetStarPairs
-        if self._is_auto_match_group_row(row):
+        if self._is_star_pair_group_row(row):
             background = QColor(232, 236, 244)
         else:
             residual_background = self._star_pair_residual_background(row)
@@ -2713,7 +2918,7 @@ class MainWindow(QMainWindow):
             else:
                 background = QColor(255, 255, 255)
 
-        if self._active_star_pair_row == row and not self._is_auto_match_group_row(row):
+        if self._active_star_pair_row == row and not self._is_star_pair_group_row(row):
             background = QColor(255, 242, 153)
 
         signals_were_blocked = table.blockSignals(True)
@@ -2845,6 +3050,11 @@ class MainWindow(QMainWindow):
         auto_index_by_group: dict[str, int] = {}
         signals_were_blocked = table.blockSignals(True)
         for row in range(table.rowCount()):
+            if self._is_manual_match_group_row(row):
+                index_item = table.item(row, STAR_PAIR_INDEX_COLUMN)
+                if index_item is not None:
+                    index_item.setText("▼" if self._manual_match_group_expanded else "▶")
+                continue
             if self._is_auto_match_group_row(row):
                 group_id = self._row_auto_match_group_id(row)
                 index_item = table.item(row, STAR_PAIR_INDEX_COLUMN)
@@ -2881,7 +3091,7 @@ class MainWindow(QMainWindow):
         if self.current_image_preview is None:
             return
         for row in range(self.ui.tableWidgetStarPairs.rowCount()):
-            if self._is_auto_match_group_row(row):
+            if self._is_star_pair_group_row(row):
                 continue
             fitted_position = self._fitted_position_for_row(row)
             if fitted_position is None:
@@ -3097,7 +3307,7 @@ class MainWindow(QMainWindow):
         soft_weights = [
             self._star_pair_fit_constraint(row)[1]
             for row in rows
-            if not self._is_auto_match_group_row(row)
+            if not self._is_star_pair_group_row(row)
             and self._parse_star_pair_position_text(row) is not None
             and self._star_pair_fit_constraint(row)[0] == AUTO_MATCH_CONSTRAINT_SOFT
         ]
@@ -3129,6 +3339,12 @@ class MainWindow(QMainWindow):
             selected_rows = [row]
 
         menu = QMenu(self)
+        if self._is_manual_match_group_row(row) and len(selected_rows) == 1:
+            toggle_action = menu.addAction("折叠手动匹配表" if self._manual_match_group_expanded else "展开手动匹配表")
+            selected_action = menu.exec_(table.viewport().mapToGlobal(point))
+            if selected_action is toggle_action:
+                self._toggle_manual_match_group()
+            return
         if self._is_auto_match_group_row(row) and len(selected_rows) == 1:
             group_id = self._row_auto_match_group_id(row)
             expanded = self._auto_match_group_expanded_by_id.get(group_id, True)
@@ -3147,7 +3363,7 @@ class MainWindow(QMainWindow):
         normal_rows = [
             selected_row
             for selected_row in action_rows
-            if 0 <= selected_row < table.rowCount() and not self._is_auto_match_group_row(selected_row)
+            if 0 <= selected_row < table.rowCount() and not self._is_star_pair_group_row(selected_row)
         ]
         matched_rows = [selected_row for selected_row in normal_rows if self._parse_star_pair_position_text(selected_row) is not None]
 
@@ -3176,6 +3392,13 @@ class MainWindow(QMainWindow):
                 change_weight_action = mode_menu.addAction("修改权重")
 
         clicked_group_id = self._row_auto_match_group_id(row) if self._is_auto_match_row(row) else ""
+        collapse_manual_group_action = None
+        if (
+            0 <= row < table.rowCount()
+            and self._star_pair_row_type(row) == STAR_PAIR_ROW_TYPE_MANUAL
+            and self._manual_match_group_expanded
+        ):
+            collapse_manual_group_action = menu.addAction("折叠手动匹配表")
         collapse_group_action = None
         if clicked_group_id and self._auto_match_group_expanded_by_id.get(clicked_group_id, True):
             collapse_group_action = menu.addAction("折叠自动匹配表")
@@ -3201,6 +3424,8 @@ class MainWindow(QMainWindow):
                 self.ui.statusbar.showMessage(f"已将 {changed_count} 行更改为锚点模式。")
         elif change_weight_action is not None and selected_action is change_weight_action:
             self._prompt_and_apply_soft_weight(matched_rows)
+        elif collapse_manual_group_action is not None and selected_action is collapse_manual_group_action:
+            self._collapse_manual_match_group()
         elif collapse_group_action is not None and selected_action is collapse_group_action:
             self._collapse_auto_match_group(clicked_group_id)
         elif selected_action is delete_action:
@@ -3351,11 +3576,19 @@ class MainWindow(QMainWindow):
     def _rows_expanded_from_groups(self, rows: list[int]) -> list[int]:
         table = self.ui.tableWidgetStarPairs
         expanded_rows = set(rows)
+        manual_group_selected = any(
+            0 <= row < table.rowCount() and self._is_manual_match_group_row(row)
+            for row in rows
+        )
         selected_group_ids = {
             self._row_auto_match_group_id(row)
             for row in rows
             if 0 <= row < table.rowCount() and self._is_auto_match_group_row(row)
         }
+        if manual_group_selected:
+            for row in range(table.rowCount()):
+                if self._star_pair_row_type(row) == STAR_PAIR_ROW_TYPE_MANUAL:
+                    expanded_rows.add(row)
         if selected_group_ids:
             for row in range(table.rowCount()):
                 if self._is_auto_match_row(row) and self._row_auto_match_group_id(row) in selected_group_ids:
@@ -3367,7 +3600,7 @@ class MainWindow(QMainWindow):
         target_rows = [
             row
             for row in self._rows_expanded_from_groups(sorted(set(rows)))
-            if 0 <= row < table.rowCount() and not self._is_auto_match_group_row(row)
+            if 0 <= row < table.rowCount() and not self._is_star_pair_group_row(row)
         ]
         if not target_rows:
             return 0
@@ -3412,13 +3645,20 @@ class MainWindow(QMainWindow):
             for row in valid_rows
             if self._is_auto_match_group_row(row)
         }
+        manual_group_selected = any(self._is_manual_match_group_row(row) for row in valid_rows)
         auto_star_ids_to_delete: set[str] = set()
         manual_star_ids_to_delete: set[str] = set()
+        if manual_group_selected:
+            for row in range(table.rowCount()):
+                if self._star_pair_row_type(row) == STAR_PAIR_ROW_TYPE_MANUAL:
+                    star_id = self._star_pair_star_id(row)
+                    if star_id:
+                        manual_star_ids_to_delete.add(star_id)
         for group_id in group_ids_to_delete:
             auto_star_ids_to_delete.update(self._auto_match_group_star_ids(group_id))
 
         for row in valid_rows:
-            if self._is_auto_match_group_row(row):
+            if self._is_star_pair_group_row(row):
                 continue
             star_id = self._star_pair_star_id(row)
             if not star_id:
