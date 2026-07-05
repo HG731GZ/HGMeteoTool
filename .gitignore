@@ -34,10 +34,7 @@ Thumbs.db
 # Local generated outputs
 reference_star_map.png
 reference_star_list.json
-/总体方案.md
-/分步规划.md
 /pytest.ini
-/Phase1进度汇报.md
 /catalog/yale_bsc/
 /catalog/hipparcos_i239/
 /tests/
@@ -47,5 +44,4 @@ reference_star_list.json
 /outputs/
 /testimages/
 /当前进度.md
-/新的分步规划.md
-/新的总体方案.md
+/项目介绍.md
