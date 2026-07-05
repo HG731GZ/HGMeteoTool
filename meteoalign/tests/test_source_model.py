@@ -59,3 +59,39 @@ def test_source_astrometric_model_round_trip_and_wcs_payload() -> None:
     assert payload["pixel_to_sky_plane"]["kind"] == "thin_plate_spline"
     assert payload["fits_wcs_compat"]["header_cards"]["CTYPE1"] == "RA---TAN"
     assert payload["fits_wcs_compat"]["header_cards"]["CTYPE2"] == "DEC--TAN"
+
+
+def test_source_astrometric_model_path_sections_are_near_json_start() -> None:
+    center, east, north = _local_basis(120.0, 30.0)
+    sky_plane = np.asarray(
+        [
+            [0.0, 0.0],
+            [-1.0, 0.0],
+            [1.0, 0.0],
+            [0.0, -1.0],
+            [0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    radec = sky_plane_to_radec(sky_plane, center, east, north)
+    pixels = np.column_stack(
+        (
+            500.0 + 18.0 * sky_plane[:, 0],
+            420.0 + 20.0 * sky_plane[:, 1],
+        )
+    )
+
+    model = fit_source_astrometric_model(radec, pixels, image_size=(1000, 800))
+    payload = model.to_json_payload(
+        source_image={
+            "path": "/tmp/source.fit",
+            "relative_path": "source.fit",
+        },
+        mask={
+            "path": "/tmp/mask.png",
+            "relative_path": "mask.png",
+            "active": True,
+        },
+    )
+
+    assert list(payload)[:5] == ["format", "version", "generated_at_utc", "source_image", "mask"]

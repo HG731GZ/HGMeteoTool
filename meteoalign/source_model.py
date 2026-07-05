@@ -200,51 +200,55 @@ class SourceAstrometricModel:
             "format": SOURCE_MODEL_FORMAT,
             "version": SOURCE_MODEL_VERSION,
             "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-            "direction_frame": "ICRS",
-            "pixel_convention": "0-based pixel coordinates at pixel centers",
-            "model_type": self.model_type,
-            "image": {
-                "width_px": int(self.image_width_px),
-                "height_px": int(self.image_height_px),
-            },
-            "projection_basis": {
-                "plane_projection": "azimuthal_equidistant_local_tangent",
-                "center_vector": _as_float_list(self.center_vector),
-                "east_vector": _as_float_list(self.east_vector),
-                "north_vector": _as_float_list(self.north_vector),
-                "center_ra_deg": float(center_radec[0]),
-                "center_dec_deg": float(center_radec[1]),
-            },
-            "sky_to_pixel": sky_to_pixel_payload,
-            "pixel_to_sky_plane": _interpolation_payload(
-                self.pixel_to_sky_plane_interpolation,
-                input_units="px",
-                output_units="deg in local sky plane",
-                input_axis_order=["x_px", "y_px"],
-                output_axis_order=["u_deg", "v_deg"],
-                weight_names=("tps_weights_u_deg", "tps_weights_v_deg"),
-                affine_names=("tps_affine_u_deg", "tps_affine_v_deg"),
-            ),
-            "diagnostics": {
-                "pair_count": int(self.pair_count),
-                "rms_px": float(self.rms_px),
-                "median_residual_px": float(self.median_residual_px),
-                "max_residual_px": float(self.max_residual_px),
-                "inverse_rms_arcsec": float(self.inverse_rms_arcsec),
-                "inverse_median_arcsec": float(self.inverse_median_arcsec),
-                "inverse_max_arcsec": float(self.inverse_max_arcsec),
-            },
-            "fits_wcs_compat": self.wcs,
         }
+        if source_image is not None:
+            payload["source_image"] = source_image
+        if mask is not None:
+            payload["mask"] = mask
+        payload.update(
+            {
+                "direction_frame": "ICRS",
+                "pixel_convention": "0-based pixel coordinates at pixel centers",
+                "model_type": self.model_type,
+                "image": {
+                    "width_px": int(self.image_width_px),
+                    "height_px": int(self.image_height_px),
+                },
+                "projection_basis": {
+                    "plane_projection": "azimuthal_equidistant_local_tangent",
+                    "center_vector": _as_float_list(self.center_vector),
+                    "east_vector": _as_float_list(self.east_vector),
+                    "north_vector": _as_float_list(self.north_vector),
+                    "center_ra_deg": float(center_radec[0]),
+                    "center_dec_deg": float(center_radec[1]),
+                },
+                "sky_to_pixel": sky_to_pixel_payload,
+                "pixel_to_sky_plane": _interpolation_payload(
+                    self.pixel_to_sky_plane_interpolation,
+                    input_units="px",
+                    output_units="deg in local sky plane",
+                    input_axis_order=["x_px", "y_px"],
+                    output_axis_order=["u_deg", "v_deg"],
+                    weight_names=("tps_weights_u_deg", "tps_weights_v_deg"),
+                    affine_names=("tps_affine_u_deg", "tps_affine_v_deg"),
+                ),
+                "diagnostics": {
+                    "pair_count": int(self.pair_count),
+                    "rms_px": float(self.rms_px),
+                    "median_residual_px": float(self.median_residual_px),
+                    "max_residual_px": float(self.max_residual_px),
+                    "inverse_rms_arcsec": float(self.inverse_rms_arcsec),
+                    "inverse_median_arcsec": float(self.inverse_median_arcsec),
+                    "inverse_max_arcsec": float(self.inverse_max_arcsec),
+                },
+                "fits_wcs_compat": self.wcs,
+            }
+        )
         if self.projection_transform is not None:
             payload["known_projection"] = _projection_transform_payload(self.projection_transform)
             payload["diagnostics"]["projection_rms_px_before_residual"] = float(
                 self.projection_transform.projection_rms_px
             )
-        if source_image is not None:
-            payload["source_image"] = source_image
-        if mask is not None:
-            payload["mask"] = mask
         if matching is not None:
             payload["matching"] = matching
         if fit_pairs is not None:

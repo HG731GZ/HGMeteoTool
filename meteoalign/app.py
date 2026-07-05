@@ -1906,7 +1906,6 @@ class MainWindow(QMainWindow):
             "format": STAR_PAIR_SESSION_FORMAT,
             "version": STAR_PAIR_SESSION_VERSION,
             "generated_at_utc": generated_time.isoformat(),
-            "reference_payload": reference_payload,
             "real_image": {
                 "path": str(image_path),
                 "relative_path": relative_image_path,
@@ -1915,6 +1914,7 @@ class MainWindow(QMainWindow):
                 "display_width_px": preview.image.width(),
                 "display_height_px": preview.image.height(),
             },
+            "reference_payload": reference_payload,
             "sky_alignment_model": self._alignment_model(),
             "auto_match_star_ids": list(self._auto_match_reference_star_ids),
             "auto_match_groups": self._auto_match_groups_payload(),
@@ -1974,17 +1974,21 @@ class MainWindow(QMainWindow):
         if self.current_sky_mask is None:
             return {"active": False}
         mask_height, mask_width = self.current_sky_mask.shape
-        payload: dict[str, object] = {
-            "active": True,
-            "width_px": int(mask_width),
-            "height_px": int(mask_height),
-            "valid_fraction": float(np.count_nonzero(self.current_sky_mask)) / max(float(self.current_sky_mask.size), 1.0),
-            "zero_pixels_excluded": True,
-        }
+        payload: dict[str, object] = {}
         if self.current_sky_mask_path is not None:
             mask_path = self.current_sky_mask_path.expanduser().resolve()
             payload["path"] = str(mask_path)
             payload["relative_path"] = _relative_image_path_for_session(mask_path, json_path)
+        payload.update(
+            {
+                "active": True,
+                "width_px": int(mask_width),
+                "height_px": int(mask_height),
+                "valid_fraction": float(np.count_nonzero(self.current_sky_mask))
+                / max(float(self.current_sky_mask.size), 1.0),
+                "zero_pixels_excluded": True,
+            }
+        )
         return payload
 
     def _auto_match_settings_payload(self) -> dict[str, object]:
@@ -2446,10 +2450,9 @@ class MainWindow(QMainWindow):
                 return row
         return None
 
-    def _manual_match_group_counts(self) -> tuple[int, int, int]:
+    def _manual_match_group_counts(self) -> tuple[int, int]:
         total_count = 0
         paired_count = 0
-        soft_count = 0
         table = self.ui.tableWidgetStarPairs
         for row in range(table.rowCount()):
             if self._star_pair_row_type(row) != STAR_PAIR_ROW_TYPE_MANUAL:
@@ -2457,21 +2460,16 @@ class MainWindow(QMainWindow):
             total_count += 1
             if self._star_pair_position_text(row):
                 paired_count += 1
-            mode, _fit_weight = self._star_pair_fit_constraint(row)
-            if mode == AUTO_MATCH_CONSTRAINT_SOFT:
-                soft_count += 1
-        return total_count, paired_count, soft_count
+        return total_count, paired_count
 
     def _update_manual_match_group_row_text(self) -> None:
         group_row = self._manual_match_group_row()
         if group_row is None:
             return
         table = self.ui.tableWidgetStarPairs
-        total_count, paired_count, soft_count = self._manual_match_group_counts()
+        total_count, paired_count = self._manual_match_group_counts()
         arrow_text = "▼" if self._manual_match_group_expanded else "▶"
         mode_text = f"已匹配 {paired_count}/{total_count}"
-        if soft_count > 0:
-            mode_text = f"{mode_text}，软 {soft_count}"
         values = {
             STAR_PAIR_INDEX_COLUMN: arrow_text,
             STAR_PAIR_NAME_COLUMN: STAR_PAIR_MANUAL_GROUP_LABEL,
@@ -2494,10 +2492,9 @@ class MainWindow(QMainWindow):
                 return row
         return None
 
-    def _auto_match_group_counts(self, group_id: str) -> tuple[int, int, int]:
+    def _auto_match_group_counts(self, group_id: str) -> tuple[int, int]:
         total_count = 0
         paired_count = 0
-        soft_count = 0
         table = self.ui.tableWidgetStarPairs
         for row in range(table.rowCount()):
             if not self._is_auto_match_row(row) or self._row_auto_match_group_id(row) != group_id:
@@ -2505,10 +2502,7 @@ class MainWindow(QMainWindow):
             total_count += 1
             if self._star_pair_position_text(row):
                 paired_count += 1
-            mode, _fit_weight = self._star_pair_fit_constraint(row)
-            if mode == AUTO_MATCH_CONSTRAINT_SOFT:
-                soft_count += 1
-        return total_count, paired_count, soft_count
+        return total_count, paired_count
 
     def _update_auto_match_group_row_text(self, group_id: str | None = None) -> None:
         if group_id is None:
@@ -2520,11 +2514,9 @@ class MainWindow(QMainWindow):
         if group_row is None:
             return
         table = self.ui.tableWidgetStarPairs
-        total_count, paired_count, soft_count = self._auto_match_group_counts(group_id)
+        total_count, paired_count = self._auto_match_group_counts(group_id)
         arrow_text = "▼" if self._auto_match_group_expanded_by_id.get(group_id, True) else "▶"
         mode_text = f"已匹配 {paired_count}/{total_count}"
-        if soft_count > 0:
-            mode_text = f"{mode_text}，软 {soft_count}"
         values = {
             STAR_PAIR_INDEX_COLUMN: arrow_text,
             STAR_PAIR_NAME_COLUMN: self._auto_match_group_label(group_id),
