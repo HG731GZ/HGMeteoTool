@@ -80,6 +80,32 @@ def test_known_projection_alignment_round_trip(lens_model: str) -> None:
     assert np.max(np.linalg.norm(predicted - pixels, axis=1)) < 1e-5
 
 
+def test_known_projection_soft_constraint_does_not_force_bad_auto_match() -> None:
+    radec, pixels = _projection_fixture(SKY_MATCHING_MODEL_RECTILINEAR)
+    target_pixels = pixels.copy()
+    target_pixels[-1] += np.asarray([90.0, -70.0], dtype=np.float64)
+    point_weights = np.ones(target_pixels.shape[0], dtype=np.float64)
+    point_weights[-1] = 0.2
+    anchor_mask = np.ones(target_pixels.shape[0], dtype=bool)
+    anchor_mask[-1] = False
+
+    transform = fit_sky_alignment(
+        radec,
+        target_pixels,
+        matching_model=SKY_MATCHING_MODEL_RECTILINEAR,
+        image_size=(1000, 800),
+        point_weights=point_weights,
+        residual_anchor_mask=anchor_mask,
+    )
+
+    predicted = transform.transform_radec_points(radec)
+    hard_anchor_error = np.linalg.norm(predicted[:-1] - target_pixels[:-1], axis=1)
+    soft_error = float(np.linalg.norm(predicted[-1] - target_pixels[-1]))
+    assert transform.residual_soft_constraint_count == 1
+    assert np.max(hard_anchor_error) < 1e-5
+    assert soft_error > 1.0
+
+
 def test_universal_alignment_uses_anchor_interpolation() -> None:
     radec, pixels = _projection_fixture(SKY_MATCHING_MODEL_RECTILINEAR)
     warped_pixels = pixels + np.column_stack(

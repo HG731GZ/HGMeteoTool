@@ -21,9 +21,9 @@ class StarMapUiConfig:
     default_latitude_deg: float = 40.0
     default_longitude_deg: float = 116.0
     default_elevation_m: float = 50.0
-    auto_match_default_mode: str = "mag_limit"
-    auto_match_default_mag_limit: float = 6.0
-    auto_match_default_fixed_count: int = 2000
+    auto_match_default_new_count: int = 200
+    auto_match_default_constraint_mode: str = "soft"
+    auto_match_default_soft_weight: float = 0.3
 
 
 def default_config_path() -> Path:
@@ -93,12 +93,12 @@ def load_star_map_ui_config(path: Path | None = None) -> StarMapUiConfig:
         default_latitude_deg=_read_float(raw_config, "default_latitude_deg", 40.0, -90.0, 90.0),
         default_longitude_deg=_read_float(raw_config, "default_longitude_deg", 116.0, -180.0, 180.0),
         default_elevation_m=_read_float(raw_config, "default_elevation_m", 50.0, -500.0, 9000.0),
-        auto_match_default_mode=_read_choice(
+        auto_match_default_new_count=_read_int(raw_config, "auto_match_default_new_count", 200, 1, 10000),
+        auto_match_default_constraint_mode=_read_choice(
             raw_config,
-            "auto_match_default_mode",
-            "mag_limit",
-            ("mag_limit", "fixed_count"),
+            "auto_match_default_constraint_mode",
+            "soft",
+            ("anchor", "soft"),
         ),
-        auto_match_default_mag_limit=_read_float(raw_config, "auto_match_default_mag_limit", 6.0, -2.0, 9.0),
-        auto_match_default_fixed_count=_read_int(raw_config, "auto_match_default_fixed_count", 2000, 10, 10000),
+        auto_match_default_soft_weight=_read_float(raw_config, "auto_match_default_soft_weight", 0.3, 0.01, 1.0),
     )

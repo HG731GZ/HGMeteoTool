@@ -898,75 +898,72 @@
                  </widget>
                 </item>
                 <item row="1" column="0">
-                 <widget class="QLabel" name="labelAutoMatchMode">
+                 <widget class="QLabel" name="labelAutoMatchCount">
                   <property name="text">
-                   <string>候选星</string>
+                   <string>每次新增</string>
                   </property>
                  </widget>
                 </item>
                 <item row="1" column="1">
-                 <widget class="QComboBox" name="comboBoxAutoMatchMode">
-                  <item>
-                   <property name="text">
-                    <string>星等上限</string>
-                   </property>
-                  </item>
-                  <item>
-                   <property name="text">
-                    <string>固定数量</string>
-                   </property>
-                  </item>
-                 </widget>
-                </item>
-                <item row="2" column="0">
-                 <widget class="QLabel" name="labelAutoMatchMagLimit">
-                  <property name="text">
-                   <string>星等上限</string>
-                  </property>
-                 </widget>
-                </item>
-                <item row="2" column="1">
-                 <widget class="QDoubleSpinBox" name="doubleSpinBoxAutoMatchMagLimit">
-                  <property name="decimals">
-                   <number>1</number>
-                  </property>
-                  <property name="minimum">
-                   <double>-2.000000000000000</double>
-                  </property>
-                  <property name="maximum">
-                   <double>9.000000000000000</double>
-                  </property>
-                  <property name="singleStep">
-                   <double>0.500000000000000</double>
-                  </property>
-                  <property name="value">
-                   <double>6.000000000000000</double>
-                  </property>
-                  <property name="suffix">
-                   <string> mag</string>
-                  </property>
-                 </widget>
-                </item>
-                <item row="3" column="0">
-                 <widget class="QLabel" name="labelAutoMatchCount">
-                  <property name="text">
-                   <string>固定数量</string>
-                  </property>
-                 </widget>
-                </item>
-                <item row="3" column="1">
                  <widget class="QSpinBox" name="spinBoxAutoMatchCount">
                   <property name="minimum">
-                   <number>10</number>
+                   <number>1</number>
                   </property>
                   <property name="maximum">
                    <number>10000</number>
                   </property>
                   <property name="value">
-                   <number>2000</number>
+                   <number>200</number>
                   </property>
                   <property name="suffix">
                    <string> 颗</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="2" column="0">
+                 <widget class="QLabel" name="labelAutoMatchConstraintMode">
+                  <property name="text">
+                   <string>新增约束</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="2" column="1">
+                 <widget class="QComboBox" name="comboBoxAutoMatchConstraintMode">
+                  <item>
+                   <property name="text">
+                    <string>锚点模式</string>
+                   </property>
+                  </item>
+                  <item>
+                   <property name="text">
+                    <string>软约束模式</string>
+                   </property>
+                  </item>
+                 </widget>
+                </item>
+                <item row="3" column="0">
+                 <widget class="QLabel" name="labelAutoMatchSoftWeight">
+                  <property name="text">
+                   <string>软约束权重</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="3" column="1">
+                 <widget class="QDoubleSpinBox" name="doubleSpinBoxAutoMatchSoftWeight">
+                  <property name="decimals">
+                   <number>2</number>
+                  </property>
+                  <property name="minimum">
+                   <double>0.010000000000000</double>
+                  </property>
+                  <property name="maximum">
+                   <double>1.000000000000000</double>
+                  </property>
+                  <property name="singleStep">
+                   <double>0.050000000000000</double>
+                  </property>
+                  <property name="value">
+                   <double>0.300000000000000</double>
                   </property>
                  </widget>
                 </item>

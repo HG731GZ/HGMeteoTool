@@ -110,6 +110,8 @@ STAR_PAIR_POSITION_COLUMN = 2
 STAR_PAIR_RESIDUAL_COLUMN = 3
 STAR_PAIR_ROW_TYPE_ROLE = Qt.UserRole + 1
 STAR_PAIR_FIT_ROLE = Qt.UserRole + 2
+STAR_PAIR_CONSTRAINT_MODE_ROLE = Qt.UserRole + 3
+STAR_PAIR_FIT_WEIGHT_ROLE = Qt.UserRole + 4
 STAR_PAIR_ROW_TYPE_MANUAL = "manual"
 STAR_PAIR_ROW_TYPE_AUTO_GROUP = "auto_match_group"
 STAR_PAIR_ROW_TYPE_AUTO_MATCH = "auto_match"
@@ -123,9 +125,14 @@ RESIDUAL_SEVERE_MIN_PX = 50.0
 RESIDUAL_SEVERE_RMS_SCALE = 2.0
 STAR_RADIUS_ZOOM_EXPONENT = 0.32
 STAR_RADIUS_MIN_ZOOM_SCALE = 0.48
-AUTO_MATCH_MODE_MAG_LIMIT = "mag_limit"
-AUTO_MATCH_MODE_FIXED_COUNT = "fixed_count"
-AUTO_MATCH_DEFAULT_FIXED_COUNT_MAG_LIMIT = 8.0
+AUTO_MATCH_SEARCH_MAG_LIMIT = 8.0
+AUTO_MATCH_CONSTRAINT_ANCHOR = "anchor"
+AUTO_MATCH_CONSTRAINT_SOFT = "soft"
+AUTO_MATCH_CONSTRAINT_MODES = (
+    AUTO_MATCH_CONSTRAINT_ANCHOR,
+    AUTO_MATCH_CONSTRAINT_SOFT,
+)
+AUTO_MATCH_DEFAULT_SOFT_WEIGHT = 0.3
 AUTO_MATCH_MIN_AMPLITUDE = 2.0
 AUTO_MATCH_DUPLICATE_MIN_DISTANCE_PX = 4.0
 AUTO_MATCH_ANNOTATION_LIMIT = 250
@@ -643,6 +650,7 @@ class MainWindow(QMainWindow):
         self._suspend_alignment_updates = False
         self._manual_reference_star_ids: list[str] = []
         self._auto_match_reference_star_ids: list[str] = []
+        self._auto_match_constraint_by_star_id: dict[str, tuple[str, float]] = {}
         self._auto_match_group_expanded = False
         self._excluded_reference_star_ids: list[str] = []
         self._star_pick_native_zoom_remainder = 0.0
@@ -713,10 +721,14 @@ class MainWindow(QMainWindow):
         self.ui.spinBoxReferenceStarCount.setValue(12)
         self.ui.doubleSpinBoxReferenceMagLimit.setValue(3.0)
         self.ui.comboBoxSkyAlignmentModel.setCurrentIndex(0)
-        auto_match_mode_index = 1 if self.ui_config.auto_match_default_mode == AUTO_MATCH_MODE_FIXED_COUNT else 0
-        self.ui.comboBoxAutoMatchMode.setCurrentIndex(auto_match_mode_index)
-        self.ui.doubleSpinBoxAutoMatchMagLimit.setValue(self.ui_config.auto_match_default_mag_limit)
-        self.ui.spinBoxAutoMatchCount.setValue(self.ui_config.auto_match_default_fixed_count)
+        self.ui.spinBoxAutoMatchCount.setValue(self.ui_config.auto_match_default_new_count)
+        constraint_index = (
+            AUTO_MATCH_CONSTRAINT_MODES.index(self.ui_config.auto_match_default_constraint_mode)
+            if self.ui_config.auto_match_default_constraint_mode in AUTO_MATCH_CONSTRAINT_MODES
+            else AUTO_MATCH_CONSTRAINT_MODES.index(AUTO_MATCH_CONSTRAINT_SOFT)
+        )
+        self.ui.comboBoxAutoMatchConstraintMode.setCurrentIndex(constraint_index)
+        self.ui.doubleSpinBoxAutoMatchSoftWeight.setValue(self.ui_config.auto_match_default_soft_weight)
         self.ui.spinBoxAutoMatchRadius.setValue(30)
         self._reset_imported_image_labels()
         self._reset_sky_mask_status()
@@ -764,7 +776,7 @@ class MainWindow(QMainWindow):
         self.ui.pushButtonClearSkyMask.clicked.connect(self.clear_sky_mask)
         self.ui.checkBoxShowSkyMask.toggled.connect(self._refresh_real_image_display_for_mask)
         self.ui.comboBoxSkyAlignmentModel.currentIndexChanged.connect(self._handle_alignment_model_changed)
-        self.ui.comboBoxAutoMatchMode.currentIndexChanged.connect(self._update_auto_match_controls)
+        self.ui.comboBoxAutoMatchConstraintMode.currentIndexChanged.connect(self._update_auto_match_controls)
         self.ui.pushButtonAutoMatchFieldStars.clicked.connect(self.auto_match_field_stars)
         self.ui.pushButtonExportSourceModel.clicked.connect(self.export_source_model_json)
         self.ui.actionImportSingleImage.triggered.connect(self.import_single_image)
@@ -878,14 +890,22 @@ class MainWindow(QMainWindow):
         self._reset_sky_mask_status()
         self.ui.statusbar.showMessage("新的真实图像尺寸与已有蒙版不一致，已自动清除蒙版。")
 
-    def _auto_match_mode(self) -> str:
-        return AUTO_MATCH_MODE_FIXED_COUNT if self.ui.comboBoxAutoMatchMode.currentIndex() == 1 else AUTO_MATCH_MODE_MAG_LIMIT
-
     def _alignment_model(self) -> str:
         index = self.ui.comboBoxSkyAlignmentModel.currentIndex()
         if index < 0 or index >= len(SKY_ALIGNMENT_MODELS):
             return SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION
         return SKY_ALIGNMENT_MODELS[index]
+
+    def _auto_match_constraint_mode(self) -> str:
+        index = self.ui.comboBoxAutoMatchConstraintMode.currentIndex()
+        if index < 0 or index >= len(AUTO_MATCH_CONSTRAINT_MODES):
+            return AUTO_MATCH_CONSTRAINT_SOFT
+        return AUTO_MATCH_CONSTRAINT_MODES[index]
+
+    def _auto_match_soft_weight(self) -> float:
+        if self._auto_match_constraint_mode() != AUTO_MATCH_CONSTRAINT_SOFT:
+            return 1.0
+        return max(0.01, min(1.0, float(self.ui.doubleSpinBoxAutoMatchSoftWeight.value())))
 
     def _set_alignment_model(self, model: object) -> None:
         model_text = str(model or "").strip()
@@ -898,11 +918,9 @@ class MainWindow(QMainWindow):
         self._update_reference_alignment_transform()
 
     def _update_auto_match_controls(self, *unused) -> None:  # type: ignore[no-untyped-def]
-        fixed_count = self._auto_match_mode() == AUTO_MATCH_MODE_FIXED_COUNT
-        self.ui.labelAutoMatchMagLimit.setEnabled(not fixed_count)
-        self.ui.doubleSpinBoxAutoMatchMagLimit.setEnabled(not fixed_count)
-        self.ui.labelAutoMatchCount.setEnabled(fixed_count)
-        self.ui.spinBoxAutoMatchCount.setEnabled(fixed_count)
+        soft_mode = self._auto_match_constraint_mode() == AUTO_MATCH_CONSTRAINT_SOFT
+        self.ui.labelAutoMatchSoftWeight.setEnabled(soft_mode)
+        self.ui.doubleSpinBoxAutoMatchSoftWeight.setEnabled(soft_mode)
 
     def _real_image_for_current_mask_preview(self) -> QImage:
         if self.current_image_preview is None:
@@ -934,9 +952,15 @@ class MainWindow(QMainWindow):
         return self._reference_star_lookup().get(star_id)
 
     def _matched_sky_alignment_points(self) -> tuple[np.ndarray, np.ndarray]:
+        sky_points, target_points, _weights, _anchor_mask = self._matched_sky_alignment_data()
+        return sky_points, target_points
+
+    def _matched_sky_alignment_data(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         star_lookup = self._reference_star_lookup()
         sky_points: list[tuple[float, float]] = []
         target_points: list[tuple[float, float]] = []
+        point_weights: list[float] = []
+        anchor_flags: list[bool] = []
         for row in range(self.ui.tableWidgetStarPairs.rowCount()):
             star_id = self._star_pair_star_id(row)
             reference_star = star_lookup.get(star_id)
@@ -945,7 +969,15 @@ class MainWindow(QMainWindow):
                 continue
             sky_points.append((reference_star.ra_deg, reference_star.dec_deg))
             target_points.append(target_position)
-        return np.asarray(sky_points, dtype=np.float64), np.asarray(target_points, dtype=np.float64)
+            mode, fit_weight = self._star_pair_fit_constraint(row)
+            point_weights.append(fit_weight)
+            anchor_flags.append(mode != AUTO_MATCH_CONSTRAINT_SOFT)
+        return (
+            np.asarray(sky_points, dtype=np.float64),
+            np.asarray(target_points, dtype=np.float64),
+            np.asarray(point_weights, dtype=np.float64),
+            np.asarray(anchor_flags, dtype=bool),
+        )
 
     def _initial_projection_rotation_matrix(self) -> np.ndarray | None:
         reference_stars = [
@@ -1075,7 +1107,7 @@ class MainWindow(QMainWindow):
             self._update_reference_alignment_display()
             return
 
-        sky_points, sky_target_points = self._matched_sky_alignment_points()
+        sky_points, sky_target_points, fit_weights, anchor_mask = self._matched_sky_alignment_data()
         if sky_points.shape[0] < MIN_ALIGNMENT_PAIRS:
             self._reference_alignment_error_message = (
                 f"已配对 {sky_points.shape[0]} 颗星；至少 {MIN_ALIGNMENT_PAIRS} 颗后可实时叠加星空。"
@@ -1100,6 +1132,8 @@ class MainWindow(QMainWindow):
                 image_size=(image.width(), image.height()),
                 fisheye_fov_deg=self.ui.doubleSpinBoxFisheyeFov.value(),
                 initial_rotation_matrix=initial_rotation_matrix,
+                point_weights=fit_weights,
+                residual_anchor_mask=anchor_mask,
             )
         except Exception as exc:  # noqa: BLE001 - 天球残差失败需要直接反馈给交互界面。
             self._sky_alignment_error_message = str(exc)
@@ -1114,6 +1148,8 @@ class MainWindow(QMainWindow):
                     matching_model=self._alignment_model(),
                     fisheye_fov_deg=self.ui.doubleSpinBoxFisheyeFov.value(),
                     initial_rotation_matrix=initial_rotation_matrix,
+                    point_weights=fit_weights,
+                    residual_anchor_mask=anchor_mask,
                 )
             except Exception as exc:  # noqa: BLE001 - 源图模型错误要保留给导出按钮和状态栏。
                 self._source_model_error_message = str(exc)
@@ -1204,25 +1240,38 @@ class MainWindow(QMainWindow):
             if projection_rms is not None and math.isfinite(float(projection_rms)):
                 projection_summary = f"，投影 {float(projection_rms):.2f}px"
                 projection_tooltip = f"\n已知投影原始 RMS：{float(projection_rms):.2f} px。"
+            soft_count = int(getattr(sky_transform, "residual_soft_constraint_count", 0) or 0)
+            soft_summary = f"，软约束 {soft_count}" if soft_count > 0 else ""
+            soft_tooltip = ""
+            if soft_count > 0:
+                soft_tooltip = (
+                    "\n残差修正包含 {count} 个软约束点，权重范围 {min_weight:.2f}-{max_weight:.2f}。"
+                ).format(
+                    count=soft_count,
+                    min_weight=float(getattr(sky_transform, "residual_soft_weight_min", 1.0)),
+                    max_weight=float(getattr(sky_transform, "residual_soft_weight_max", 1.0)),
+                )
             display_text = (
-                "配准 {count} 对，{model} RMS {rms:.2f}px{summary}{projection}{source_model}".format(
+                "配准 {count} 对，{model} RMS {rms:.2f}px{summary}{projection}{soft}{source_model}".format(
                     count=sky_transform.pair_count,
                     model=sky_transform.display_name,
                     rms=sky_transform.rms_px,
                     summary=compact_summary,
                     projection=projection_summary,
+                    soft=soft_summary,
                     source_model=source_model_text,
                 )
             )
             tooltip = (
                 "实时星空叠加：已用 {count} 对星建立 RA/Dec {model}，RMS {rms:.2f} px。\n"
-                "天球残差：{residual_summary}。{projection_tooltip}\n"
+                "天球残差：{residual_summary}。{projection_tooltip}{soft_tooltip}\n"
                 "源图映射：{source_model_summary}".format(
                     count=sky_transform.pair_count,
                     model=sky_transform.display_name,
                     rms=sky_transform.rms_px,
                     residual_summary=residual_summary,
                     projection_tooltip=projection_tooltip,
+                    soft_tooltip=soft_tooltip,
                     source_model_summary=(
                         "已可导出 xy→RA/Dec JSON。"
                         if self._source_astrometric_model is not None
@@ -1360,6 +1409,40 @@ class MainWindow(QMainWindow):
 
     def _is_auto_match_row(self, row: int) -> bool:
         return self._star_pair_row_type(row) == STAR_PAIR_ROW_TYPE_AUTO_MATCH
+
+    def _auto_match_constraint_for_star_id(self, star_id: str) -> tuple[str, float]:
+        mode, weight = self._auto_match_constraint_by_star_id.get(
+            star_id,
+            (AUTO_MATCH_CONSTRAINT_ANCHOR, 1.0),
+        )
+        if mode not in AUTO_MATCH_CONSTRAINT_MODES:
+            mode = AUTO_MATCH_CONSTRAINT_ANCHOR
+        try:
+            fit_weight = float(weight)
+        except (TypeError, ValueError):
+            fit_weight = 1.0
+        if mode == AUTO_MATCH_CONSTRAINT_SOFT:
+            fit_weight = max(0.01, min(1.0, fit_weight))
+        else:
+            fit_weight = 1.0
+        return mode, fit_weight
+
+    def _star_pair_fit_constraint(self, row: int) -> tuple[str, float]:
+        if not self._is_auto_match_row(row):
+            return AUTO_MATCH_CONSTRAINT_ANCHOR, 1.0
+        star_id = self._star_pair_star_id(row)
+        if star_id:
+            return self._auto_match_constraint_for_star_id(star_id)
+
+        item = self.ui.tableWidgetStarPairs.item(row, STAR_PAIR_INDEX_COLUMN)
+        mode = str(item.data(STAR_PAIR_CONSTRAINT_MODE_ROLE) or AUTO_MATCH_CONSTRAINT_ANCHOR) if item is not None else ""
+        try:
+            weight = float(item.data(STAR_PAIR_FIT_WEIGHT_ROLE)) if item is not None else 1.0
+        except (TypeError, ValueError):
+            weight = 1.0
+        if mode not in AUTO_MATCH_CONSTRAINT_MODES:
+            mode = AUTO_MATCH_CONSTRAINT_ANCHOR
+        return (mode, max(0.01, min(1.0, weight))) if mode == AUTO_MATCH_CONSTRAINT_SOFT else (mode, 1.0)
 
     def _set_star_pair_item_row_type(self, item: QTableWidgetItem, row_type: str) -> QTableWidgetItem:
         item.setData(STAR_PAIR_ROW_TYPE_ROLE, row_type)
@@ -1524,6 +1607,9 @@ class MainWindow(QMainWindow):
                 "object_type": "star",
                 "pair_origin": "auto_match" if self._is_auto_match_row(row) else "manual",
             }
+            constraint_mode, fit_weight = self._star_pair_fit_constraint(row)
+            record["fit_constraint_mode"] = constraint_mode
+            record["fit_weight"] = fit_weight
             fit_payload = self._star_pair_fit_payload(row)
             if fit_payload is not None:
                 for key in ("amplitude", "background", "sigma_x", "sigma_y"):
@@ -1537,6 +1623,16 @@ class MainWindow(QMainWindow):
                 record["residual_px"] = distance
             records.append(record)
         return records
+
+    def _auto_match_constraints_payload(self) -> dict[str, dict[str, object]]:
+        payload: dict[str, dict[str, object]] = {}
+        for star_id in self._auto_match_reference_star_ids:
+            mode, fit_weight = self._auto_match_constraint_for_star_id(star_id)
+            payload[star_id] = {
+                "fit_constraint_mode": mode,
+                "fit_weight": fit_weight,
+            }
+        return payload
 
     def _default_star_pair_session_path(self) -> Path:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1567,6 +1663,7 @@ class MainWindow(QMainWindow):
             },
             "sky_alignment_model": self._alignment_model(),
             "auto_match_star_ids": list(self._auto_match_reference_star_ids),
+            "auto_match_constraints": self._auto_match_constraints_payload(),
             "pair_count": len(pair_records),
             "pairs": pair_records,
         }
@@ -1639,9 +1736,9 @@ class MainWindow(QMainWindow):
         return {
             "sky_alignment_model": self._alignment_model(),
             "fisheye_fov_deg": float(self.ui.doubleSpinBoxFisheyeFov.value()),
-            "mode": self._auto_match_mode(),
-            "mag_limit": float(self.ui.doubleSpinBoxAutoMatchMagLimit.value()),
-            "fixed_count": int(self.ui.spinBoxAutoMatchCount.value()),
+            "new_star_count": int(self.ui.spinBoxAutoMatchCount.value()),
+            "new_constraint_mode": self._auto_match_constraint_mode(),
+            "soft_constraint_weight": float(self.ui.doubleSpinBoxAutoMatchSoftWeight.value()),
             "search_radius_px": int(self.ui.spinBoxAutoMatchRadius.value()),
             "mask_enabled": self.current_sky_mask is not None,
         }
@@ -1797,6 +1894,51 @@ class MainWindow(QMainWindow):
                 auto_match_star_ids.append(star_id)
         return auto_match_star_ids
 
+    def _normalized_auto_match_constraint(self, raw_mode: object, raw_weight: object) -> tuple[str, float]:
+        mode = str(raw_mode or AUTO_MATCH_CONSTRAINT_ANCHOR).strip()
+        if mode not in AUTO_MATCH_CONSTRAINT_MODES:
+            mode = AUTO_MATCH_CONSTRAINT_ANCHOR
+        try:
+            fit_weight = float(raw_weight)
+        except (TypeError, ValueError):
+            fit_weight = 1.0
+        if mode == AUTO_MATCH_CONSTRAINT_SOFT:
+            fit_weight = max(0.01, min(1.0, fit_weight))
+        else:
+            fit_weight = 1.0
+        return mode, fit_weight
+
+    def _session_auto_match_constraints(
+        self,
+        payload: dict[str, object],
+        pair_payloads: list[object],
+    ) -> dict[str, tuple[str, float]]:
+        constraints: dict[str, tuple[str, float]] = {}
+        raw_constraints = payload.get("auto_match_constraints")
+        if isinstance(raw_constraints, dict):
+            for raw_star_id, raw_constraint in raw_constraints.items():
+                star_id = str(raw_star_id).strip()
+                if not star_id or not isinstance(raw_constraint, dict):
+                    continue
+                constraints[star_id] = self._normalized_auto_match_constraint(
+                    raw_constraint.get("fit_constraint_mode"),
+                    raw_constraint.get("fit_weight", 1.0),
+                )
+
+        for pair_payload in pair_payloads:
+            if not isinstance(pair_payload, dict):
+                continue
+            if str(pair_payload.get("pair_origin", "")).strip() != "auto_match":
+                continue
+            star_id = self._session_pair_star_id(pair_payload)
+            if not star_id:
+                continue
+            constraints[star_id] = self._normalized_auto_match_constraint(
+                pair_payload.get("fit_constraint_mode"),
+                pair_payload.get("fit_weight", 1.0),
+            )
+        return constraints
+
     def _ensure_pair_record_stars_visible(self, pair_payloads: list[object]) -> None:
         visible_star_ids = {
             self._star_pair_star_id(row)
@@ -1819,6 +1961,10 @@ class MainWindow(QMainWindow):
             if isinstance(pair_payload, dict) and str(pair_payload.get("pair_origin", "")).strip() == "auto_match":
                 self._auto_match_reference_star_ids.append(star_id)
                 auto_match_star_ids.add(star_id)
+                self._auto_match_constraint_by_star_id[star_id] = self._normalized_auto_match_constraint(
+                    pair_payload.get("fit_constraint_mode"),
+                    pair_payload.get("fit_weight", 1.0),
+                )
             else:
                 self._manual_reference_star_ids.append(star_id)
             visible_star_ids.add(star_id)
@@ -1905,6 +2051,7 @@ class MainWindow(QMainWindow):
         if not isinstance(pair_payloads, list):
             raise ValueError("JSON 中 pairs 字段必须是列表。")
         auto_match_star_ids = self._session_auto_match_star_ids(payload, pair_payloads)
+        auto_match_constraints = self._session_auto_match_constraints(payload, pair_payloads)
 
         image_path = self._session_real_image_path(payload, source_path)
         self._active_star_pair_row = None
@@ -1914,6 +2061,10 @@ class MainWindow(QMainWindow):
             self._set_alignment_model(payload.get("sky_alignment_model"))
             self._apply_reference_payload(reference_payload, source_path)
             self._auto_match_reference_star_ids = auto_match_star_ids
+            self._auto_match_constraint_by_star_id = {
+                star_id: auto_match_constraints.get(star_id, (AUTO_MATCH_CONSTRAINT_ANCHOR, 1.0))
+                for star_id in auto_match_star_ids
+            }
             if self._auto_match_reference_star_ids:
                 self._refresh_reference_stars_from_current_map()
             self._ensure_pair_record_stars_visible(pair_payloads)
@@ -1941,9 +2092,10 @@ class MainWindow(QMainWindow):
                 return row
         return None
 
-    def _auto_match_group_counts(self) -> tuple[int, int]:
+    def _auto_match_group_counts(self) -> tuple[int, int, int]:
         total_count = 0
         paired_count = 0
+        soft_count = 0
         table = self.ui.tableWidgetStarPairs
         for row in range(table.rowCount()):
             if not self._is_auto_match_row(row):
@@ -1951,18 +2103,24 @@ class MainWindow(QMainWindow):
             total_count += 1
             if self._star_pair_position_text(row):
                 paired_count += 1
-        return total_count, paired_count
+            mode, _fit_weight = self._star_pair_fit_constraint(row)
+            if mode == AUTO_MATCH_CONSTRAINT_SOFT:
+                soft_count += 1
+        return total_count, paired_count, soft_count
 
     def _update_auto_match_group_row_text(self) -> None:
         group_row = self._auto_match_group_row()
         if group_row is None:
             return
         table = self.ui.tableWidgetStarPairs
-        total_count, paired_count = self._auto_match_group_counts()
+        total_count, paired_count, soft_count = self._auto_match_group_counts()
         arrow_text = "▼" if self._auto_match_group_expanded else "▶"
+        group_text = f"自动扩展匹配 ({total_count})"
+        if soft_count > 0:
+            group_text = f"自动扩展匹配 ({total_count}，软 {soft_count})"
         values = {
             STAR_PAIR_INDEX_COLUMN: arrow_text,
-            STAR_PAIR_NAME_COLUMN: f"自动扩展匹配 ({total_count})",
+            STAR_PAIR_NAME_COLUMN: group_text,
             STAR_PAIR_POSITION_COLUMN: f"已配对 {paired_count}/{total_count}",
             STAR_PAIR_RESIDUAL_COLUMN: "",
         }
@@ -2033,6 +2191,20 @@ class MainWindow(QMainWindow):
         fit_payload = saved_state.get("fit_payload")
         position_item.setData(STAR_PAIR_FIT_ROLE, fit_payload if isinstance(fit_payload, dict) else None)
         residual_item = self._make_star_pair_table_item("", row_type, star_id)
+        mode, fit_weight = (
+            self._auto_match_constraint_for_star_id(star_id)
+            if row_type == STAR_PAIR_ROW_TYPE_AUTO_MATCH
+            else (AUTO_MATCH_CONSTRAINT_ANCHOR, 1.0)
+        )
+        constraint_tip = (
+            f"投影拟合：软约束，权重 {fit_weight:.2f}。"
+            if mode == AUTO_MATCH_CONSTRAINT_SOFT
+            else "投影拟合：硬锚点。"
+        )
+        for item in (index_item, name_item, position_item, residual_item):
+            item.setData(STAR_PAIR_CONSTRAINT_MODE_ROLE, mode)
+            item.setData(STAR_PAIR_FIT_WEIGHT_ROLE, fit_weight)
+            item.setToolTip(constraint_tip)
 
         table.setItem(row, STAR_PAIR_INDEX_COLUMN, index_item)
         table.setItem(row, STAR_PAIR_NAME_COLUMN, name_item)
@@ -2741,6 +2913,7 @@ class MainWindow(QMainWindow):
                 self._auto_match_reference_star_ids = [
                     auto_star_id for auto_star_id in self._auto_match_reference_star_ids if auto_star_id != star_id
                 ]
+                self._auto_match_constraint_by_star_id.pop(star_id, None)
             else:
                 self._manual_reference_star_ids = [
                     manual_star_id for manual_star_id in self._manual_reference_star_ids if manual_star_id != star_id
@@ -2781,6 +2954,11 @@ class MainWindow(QMainWindow):
 
         deleted_count = len(auto_star_ids)
         self._auto_match_reference_star_ids = []
+        self._auto_match_constraint_by_star_id = {
+            star_id: constraint
+            for star_id, constraint in self._auto_match_constraint_by_star_id.items()
+            if star_id not in set(auto_star_ids)
+        }
         self._auto_match_group_expanded = False
         self._refresh_reference_stars_from_current_map()
         self._update_reference_alignment_transform()
@@ -3032,12 +3210,9 @@ class MainWindow(QMainWindow):
         )
 
     def _auto_match_required_mag_limit(self) -> float:
-        if self._auto_match_mode() == AUTO_MATCH_MODE_MAG_LIMIT:
-            return self.ui.doubleSpinBoxAutoMatchMagLimit.value()
         return max(
             self.ui.doubleSpinBoxMagLimit.value(),
-            self.ui.doubleSpinBoxAutoMatchMagLimit.value(),
-            AUTO_MATCH_DEFAULT_FIXED_COUNT_MAG_LIMIT,
+            AUTO_MATCH_SEARCH_MAG_LIMIT,
         )
 
     def _ensure_current_star_map_for_auto_match(self, mag_limit: float) -> None:
@@ -3081,17 +3256,19 @@ class MainWindow(QMainWindow):
                 mask_allowed[index] = self._sky_mask_allows_point(float(predicted[index, 0]), float(predicted[index, 1]))
             inside &= mask_allowed
 
-        if self._auto_match_mode() == AUTO_MATCH_MODE_MAG_LIMIT:
-            inside &= star_map.mag_v <= self.ui.doubleSpinBoxAutoMatchMagLimit.value()
-
         candidate_indices = np.where(inside)[0]
         if candidate_indices.size <= 0:
             return [], {}
 
         order = np.argsort(star_map.mag_v[candidate_indices], kind="stable")
         candidate_indices = candidate_indices[order]
-        if self._auto_match_mode() == AUTO_MATCH_MODE_FIXED_COUNT:
-            candidate_indices = candidate_indices[: self.ui.spinBoxAutoMatchCount.value()]
+        existing_star_ids = {
+            self._star_pair_star_id(row)
+            for row in range(self.ui.tableWidgetStarPairs.rowCount())
+            if self._star_pair_star_id(row)
+        }
+        blocked_star_ids = existing_star_ids | set(self._auto_match_reference_star_ids) | set(self._excluded_reference_star_ids)
+        new_star_limit = max(1, int(self.ui.spinBoxAutoMatchCount.value()))
 
         candidates: list[ReferenceStar] = []
         predicted_by_id: dict[str, tuple[float, float]] = {}
@@ -3099,11 +3276,13 @@ class MainWindow(QMainWindow):
         for star_index in candidate_indices:
             reference_star = self._reference_star_from_star_map_index(star_map, int(star_index), output_index=0)
             star_id = reference_star.star_id.strip()
-            if not star_id or star_id in seen_star_ids:
+            if not star_id or star_id in seen_star_ids or star_id in blocked_star_ids:
                 continue
             seen_star_ids.add(star_id)
             candidates.append(reference_star)
             predicted_by_id[star_id] = (float(predicted[star_index, 0]), float(predicted[star_index, 1]))
+            if len(candidates) >= new_star_limit:
+                break
         return candidates, predicted_by_id
 
     def _ensure_auto_match_candidates_visible(self, candidates: list[ReferenceStar]) -> set[str]:
@@ -3114,6 +3293,8 @@ class MainWindow(QMainWindow):
         }
         candidate_auto_star_ids: set[str] = set()
         added_any = False
+        constraint_mode = self._auto_match_constraint_mode()
+        fit_weight = self._auto_match_soft_weight()
         for reference_star in candidates:
             star_id = reference_star.star_id.strip()
             if (
@@ -3124,6 +3305,7 @@ class MainWindow(QMainWindow):
             ):
                 continue
             self._auto_match_reference_star_ids.append(star_id)
+            self._auto_match_constraint_by_star_id[star_id] = (constraint_mode, fit_weight)
             candidate_auto_star_ids.add(star_id)
             visible_star_ids.add(star_id)
             added_any = True
@@ -3147,6 +3329,8 @@ class MainWindow(QMainWindow):
         self._auto_match_reference_star_ids = [
             star_id for star_id in self._auto_match_reference_star_ids if star_id not in remove_star_ids
         ]
+        for star_id in remove_star_ids:
+            self._auto_match_constraint_by_star_id.pop(star_id, None)
         self._refresh_reference_stars_from_current_map()
         return len(remove_star_ids)
 
@@ -3185,10 +3369,10 @@ class MainWindow(QMainWindow):
 
         candidates, predicted_by_id = self._auto_match_candidate_stars(transform)
         if not candidates:
-            QMessageBox.information(self, "没有候选星", "当前视场、星等/数量设置和蒙版下没有可匹配的候选星。")
+            QMessageBox.information(self, "没有可新增星", "当前视场、数量设置和蒙版下没有新的可匹配参考星。")
             return
 
-        candidate_auto_star_ids = self._ensure_auto_match_candidates_visible(candidates)
+        self._ensure_auto_match_candidates_visible(candidates)
         image = self.current_image_preview.image
         search_radius_px = self.ui.spinBoxAutoMatchRadius.value()
         annotate_matches = len(candidates) <= AUTO_MATCH_ANNOTATION_LIMIT
@@ -3201,7 +3385,7 @@ class MainWindow(QMainWindow):
         canceled = False
         progress = QProgressDialog(self)
         progress.setWindowTitle("正在自动扩展匹配")
-        progress.setLabelText(f"正在对 {len(candidates)} 颗候选星做 PSF 拟合...")
+        progress.setLabelText(f"正在对 {len(candidates)} 颗新增星做 PSF 拟合...")
         progress.setRange(0, len(candidates))
         progress.setWindowModality(Qt.WindowModal)
         progress.setMinimumDuration(0)
@@ -3272,12 +3456,11 @@ class MainWindow(QMainWindow):
             progress.setValue(len(candidates))
             progress.close()
 
-        self._remove_unmatched_auto_match_candidates(candidate_auto_star_ids)
         self._refresh_star_pair_table_styles()
         self._update_reference_alignment_transform()
         status_prefix = "自动扩展匹配已取消" if canceled else "自动扩展匹配完成"
         self.ui.statusbar.showMessage(
-            "{status_prefix}：候选 {candidate_count}，新增 {matched_count}，已有 {skipped_existing}，"
+            "{status_prefix}：本次新增 {candidate_count}，配对成功 {matched_count}，已有 {skipped_existing}，"
             "蒙版跳过 {skipped_mask}，重复跳过 {skipped_duplicate}，失败 {failed_count}。".format(
                 status_prefix=status_prefix,
                 candidate_count=len(candidates),
@@ -3292,7 +3475,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "自动扩展匹配完成",
-                "没有新增匹配。可以检查蒙版、搜索半径、星等/数量设置，或先增加几颗手动配对星提高初始配准精度。",
+                "没有新增配对。可以检查蒙版、搜索半径和新增数量，或先增加几颗手动配对星提高初始配准精度。",
             )
 
     def import_single_image(self) -> None:
@@ -4145,6 +4328,7 @@ class MainWindow(QMainWindow):
                     restored_manual_star_ids.append(star_id)
         self._manual_reference_star_ids = restored_manual_star_ids
         self._auto_match_reference_star_ids = []
+        self._auto_match_constraint_by_star_id = {}
         self._auto_match_group_expanded = False
         self._excluded_reference_star_ids = []
         self._update_reference_label_controls()

@@ -26,6 +26,9 @@ PROJECTION_FIT_MAX_NFEV = 2000
 PROJECTION_INVALID_RESIDUAL_PX = 1e6
 RESIDUAL_CORRECTION_TPS = "thin_plate_spline"
 ANCHOR_INTERPOLATION_TPS = "thin_plate_spline"
+FIT_WEIGHT_MIN = 1e-6
+FIT_WEIGHT_MAX = 1.0
+SOFT_CONSTRAINT_TPS_SMOOTHING_BASE = 0.03
 
 
 @dataclass(frozen=True)
@@ -135,9 +138,14 @@ class SkyAlignmentTransform:
     north_vector: np.ndarray
     interpolation: AnchorInterpolation2D
     rms_px: float
+    residual_soft_constraint_count: int = 0
+    residual_soft_weight_min: float = 1.0
+    residual_soft_weight_max: float = 1.0
 
     @property
     def display_name(self) -> str:
+        if self.residual_soft_constraint_count > 0:
+            return "普适平滑插值"
         return "普适锚点插值"
 
     def transform_radec_points(self, ra_dec_points: np.ndarray) -> np.ndarray:
@@ -187,6 +195,10 @@ class ProjectionSkyAlignmentTransform:
     residual_tps_weights_y: np.ndarray
     residual_tps_affine_x: np.ndarray
     residual_tps_affine_y: np.ndarray
+    residual_hard_anchor_count: int
+    residual_soft_constraint_count: int
+    residual_soft_weight_min: float
+    residual_soft_weight_max: float
     projection_rms_px: float
     rms_px: float
 
@@ -198,6 +210,8 @@ class ProjectionSkyAlignmentTransform:
             SKY_MATCHING_MODEL_FISHEYE_EQUISOLID: "等立体角鱼眼",
         }
         projection_name = projection_names.get(self.lens_model, self.lens_model)
+        if self.residual_soft_constraint_count > 0:
+            return f"{projection_name}+平滑残差"
         if self.residual_kind == RESIDUAL_CORRECTION_TPS:
             return f"{projection_name}+锚点插值"
         return f"{projection_name}+残差插值"
@@ -616,6 +630,44 @@ def _projection_points_from_params(
     )
 
 
+def _fit_point_weights(point_count: int, point_weights: np.ndarray | None) -> np.ndarray:
+    if point_weights is None:
+        return np.ones(point_count, dtype=np.float64)
+    weights = np.asarray(point_weights, dtype=np.float64).reshape(-1)
+    if weights.shape[0] != point_count:
+        raise ValueError("拟合权重数量必须与配对星数量一致。")
+    if not np.all(np.isfinite(weights)):
+        raise ValueError("拟合权重包含无效数值。")
+    return np.clip(weights, FIT_WEIGHT_MIN, FIT_WEIGHT_MAX).astype(np.float64)
+
+
+def _residual_anchor_mask(point_count: int, anchor_mask: np.ndarray | None) -> np.ndarray:
+    if anchor_mask is None:
+        return np.ones(point_count, dtype=bool)
+    mask = np.asarray(anchor_mask, dtype=bool).reshape(-1)
+    if mask.shape[0] != point_count:
+        raise ValueError("残差锚点标记数量必须与配对星数量一致。")
+    return mask.astype(bool)
+
+
+def _tps_smoothing_from_constraints(anchor_mask: np.ndarray, point_weights: np.ndarray) -> np.ndarray:
+    mask = np.asarray(anchor_mask, dtype=bool).reshape(-1)
+    weights = np.asarray(point_weights, dtype=np.float64).reshape(-1)
+    if mask.shape[0] != weights.shape[0]:
+        raise ValueError("软约束权重数量必须与锚点标记数量一致。")
+
+    smoothing = np.zeros(mask.shape[0], dtype=np.float64)
+    soft_mask = ~mask
+    if np.any(soft_mask):
+        # 硬锚点保持精确穿过；软约束只通过对角正则项拉住曲面，权重越低越平滑。
+        smoothing[soft_mask] = SOFT_CONSTRAINT_TPS_SMOOTHING_BASE / np.clip(
+            weights[soft_mask],
+            FIT_WEIGHT_MIN,
+            FIT_WEIGHT_MAX,
+        )
+    return smoothing.astype(np.float64)
+
+
 def _fit_known_projection_parameters(
     sky_radec: np.ndarray,
     target_points: np.ndarray,
@@ -623,8 +675,11 @@ def _fit_known_projection_parameters(
     image_size: tuple[int, int],
     fisheye_fov_deg: float | None,
     initial_rotation_matrix: np.ndarray | None,
+    fit_weights: np.ndarray | None = None,
 ) -> tuple[np.ndarray, float, float, float, np.ndarray, float]:
     vectors = _radec_to_unit_vectors(sky_radec[:, 0], sky_radec[:, 1])
+    point_weights = _fit_point_weights(sky_radec.shape[0], fit_weights)
+    sqrt_weights = np.sqrt(point_weights).reshape(-1, 1)
     width_px = max(float(image_size[0]), 1.0)
     height_px = max(float(image_size[1]), 1.0)
     fixed_scale = _fixed_fisheye_scale_px(lens_model, image_size, fisheye_fov_deg)
@@ -668,7 +723,7 @@ def _fit_known_projection_parameters(
         if np.any(invalid):
             residual_values[invalid] = PROJECTION_INVALID_RESIDUAL_PX
         residual_values = np.clip(residual_values, -PROJECTION_INVALID_RESIDUAL_PX, PROJECTION_INVALID_RESIDUAL_PX)
-        return residual_values.ravel()
+        return (residual_values * sqrt_weights).ravel()
 
     result = least_squares(
         residual,
@@ -742,6 +797,7 @@ def _thin_plate_spline_kernel(points: np.ndarray, anchors: np.ndarray) -> np.nda
 def _fit_thin_plate_spline_coefficients(
     anchor_points: np.ndarray,
     residual_values: np.ndarray,
+    smoothing: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     anchors = np.asarray(anchor_points, dtype=np.float64)
     values = np.asarray(residual_values, dtype=np.float64)
@@ -753,6 +809,14 @@ def _fit_thin_plate_spline_coefficients(
         raise ValueError("薄板样条至少需要 3 个锚点。")
     if not _array_is_finite(anchors) or not _array_is_finite(values):
         raise ValueError("薄板样条锚点包含无效数值。")
+    if smoothing is None:
+        smoothing_values = np.zeros(anchors.shape[0], dtype=np.float64)
+    else:
+        smoothing_values = np.asarray(smoothing, dtype=np.float64).reshape(-1)
+        if smoothing_values.shape[0] != anchors.shape[0]:
+            raise ValueError("薄板样条平滑参数数量必须与锚点数量一致。")
+        if not np.all(np.isfinite(smoothing_values)) or np.any(smoothing_values < 0.0):
+            raise ValueError("薄板样条平滑参数包含无效数值。")
 
     polynomial_terms = np.column_stack((np.ones(anchors.shape[0]), anchors[:, 0], anchors[:, 1]))
     try:
@@ -770,6 +834,8 @@ def _fit_thin_plate_spline_coefficients(
     system[anchors.shape[0] :, : anchors.shape[0]] = polynomial_terms.T
     rhs = np.zeros(matrix_size, dtype=np.float64)
     rhs[: anchors.shape[0]] = values
+    if np.any(smoothing_values > 0.0):
+        system[: anchors.shape[0], : anchors.shape[0]] += np.diag(smoothing_values)
     try:
         solution = np.linalg.solve(system, rhs)
     except np.linalg.LinAlgError as exc:
@@ -777,10 +843,11 @@ def _fit_thin_plate_spline_coefficients(
 
     weights = solution[: anchors.shape[0]].astype(np.float64)
     affine = solution[anchors.shape[0] :].astype(np.float64)
-    fitted = _evaluate_thin_plate_spline(anchors, anchors, weights, affine)
-    max_anchor_error = float(np.max(np.abs(fitted - values)))
-    if not np.isfinite(max_anchor_error) or max_anchor_error > 1e-5:
-        raise ValueError("薄板样条未能精确穿过锚点。")
+    if not np.any(smoothing_values > 0.0):
+        fitted = _evaluate_thin_plate_spline(anchors, anchors, weights, affine)
+        max_anchor_error = float(np.max(np.abs(fitted - values)))
+        if not np.isfinite(max_anchor_error) or max_anchor_error > 1e-5:
+            raise ValueError("薄板样条未能精确穿过锚点。")
     return weights, affine
 
 
@@ -849,6 +916,8 @@ def fit_anchor_interpolation(
     origin_y: float | None = None,
     scale_x: float | None = None,
     scale_y: float | None = None,
+    anchor_mask: np.ndarray | None = None,
+    point_weights: np.ndarray | None = None,
 ) -> AnchorInterpolation2D:
     source = np.asarray(source_points, dtype=np.float64)
     target = np.asarray(target_points, dtype=np.float64)
@@ -860,6 +929,9 @@ def fit_anchor_interpolation(
         raise ValueError("锚点插值至少需要 3 个锚点。")
     if not _array_is_finite(source) or not _array_is_finite(target):
         raise ValueError("锚点插值点包含无效数值。")
+    hard_anchor_mask = _residual_anchor_mask(source.shape[0], anchor_mask)
+    fit_weights = _fit_point_weights(source.shape[0], point_weights)
+    smoothing = _tps_smoothing_from_constraints(hard_anchor_mask, fit_weights)
 
     default_origin_x, default_origin_y, default_scale_x, default_scale_y = _default_interpolation_normalization(source)
     input_origin_x = default_origin_x if origin_x is None else float(origin_x)
@@ -877,8 +949,8 @@ def fit_anchor_interpolation(
         raise ValueError("锚点插值归一化参数无效。")
 
     normalized = _normalized_interpolation_points(source, input_origin_x, input_origin_y, input_scale_x, input_scale_y)
-    weights_x, affine_x = _fit_thin_plate_spline_coefficients(normalized, target[:, 0])
-    weights_y, affine_y = _fit_thin_plate_spline_coefficients(normalized, target[:, 1])
+    weights_x, affine_x = _fit_thin_plate_spline_coefficients(normalized, target[:, 0], smoothing=smoothing)
+    weights_y, affine_y = _fit_thin_plate_spline_coefficients(normalized, target[:, 1], smoothing=smoothing)
     interpolation = AnchorInterpolation2D(
         kind=ANCHOR_INTERPOLATION_TPS,
         origin_x=input_origin_x,
@@ -892,9 +964,12 @@ def fit_anchor_interpolation(
         tps_affine_y=affine_y,
     )
     interpolated = interpolation.evaluate_points(source)
-    max_anchor_error = float(np.max(np.abs(interpolated - target)))
-    if not np.isfinite(max_anchor_error) or max_anchor_error > 1e-5:
-        raise ValueError("锚点插值未能精确穿过配对点。")
+    if not _array_is_finite(interpolated):
+        raise ValueError("锚点插值结果包含无效数值。")
+    if np.any(hard_anchor_mask):
+        max_anchor_error = float(np.max(np.abs(interpolated[hard_anchor_mask] - target[hard_anchor_mask])))
+        if not np.isfinite(max_anchor_error) or max_anchor_error > 1e-5:
+            raise ValueError("锚点插值未能精确穿过硬锚点。")
     return interpolation
 
 
@@ -910,6 +985,10 @@ class ResidualCorrectionResult:
     tps_weights_y: np.ndarray
     tps_affine_x: np.ndarray
     tps_affine_y: np.ndarray
+    hard_anchor_count: int
+    soft_constraint_count: int
+    soft_weight_min: float
+    soft_weight_max: float
     corrected_projected: np.ndarray
 
 
@@ -917,7 +996,12 @@ def _fit_residual_correction(
     projected_points: np.ndarray,
     target_points: np.ndarray,
     image_size: tuple[int, int],
+    anchor_mask: np.ndarray | None = None,
+    point_weights: np.ndarray | None = None,
 ) -> ResidualCorrectionResult:
+    point_count = int(np.asarray(projected_points, dtype=np.float64).shape[0])
+    hard_anchor_mask = _residual_anchor_mask(point_count, anchor_mask)
+    fit_weights = _fit_point_weights(point_count, point_weights)
     _normalized, origin_x, origin_y, scale_x, scale_y = _normalize_residual_points(projected_points, image_size)
     residual = target_points - projected_points
     interpolation = fit_anchor_interpolation(
@@ -927,6 +1011,8 @@ def _fit_residual_correction(
         origin_y=origin_y,
         scale_x=scale_x,
         scale_y=scale_y,
+        anchor_mask=hard_anchor_mask,
+        point_weights=fit_weights,
     )
     corrected = projected_points + interpolation.evaluate_points(projected_points)
     if not _array_is_finite(corrected):
@@ -942,6 +1028,10 @@ def _fit_residual_correction(
         tps_weights_y=interpolation.tps_weights_y.astype(np.float64),
         tps_affine_x=interpolation.tps_affine_x.astype(np.float64),
         tps_affine_y=interpolation.tps_affine_y.astype(np.float64),
+        hard_anchor_count=int(np.count_nonzero(hard_anchor_mask)),
+        soft_constraint_count=int(np.count_nonzero(~hard_anchor_mask)),
+        soft_weight_min=float(np.min(fit_weights[~hard_anchor_mask])) if np.any(~hard_anchor_mask) else 1.0,
+        soft_weight_max=float(np.max(fit_weights[~hard_anchor_mask])) if np.any(~hard_anchor_mask) else 1.0,
         corrected_projected=corrected.astype(np.float64),
     )
 
@@ -1082,6 +1172,8 @@ def fit_sky_alignment(
     image_size: tuple[int, int] | None = None,
     fisheye_fov_deg: float | None = None,
     initial_rotation_matrix: np.ndarray | None = None,
+    point_weights: np.ndarray | None = None,
+    residual_anchor_mask: np.ndarray | None = None,
 ) -> SkyAlignmentTransform | ProjectionSkyAlignmentTransform:
     sky_radec = np.asarray(ra_dec_points, dtype=np.float64)
     target = np.asarray(target_points, dtype=np.float64)
@@ -1091,10 +1183,14 @@ def fit_sky_alignment(
         raise ValueError("天球配准的 RA/Dec 点与目标点数量不一致。")
     if matching_model not in SKY_MATCHING_MODELS:
         raise ValueError(f"不支持的匹配模型：{matching_model}")
+    raw_point_weights = _fit_point_weights(sky_radec.shape[0], point_weights)
+    raw_anchor_mask = _residual_anchor_mask(sky_radec.shape[0], residual_anchor_mask)
 
     finite_mask = np.all(np.isfinite(sky_radec), axis=1) & np.all(np.isfinite(target), axis=1)
     sky_radec = sky_radec[finite_mask]
     target = target[finite_mask]
+    fit_weights = raw_point_weights[finite_mask]
+    anchor_mask = raw_anchor_mask[finite_mask]
     pair_count = int(sky_radec.shape[0])
     if pair_count < MIN_ALIGNMENT_PAIRS:
         raise ValueError(f"至少需要 {MIN_ALIGNMENT_PAIRS} 对参考星才能计算天球残差。")
@@ -1109,13 +1205,20 @@ def fit_sky_alignment(
             image_size=image_size,
             fisheye_fov_deg=fisheye_fov_deg,
             initial_rotation_matrix=initial_rotation_matrix,
+            point_weights=fit_weights,
+            residual_anchor_mask=anchor_mask,
         )
 
     center, east, north = _sky_plane_basis(sky_radec)
     sky_points = _project_radec_to_sky_plane(sky_radec[:, 0], sky_radec[:, 1], center, east, north)
     if not _array_is_finite(sky_points):
         raise ValueError("天球投影包含无效数值，请检查配对星坐标。")
-    interpolation = fit_anchor_interpolation(sky_points, target)
+    interpolation = fit_anchor_interpolation(
+        sky_points,
+        target,
+        anchor_mask=anchor_mask,
+        point_weights=fit_weights,
+    )
     predicted = interpolation.evaluate_points(sky_points)
     residual = predicted - target
     rms_px = float(np.sqrt(np.mean(np.sum(residual * residual, axis=1))))
@@ -1128,6 +1231,9 @@ def fit_sky_alignment(
         north_vector=north,
         interpolation=interpolation,
         rms_px=rms_px,
+        residual_soft_constraint_count=int(np.count_nonzero(~anchor_mask)),
+        residual_soft_weight_min=float(np.min(fit_weights[~anchor_mask])) if np.any(~anchor_mask) else 1.0,
+        residual_soft_weight_max=float(np.max(fit_weights[~anchor_mask])) if np.any(~anchor_mask) else 1.0,
     )
 
 
@@ -1138,6 +1244,8 @@ def fit_projection_sky_alignment(
     image_size: tuple[int, int],
     fisheye_fov_deg: float | None = None,
     initial_rotation_matrix: np.ndarray | None = None,
+    point_weights: np.ndarray | None = None,
+    residual_anchor_mask: np.ndarray | None = None,
 ) -> ProjectionSkyAlignmentTransform:
     sky_radec = np.asarray(ra_dec_points, dtype=np.float64)
     target = np.asarray(target_points, dtype=np.float64)
@@ -1147,10 +1255,14 @@ def fit_projection_sky_alignment(
         raise ValueError("已知投影匹配的 RA/Dec 点与目标点数量不一致。")
     if lens_model not in SKY_KNOWN_PROJECTION_MODELS:
         raise ValueError(f"不支持的已知投影模型：{lens_model}")
+    raw_point_weights = _fit_point_weights(sky_radec.shape[0], point_weights)
+    raw_anchor_mask = _residual_anchor_mask(sky_radec.shape[0], residual_anchor_mask)
 
     finite_mask = np.all(np.isfinite(sky_radec), axis=1) & np.all(np.isfinite(target), axis=1)
     sky_radec = sky_radec[finite_mask]
     target = target[finite_mask]
+    fit_weights = raw_point_weights[finite_mask]
+    anchor_mask = raw_anchor_mask[finite_mask]
     pair_count = int(sky_radec.shape[0])
     if pair_count < MIN_ALIGNMENT_PAIRS:
         raise ValueError(f"至少需要 {MIN_ALIGNMENT_PAIRS} 对参考星才能拟合已知投影。")
@@ -1167,8 +1279,15 @@ def fit_projection_sky_alignment(
         image_size=(image_width, image_height),
         fisheye_fov_deg=fisheye_fov_deg,
         initial_rotation_matrix=initial_rotation_matrix,
+        fit_weights=fit_weights,
     )
-    residual_correction = _fit_residual_correction(raw_projected, target, (image_width, image_height))
+    residual_correction = _fit_residual_correction(
+        raw_projected,
+        target,
+        (image_width, image_height),
+        anchor_mask=anchor_mask,
+        point_weights=fit_weights,
+    )
     residual_vectors = residual_correction.corrected_projected - target
     rms_px = float(np.sqrt(np.mean(np.sum(residual_vectors * residual_vectors, axis=1))))
     if not np.isfinite(rms_px):
@@ -1194,6 +1313,10 @@ def fit_projection_sky_alignment(
         residual_tps_weights_y=residual_correction.tps_weights_y.astype(np.float64),
         residual_tps_affine_x=residual_correction.tps_affine_x.astype(np.float64),
         residual_tps_affine_y=residual_correction.tps_affine_y.astype(np.float64),
+        residual_hard_anchor_count=residual_correction.hard_anchor_count,
+        residual_soft_constraint_count=residual_correction.soft_constraint_count,
+        residual_soft_weight_min=residual_correction.soft_weight_min,
+        residual_soft_weight_max=residual_correction.soft_weight_max,
         projection_rms_px=float(projection_rms),
         rms_px=rms_px,
     )

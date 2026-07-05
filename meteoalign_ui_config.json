@@ -13,7 +13,7 @@
   "default_latitude_deg": 40.0,
   "default_longitude_deg": 116.0,
   "default_elevation_m": 200.0,
-  "auto_match_default_mode": "mag_limit",
-  "auto_match_default_mag_limit": 4.0,
-  "auto_match_default_fixed_count": 200
+  "auto_match_default_new_count": 200,
+  "auto_match_default_constraint_mode": "soft",
+  "auto_match_default_soft_weight": 0.3
 }

@@ -8,6 +8,8 @@ import numpy as np
 
 from .alignment import (
     AnchorInterpolation2D,
+    FIT_WEIGHT_MAX,
+    FIT_WEIGHT_MIN,
     MIN_ALIGNMENT_PAIRS,
     ProjectionSkyAlignmentTransform,
     SKY_KNOWN_PROJECTION_MODELS,
@@ -34,6 +36,26 @@ def _finite_point_mask(*arrays: np.ndarray) -> np.ndarray:
     for array in arrays:
         mask &= np.all(np.isfinite(array), axis=1)
     return mask
+
+
+def _fit_point_weights(point_count: int, point_weights: np.ndarray | None) -> np.ndarray:
+    if point_weights is None:
+        return np.ones(point_count, dtype=np.float64)
+    weights = np.asarray(point_weights, dtype=np.float64).reshape(-1)
+    if weights.shape[0] != point_count:
+        raise ValueError("源图模型拟合权重数量必须与配对星数量一致。")
+    if not np.all(np.isfinite(weights)):
+        raise ValueError("源图模型拟合权重包含无效数值。")
+    return np.clip(weights, FIT_WEIGHT_MIN, FIT_WEIGHT_MAX).astype(np.float64)
+
+
+def _fit_anchor_mask(point_count: int, anchor_mask: np.ndarray | None) -> np.ndarray:
+    if anchor_mask is None:
+        return np.ones(point_count, dtype=bool)
+    mask = np.asarray(anchor_mask, dtype=bool).reshape(-1)
+    if mask.shape[0] != point_count:
+        raise ValueError("源图模型锚点标记数量必须与配对星数量一致。")
+    return mask.astype(bool)
 
 
 def _residual_summary(residual_vectors: np.ndarray) -> tuple[float, float, float]:
@@ -256,6 +278,10 @@ def _projection_transform_payload(transform: ProjectionSkyAlignmentTransform) ->
                 "scale_y_px": float(transform.residual_scale_y_px),
             },
             "anchor_count": int(transform.residual_anchor_points.shape[0]),
+            "hard_anchor_count": int(transform.residual_hard_anchor_count),
+            "soft_constraint_count": int(transform.residual_soft_constraint_count),
+            "soft_constraint_weight_min": float(transform.residual_soft_weight_min),
+            "soft_constraint_weight_max": float(transform.residual_soft_weight_max),
             "anchor_points_normalized": [
                 _as_float_list(row) for row in np.asarray(transform.residual_anchor_points, dtype=np.float64)
             ],
@@ -341,6 +367,8 @@ def fit_source_astrometric_model(
     matching_model: str = SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION,
     fisheye_fov_deg: float | None = None,
     initial_rotation_matrix: np.ndarray | None = None,
+    point_weights: np.ndarray | None = None,
+    residual_anchor_mask: np.ndarray | None = None,
 ) -> SourceAstrometricModel:
     sky_radec = np.asarray(ra_dec_points, dtype=np.float64)
     pixels = np.asarray(pixel_points, dtype=np.float64)
@@ -352,10 +380,14 @@ def fit_source_astrometric_model(
         raise ValueError("源图模型的 RA/Dec 点与像素点数量不一致。")
     if matching_model not in SKY_MATCHING_MODELS:
         raise ValueError(f"不支持的源图匹配模型：{matching_model}")
+    raw_point_weights = _fit_point_weights(sky_radec.shape[0], point_weights)
+    raw_anchor_mask = _fit_anchor_mask(sky_radec.shape[0], residual_anchor_mask)
 
     finite_mask = _finite_point_mask(sky_radec, pixels)
     sky_radec = sky_radec[finite_mask]
     pixels = pixels[finite_mask]
+    fit_weights = raw_point_weights[finite_mask]
+    anchor_mask = raw_anchor_mask[finite_mask]
     pair_count = int(sky_radec.shape[0])
     if pair_count < MIN_ALIGNMENT_PAIRS:
         raise ValueError(f"至少需要 {MIN_ALIGNMENT_PAIRS} 对星点才能生成源图映射。")
@@ -369,7 +401,12 @@ def fit_source_astrometric_model(
     if not np.all(np.isfinite(sky_plane)):
         raise ValueError("源图模型的天球平面坐标包含无效数值。")
 
-    pixel_to_sky_plane_interpolation = fit_anchor_interpolation(pixels, sky_plane)
+    pixel_to_sky_plane_interpolation = fit_anchor_interpolation(
+        pixels,
+        sky_plane,
+        anchor_mask=anchor_mask,
+        point_weights=fit_weights,
+    )
     sky_to_pixel_interpolation: AnchorInterpolation2D | None = None
     projection_transform: ProjectionSkyAlignmentTransform | None = None
     if matching_model in SKY_KNOWN_PROJECTION_MODELS:
@@ -380,11 +417,18 @@ def fit_source_astrometric_model(
             image_size=(image_width, image_height),
             fisheye_fov_deg=fisheye_fov_deg,
             initial_rotation_matrix=initial_rotation_matrix,
+            point_weights=fit_weights,
+            residual_anchor_mask=anchor_mask,
         )
         predicted_pixels = projection_transform.transform_radec_points(sky_radec)
         model_type = "known_projection_with_residual_interpolation"
     else:
-        sky_to_pixel_interpolation = fit_anchor_interpolation(sky_plane, pixels)
+        sky_to_pixel_interpolation = fit_anchor_interpolation(
+            sky_plane,
+            pixels,
+            anchor_mask=anchor_mask,
+            point_weights=fit_weights,
+        )
         predicted_pixels = sky_to_pixel_interpolation.evaluate_points(sky_plane)
         model_type = "local_sky_plane_anchor_interpolation"
     rms_px, median_px, max_px = _residual_summary(predicted_pixels - pixels)
