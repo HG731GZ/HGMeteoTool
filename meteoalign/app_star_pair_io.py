@@ -23,7 +23,7 @@ from .alignment import MIN_ALIGNMENT_PAIRS
 
 from .app_constants import (
     STAR_PAIR_SESSION_FORMAT, STAR_PAIR_SESSION_VERSION,
-    STAR_PAIR_SESSION_JSON_FILTER, SOURCE_MODEL_JSON_FILTER,
+    STAR_PAIR_SESSION_JSON_FILTER,
     STAR_PAIR_INDEX_COLUMN, STAR_PAIR_FIT_ROLE, STAR_PAIR_POSITION_ROLE,
     STAR_PAIR_CONSTRAINT_MODE_ROLE, STAR_PAIR_FIT_WEIGHT_ROLE,
     STAR_PAIR_ROW_TYPE_AUTO_MATCH, STAR_PAIR_ROW_TYPE_MANUAL,
@@ -227,8 +227,73 @@ class StarPairIOMixin:
         return groups
 
     def _default_star_pair_session_path(self) -> Path:
+        if self.current_image_preview is not None:
+            return self._star_pair_session_path_for_image(Path(self.current_image_preview.path))
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         return project_root() / "outputs" / f"star_pairs_{timestamp}.json"
+
+    def _star_pair_session_path_for_image(self, image_path: Path) -> Path:
+        resolved_path = Path(image_path).expanduser().resolve()
+        return resolved_path.with_name(f"{resolved_path.stem}_starpairs.json")
+
+    def _source_model_path_for_image(self, image_path: Path) -> Path:
+        resolved_path = Path(image_path).expanduser().resolve()
+        return resolved_path.with_name(f"{resolved_path.stem}_model.json")
+
+    def _existing_pair_count_from_json(self, json_path: Path, *, model_json: bool = False) -> int | None:
+        if not json_path.exists():
+            return None
+        try:
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 - 已有文件可能不是本程序生成的 JSON，覆盖提示里只做保守兜底。
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if model_json:
+            diagnostics = payload.get("diagnostics")
+            if isinstance(diagnostics, dict):
+                try:
+                    return int(diagnostics["pair_count"])
+                except (KeyError, TypeError, ValueError):
+                    pass
+            fit_pairs = payload.get("fit_pairs")
+            return len(fit_pairs) if isinstance(fit_pairs, list) else None
+        try:
+            return int(payload["pair_count"])
+        except (KeyError, TypeError, ValueError):
+            pairs = payload.get("pairs")
+            return len(pairs) if isinstance(pairs, list) else None
+
+    def _confirm_overwrite_if_existing_has_more_pairs(
+        self,
+        json_path: Path,
+        current_pair_count: int,
+        *,
+        model_json: bool = False,
+    ) -> bool:
+        existing_pair_count = self._existing_pair_count_from_json(json_path, model_json=model_json)
+        if existing_pair_count is None or existing_pair_count <= int(current_pair_count):
+            return True
+        reply = QMessageBox.question(
+            self,
+            "已有 JSON 配对更多",
+            (
+                f"已有文件包含 {existing_pair_count} 个配对，当前只有 {current_pair_count} 个配对。\n"
+                f"继续会覆盖：{json_path}\n\n是否仍然覆盖？"
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return reply == QMessageBox.Yes
+
+    def _maybe_auto_import_star_pair_session_for_image(self, image_path: Path) -> None:
+        if self._json_import_thread is not None:
+            return
+        json_path = self._star_pair_session_path_for_image(image_path)
+        if not json_path.exists():
+            return
+        self.ui.statusbar.showMessage(f"发现同名配对 JSON，正在自动导入: {json_path}")
+        self.load_star_pair_session(json_path)
 
     def _build_star_pair_session_payload(self, json_path: Path) -> dict[str, object]:
         if self.current_image_preview is None:
@@ -247,6 +312,7 @@ class StarPairIOMixin:
             "real_image": {
                 "path": str(image_path),
                 "relative_path": relative_image_path,
+                "file_name": image_path.name,
                 "original_width_px": preview.original_width,
                 "original_height_px": preview.original_height,
                 "display_width_px": preview.image.width(),
@@ -268,22 +334,14 @@ class StarPairIOMixin:
 
         default_path = self._default_star_pair_session_path()
         default_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path, _selected_filter = QFileDialog.getSaveFileName(
-            self,
-            "导出星点配对 JSON",
-            str(default_path),
-            STAR_PAIR_SESSION_JSON_FILTER,
-        )
-        if not file_path:
-            return
-
-        json_path = Path(file_path)
-        if not json_path.suffix:
-            json_path = json_path.with_suffix(".json")
+        json_path = default_path
         try:
             payload = self._build_star_pair_session_payload(json_path)
-            json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             pair_count = int(payload.get("pair_count", 0))
+            if not self._confirm_overwrite_if_existing_has_more_pairs(json_path, pair_count):
+                self.ui.statusbar.showMessage("已取消导出星点配对 JSON。")
+                return
+            json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             self.ui.statusbar.showMessage(f"已导出星点配对 JSON: {json_path}  配对数: {pair_count}")
             QMessageBox.information(self, "配对 JSON 已导出", f"JSON：{json_path}\n配对数：{pair_count}")
         except Exception as exc:  # noqa: BLE001 - 导出入口需要把文件和字段错误直接反馈给用户。
@@ -291,6 +349,8 @@ class StarPairIOMixin:
             QMessageBox.critical(self, "导出星点配对 JSON 失败", str(exc))
 
     def _default_source_model_path(self) -> Path:
+        if self.current_image_preview is not None:
+            return self._source_model_path_for_image(Path(self.current_image_preview.path))
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         return project_root() / "outputs" / f"source_model_{timestamp}.json"
 
@@ -302,6 +362,7 @@ class StarPairIOMixin:
         return {
             "path": str(image_path),
             "relative_path": _relative_image_path_for_session(image_path, json_path),
+            "file_name": image_path.name,
             "original_width_px": preview.original_width,
             "original_height_px": preview.original_height,
             "model_width_px": preview.image.width(),
@@ -363,24 +424,16 @@ class StarPairIOMixin:
 
         default_path = self._default_source_model_path()
         default_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path, _selected_filter = QFileDialog.getSaveFileName(
-            self,
-            "导出 xy→RA/Dec 映射 JSON",
-            str(default_path),
-            SOURCE_MODEL_JSON_FILTER,
-        )
-        if not file_path:
-            return
-
-        json_path = Path(file_path)
-        if not json_path.suffix:
-            json_path = json_path.with_suffix(".json")
+        json_path = default_path
         try:
             payload = self._build_source_model_payload(json_path)
-            json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             diagnostics = payload.get("diagnostics", {})
             pair_count = int(diagnostics.get("pair_count", 0)) if isinstance(diagnostics, dict) else 0
             rms_px = float(diagnostics.get("rms_px", float("nan"))) if isinstance(diagnostics, dict) else float("nan")
+            if not self._confirm_overwrite_if_existing_has_more_pairs(json_path, pair_count, model_json=True):
+                self.ui.statusbar.showMessage("已取消导出 xy→RA/Dec 映射 JSON。")
+                return
+            json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
             self.ui.statusbar.showMessage(
                 f"已导出 xy→RA/Dec 映射 JSON: {json_path}  配对数: {pair_count}  RMS: {rms_px:.2f}px"
             )

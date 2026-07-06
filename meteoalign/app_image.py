@@ -195,6 +195,8 @@ class ImageMixin:
                 height=preview.original_height,
             )
         )
+        if clear_existing_pairs and hasattr(self, "_maybe_auto_import_star_pair_session_for_image"):
+            self._maybe_auto_import_star_pair_session_for_image(Path(preview.path))
 
     def _handle_single_image_import_finished(self, preview: object) -> None:
         if self._image_import_progress is not None:
