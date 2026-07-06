@@ -350,6 +350,7 @@ class MainWindow(
         self.ui.tableWidgetStarPairs.cellDoubleClicked.connect(self._handle_star_pair_cell_double_clicked)
         self.ui.tableWidgetStarPairs.horizontalHeader().sectionClicked.connect(self._handle_star_pair_header_clicked)
         self.ui.tableWidgetStarPairs.installEventFilter(self)
+        self.ui.tableWidgetStarPairs.viewport().installEventFilter(self)
         self.ui.labelImportedImagePath.installEventFilter(self)
         self.ui.labelSkyMaskStatus.installEventFilter(self)
         self.ui.labelAlignmentTransformStatus.installEventFilter(self)

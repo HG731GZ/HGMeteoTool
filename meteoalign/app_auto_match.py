@@ -51,6 +51,7 @@ class AutoMatchMixin:
     _reference_alignment_error_message: object
     _build_aligned_reference_star_map: object  # method
     _reference_selection_star_map: object  # method
+    _focus_star_pair_image_point: object  # method
 
     def _scene_radius_from_screen_radius(
         self,
@@ -249,6 +250,12 @@ class AutoMatchMixin:
                 f"{self._star_pair_label(row)} 的预测位置在真实图像外，无法自动配对。"
             )
             return
+
+        self._focus_star_pair_image_point(row, predicted_x, predicted_y)
+        self.ui.statusbar.showMessage(
+            f"已跳转到 {self._star_pair_label(row)} 的自动配对预测位置，正在搜索真实星点..."
+        )
+        QApplication.processEvents()
 
         search_radius_px = self._auto_pair_search_radius_px(transform)
         try:

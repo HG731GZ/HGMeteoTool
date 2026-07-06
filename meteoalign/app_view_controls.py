@@ -134,9 +134,13 @@ class ViewControlsMixin:
             if event.type() in (QEvent.Resize, QEvent.Show):
                 QTimer.singleShot(0, lambda label=watched: self._refresh_elided_label(label))
             return False
-        if watched is self.ui.tableWidgetStarPairs and event.type() == QEvent.KeyPress:
-            if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+        if watched is self.ui.tableWidgetStarPairs:
+            if event.type() == QEvent.KeyPress and event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
                 return self._handle_star_pair_delete_key()
+            if event.type() == QEvent.Wheel:
+                return self._handle_star_pair_table_wheel(event)
+        if watched is self.ui.tableWidgetStarPairs.viewport() and event.type() == QEvent.Wheel:
+            return self._handle_star_pair_table_wheel(event)
         if watched is self.ui.starMapView.viewport():
             if bool(getattr(self, "_simulator_controls_locked", False)):
                 if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
@@ -347,6 +351,45 @@ class ViewControlsMixin:
             self._star_pick_native_zoom_remainder -= wheel_steps
             self._adjust_star_pick_circle_diameter(wheel_steps)
         return True
+
+    def _handle_star_pair_table_wheel(self, event) -> bool:  # type: ignore[no-untyped-def]
+        table = self.ui.tableWidgetStarPairs
+        pixel_delta = event.pixelDelta()
+        angle_delta = event.angleDelta()
+
+        vertical_delta = float(pixel_delta.y())
+        horizontal_delta = float(pixel_delta.x())
+        if abs(vertical_delta) <= 0.0 and angle_delta.y() != 0:
+            vertical_delta = (
+                float(angle_delta.y())
+                / 120.0
+                * max(1, QApplication.wheelScrollLines())
+                * max(1, table.verticalScrollBar().singleStep())
+            )
+        if abs(horizontal_delta) <= 0.0 and angle_delta.x() != 0:
+            horizontal_delta = (
+                float(angle_delta.x())
+                / 120.0
+                * max(1, QApplication.wheelScrollLines())
+                * max(1, table.horizontalScrollBar().singleStep())
+            )
+
+        if event.modifiers() & Qt.ShiftModifier and abs(horizontal_delta) <= 0.0:
+            horizontal_delta = vertical_delta
+            vertical_delta = 0.0
+
+        self._apply_scrollbar_wheel_delta(table.verticalScrollBar(), vertical_delta)
+        self._apply_scrollbar_wheel_delta(table.horizontalScrollBar(), horizontal_delta)
+        event.accept()
+        return True
+
+    def _apply_scrollbar_wheel_delta(self, scroll_bar, wheel_delta: float) -> None:  # type: ignore[no-untyped-def]
+        if abs(wheel_delta) <= 1e-6:
+            return
+        current_value = int(scroll_bar.value())
+        target_value = current_value - int(round(wheel_delta))
+        target_value = min(max(target_value, int(scroll_bar.minimum())), int(scroll_bar.maximum()))
+        scroll_bar.setValue(target_value)
 
     def _graphics_view_current_scale(self, view: QGraphicsView) -> float:
         transform = view.transform()

@@ -1149,6 +1149,8 @@ class StarPairTableMixin:
         if not star_id:
             return
 
+        # 真实星点位置一旦确认，就用黄色配对标注替代临时的蓝色聚焦提示。
+        self._clear_focused_star_annotations()
         self._remove_star_pair_annotation(star_id)
         radius = self._star_pair_annotation_radius_px(fitted_position)
         ellipse_item = QGraphicsEllipseItem(
@@ -1269,6 +1271,21 @@ class StarPairTableMixin:
         if self.ui.checkBoxSyncReferenceAndRealView.isEnabled() and not self.ui.checkBoxSyncReferenceAndRealView.isChecked():
             self.ui.checkBoxSyncReferenceAndRealView.setChecked(True)
 
+    def _focus_star_pair_image_point(self, row: int, image_x: float, image_y: float) -> None:
+        if self._active_star_pair_row is not None:
+            self._leave_star_pick_mode()
+        self.ui.tabWidgetMain.setCurrentWidget(self.ui.tabReferenceImage)
+        focus_point = QPointF(float(image_x), float(image_y))
+        focus_label = self._star_pair_label(row)
+
+        self._set_reference_real_sync_checked()
+        self._set_focus_base_annotations_hidden()
+        self._update_reference_alignment_display()
+        self._focus_reference_real_views_on_point(focus_point)
+        self._create_focus_annotation_items(self.reference_scene, focus_point, focus_label)
+        self._create_focus_annotation_items(self.real_image_scene, focus_point, focus_label)
+        self.ui.tableWidgetStarPairs.selectRow(row)
+
     def _focus_star_pair_theoretical_position(self, row: int) -> None:
         matched_count = self._star_pair_position_count()
         if matched_count < STAR_PAIR_FOCUS_MIN_MATCHED_COUNT:
@@ -1303,19 +1320,8 @@ class StarPairTableMixin:
             self.ui.statusbar.showMessage(f"{self._star_pair_label(row)} 的理论位置在真实图像外。")
             return
 
-        if self._active_star_pair_row is not None:
-            self._leave_star_pick_mode()
-        self.ui.tabWidgetMain.setCurrentWidget(self.ui.tabReferenceImage)
-        focus_point = QPointF(float(predicted_x), float(predicted_y))
         focus_label = self._star_pair_label(row)
-
-        self._set_reference_real_sync_checked()
-        self._set_focus_base_annotations_hidden()
-        self._update_reference_alignment_display()
-        self._focus_reference_real_views_on_point(focus_point)
-        self._create_focus_annotation_items(self.reference_scene, focus_point, focus_label)
-        self._create_focus_annotation_items(self.real_image_scene, focus_point, focus_label)
-        self.ui.tableWidgetStarPairs.selectRow(row)
+        self._focus_star_pair_image_point(row, predicted_x, predicted_y)
         self.ui.statusbar.showMessage(
             f"已聚焦 {focus_label} 的理论位置: x={predicted_x:.2f}, y={predicted_y:.2f}。切换标注选项可重置标注显示。"
         )

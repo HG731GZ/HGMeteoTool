@@ -148,6 +148,6 @@ STAR_ANNOTATION_MAX_RADIUS_PX = 80.0
 # 聚焦与双击
 # ---------------------------------------------------------------------------
 
-STAR_PAIR_FOCUS_MIN_MATCHED_COUNT = 6
+STAR_PAIR_FOCUS_MIN_MATCHED_COUNT = 4
 STAR_PAIR_FOCUS_ZOOM_FIT_SCALE = 8.0
 STAR_PAIR_FOCUS_MARKER_RADIUS_PX = 24.0
