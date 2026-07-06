@@ -413,6 +413,7 @@ class AlignmentMixin:
     def _update_reference_alignment_controls(self) -> None:
         has_alignment = self._sky_alignment_transform is not None and self.current_image_preview is not None
         has_source_model = self._source_astrometric_model is not None and self.current_image_preview is not None
+        has_export_model = has_alignment
         self.ui.checkBoxOverlayReferenceMap.setEnabled(has_alignment)
         self.ui.labelReferenceOverlayOpacityTitle.setEnabled(True)
         self.ui.doubleSpinBoxReferenceOverlayOpacity.setEnabled(True)
@@ -426,8 +427,8 @@ class AlignmentMixin:
             self.ui.checkBoxShowSkyMask.setChecked(False)
             self.ui.checkBoxShowSkyMask.blockSignals(was_blocked)
         self.ui.pushButtonAutoMatchFieldStars.setEnabled(has_alignment)
-        self.ui.pushButtonValidateMapping.setEnabled(has_source_model)
-        self.ui.pushButtonExportSourceModel.setEnabled(has_source_model)
+        self.ui.pushButtonValidateMapping.setEnabled(has_export_model)
+        self.ui.pushButtonExportSourceModel.setEnabled(has_export_model)
         if not has_alignment and self.ui.checkBoxSyncReferenceAndRealView.isChecked():
             self.ui.checkBoxSyncReferenceAndRealView.blockSignals(True)
             self.ui.checkBoxSyncReferenceAndRealView.setChecked(False)
@@ -435,11 +436,7 @@ class AlignmentMixin:
 
         sky_transform = self._sky_alignment_transform
         if sky_transform is not None:
-            source_model_text = ""
-            if self._source_astrometric_model is not None:
-                source_model_text = f"，映射可导出"
-            elif self._source_model_error_message:
-                source_model_text = "，映射未就绪"
+            source_model_text = "，映射验证可用，模型可导出"
             distances = self._alignment_residual_distances()
             compact_summary = ""
             residual_summary = "暂无逐星残差"

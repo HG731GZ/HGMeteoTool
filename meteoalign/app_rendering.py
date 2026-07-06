@@ -68,6 +68,7 @@ class RenderingMixin:
     ui_config: object
     render_timer: QTimer
     _manual_reference_star_ids: list
+    _imported_reference_star_by_id: dict
     _auto_match_reference_star_ids: list
     _excluded_reference_star_ids: list
     current_image_preview: ImagePreview | None
@@ -189,6 +190,7 @@ class RenderingMixin:
             ordered_stars.append(star)
 
         manual_lookup = self._projected_reference_star_lookup(star_map)
+        imported_lookup = getattr(self, "_imported_reference_star_by_id", {})
 
         def append_lookup_star(
             star_id: str,
@@ -204,6 +206,8 @@ class RenderingMixin:
             if not keep_if_excluded and star_id in excluded_star_ids:
                 return
             lookup_star = manual_lookup.get(star_id)
+            if lookup_star is None:
+                lookup_star = imported_lookup.get(star_id)
             if lookup_star is None:
                 return
             seen_star_ids.add(star_id)

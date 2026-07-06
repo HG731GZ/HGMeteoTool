@@ -237,6 +237,7 @@ class MainWindow(
         self._simulator_controls_locked = False
         self._manual_match_group_expanded = True
         self._manual_reference_star_ids: list[str] = []
+        self._imported_reference_star_by_id: dict[str, ReferenceStar] = {}
         self._auto_match_reference_star_ids: list[str] = []
         self._auto_match_constraint_by_star_id: dict[str, tuple[str, float]] = {}
         self._auto_match_group_order: list[str] = []
@@ -252,6 +253,7 @@ class MainWindow(
         self.current_sky_masked_image: QImage | None = None
         self._image_sequence_items = []
         self._sequence_processing_active = False
+        self._preserve_sequence_on_next_image_load = False
 
         self._init_defaults()
         self._connect_inputs()

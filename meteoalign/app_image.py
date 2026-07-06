@@ -32,6 +32,13 @@ class ImageMixin:
     current_sky_mask: np.ndarray | None
     current_sky_mask_path: Path | None
     current_sky_masked_image: QImage | None
+    _preserve_sequence_on_next_image_load: bool
+    _sky_alignment_transform: object | None
+    _source_astrometric_model: object | None
+    _reference_alignment_error_message: str
+    _sky_alignment_error_message: str
+    _source_model_error_message: str
+    _mapping_validation_dialog: object | None
     real_image_item: object
     real_image_scene: object
 
@@ -123,12 +130,13 @@ class ImageMixin:
             return
         self.start_single_image_import(file_path)
 
-    def start_single_image_import(self, file_path: str | Path) -> None:
+    def start_single_image_import(self, file_path: str | Path, *, preserve_sequence_status: bool = False) -> None:
         if self._image_import_thread is not None:
             QMessageBox.information(self, "正在导入图像", "当前已有图像正在导入，请稍候。")
             return
 
         image_path = Path(file_path)
+        self._preserve_sequence_on_next_image_load = bool(preserve_sequence_status)
         self._set_image_import_controls_enabled(False)
         self.ui.statusbar.showMessage(f"正在读取整张图像并量化为 8-bit: {image_path}")
 
@@ -168,6 +176,23 @@ class ImageMixin:
             self.ui.statusbar.showMessage(f"导入图像失败: {exc}")
             QMessageBox.critical(self, "导入图像失败", str(exc))
 
+    def _reset_image_import_results(self, *, preserve_sequence_status: bool) -> None:
+        if not preserve_sequence_status and hasattr(self, "_reset_image_sequence_status"):
+            self._reset_image_sequence_status()
+        self._reset_sky_mask_status()
+        self._sky_alignment_transform = None
+        self._source_astrometric_model = None
+        self._reference_alignment_error_message = ""
+        self._sky_alignment_error_message = ""
+        self._source_model_error_message = ""
+        dialog = getattr(self, "_mapping_validation_dialog", None)
+        if dialog is not None:
+            try:
+                dialog.close()
+            except RuntimeError:
+                pass
+            self._mapping_validation_dialog = None
+
     def _set_image_import_controls_enabled(self, enabled: bool) -> None:
         self.ui.pushButtonImportSingleImage.setEnabled(enabled)
         self.ui.pushButtonImportImageSequence.setEnabled(enabled)
@@ -183,10 +208,14 @@ class ImageMixin:
         self.ui.pushButtonClearStarPairs.setEnabled(enabled)
 
     def _apply_loaded_image_preview(self, preview: ImagePreview, clear_existing_pairs: bool = True) -> None:
+        preserve_sequence_status = bool(getattr(self, "_preserve_sequence_on_next_image_load", False))
+        self._preserve_sequence_on_next_image_load = False
         if clear_existing_pairs:
             self._clear_star_pair_positions_for_new_input("新的真实图像")
+            self._reset_image_import_results(preserve_sequence_status=preserve_sequence_status)
         self.current_image_preview = preview
-        self._clear_sky_mask_if_size_mismatch(preview.image.width(), preview.image.height())
+        if not clear_existing_pairs:
+            self._clear_sky_mask_if_size_mismatch(preview.image.width(), preview.image.height())
         self._display_real_image_preview(preview)
         self.ui.tabWidgetMain.setCurrentWidget(self.ui.tabReferenceImage)
         self._update_imported_image_labels(preview)
@@ -203,6 +232,10 @@ class ImageMixin:
         )
         if clear_existing_pairs and not skip_auto_import and hasattr(self, "_maybe_auto_import_star_pair_session_for_image"):
             self._maybe_auto_import_star_pair_session_for_image(Path(preview.path))
+        if hasattr(self, "_update_reference_alignment_controls"):
+            self._update_reference_alignment_controls()
+        if hasattr(self, "_update_image_sequence_controls"):
+            self._update_image_sequence_controls()
 
     def _handle_single_image_import_finished(self, preview: object) -> None:
         if self._image_import_progress is not None:
@@ -210,6 +243,7 @@ class ImageMixin:
         self._apply_loaded_image_preview(preview)  # type: ignore[arg-type]
 
     def _handle_single_image_import_failed(self, error_message: str) -> None:
+        self._preserve_sequence_on_next_image_load = False
         if self._image_import_progress is not None:
             self._image_import_progress.close()
         self.ui.statusbar.showMessage(f"导入图像失败: {error_message}")

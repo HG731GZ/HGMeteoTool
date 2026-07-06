@@ -3,15 +3,20 @@ from .app_constants import *
 
 import json
 import math
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
 from PyQt5.QtCore import QDateTime, Qt
 from PyQt5.QtWidgets import QApplication, QFileDialog, QMessageBox, QProgressDialog
 
-from .alignment import MIN_ALIGNMENT_PAIRS, ReferenceAlignmentTransform, fit_reference_alignment
+from .alignment import (
+    MIN_ALIGNMENT_PAIRS,
+    SKY_KNOWN_PROJECTION_MODELS,
+    SKY_MATCHING_MODEL_FISHEYE_EQUISOLID,
+    SKY_MATCHING_MODEL_RECTILINEAR,
+)
 from .app_auto_match import AUTO_MATCH_MIN_ALTITUDE_DEG
 from .app_constants import (
     AUTO_MATCH_CONSTRAINT_SOFT,
@@ -20,7 +25,14 @@ from .app_constants import (
     AUTO_MATCH_SEARCH_MAG_LIMIT,
 )
 from .app_utils import _relative_image_path_for_session
-from .coordinates import radec_to_unit_vectors
+from .fixed_camera_model import (
+    FIXED_CAMERA_MODEL_FORMAT,
+    FIXED_CAMERA_MODEL_VERSION,
+    FixedCameraModel,
+    FixedCameraTimeFitResult,
+    estimate_frame_time_correction,
+    fit_fixed_camera_model,
+)
 from .image_preview import IMAGE_FILE_FILTER, ImagePreview, load_image_preview
 from .image_sequence import (
     ImageSequenceItem,
@@ -32,6 +44,7 @@ from .image_sequence import (
 )
 from .reference import build_reference_payload
 from .simulator import (
+    FISHEYE_EQUISOLID,
     ObserverSettings,
     ProjectedStarMap,
     ReferenceStar,
@@ -39,8 +52,15 @@ from .simulator import (
     local_vectors_from_altaz,
     project_horizontal_catalog,
 )
-from .source_model import SourceAstrometricModel, fit_source_astrometric_model
+from .source_model import SourceAstrometricModel
 from .star_fitting import FittedStarPosition, fit_star_position
+
+
+SEQUENCE_MIN_PAIR_FRACTION = 0.80
+SEQUENCE_FILL_GRID_COLUMNS = 5
+SEQUENCE_FILL_GRID_ROWS = 4
+SEQUENCE_SUPPLEMENTAL_FIT_WEIGHT = 0.5
+SEQUENCE_SUPPLEMENTAL_PAIR_ORIGIN = "auto_match"
 
 
 @dataclass(frozen=True)
@@ -61,6 +81,13 @@ class _SequenceCandidate:
 
 
 @dataclass(frozen=True)
+class _SequenceFitPlan:
+    candidate: _SequenceCandidate
+    fit_weight: float
+    pair_origin: str
+
+
+@dataclass(frozen=True)
 class _SequenceMatchedPair:
     reference_star: ReferenceStar
     fitted_position: FittedStarPosition
@@ -71,6 +98,9 @@ class _SequenceMatchedPair:
     predicted_y_px: float | None = None
     search_x_px: float | None = None
     search_y_px: float | None = None
+    initial_predicted_x_px: float | None = None
+    initial_predicted_y_px: float | None = None
+    time_delta_seconds: float | None = None
     adaptive_offset_x_px: float = 0.0
     adaptive_offset_y_px: float = 0.0
 
@@ -81,6 +111,7 @@ class SequenceBatchMixin:
     ui: object
     _image_sequence_items: list[ImageSequenceItem]
     _sequence_processing_active: bool
+    _preserve_sequence_on_next_image_load: bool
     _current_star_map: ProjectedStarMap | None
     _source_astrometric_model: SourceAstrometricModel | None
     current_image_preview: ImagePreview | None
@@ -206,7 +237,7 @@ class SequenceBatchMixin:
         self.ui.statusbar.showMessage(
             f"已导入序列 {len(items)} 张，第一张将作为匹配基准: {items[0].path}"
         )
-        self.start_single_image_import(items[0].path)
+        self.start_single_image_import(items[0].path, preserve_sequence_status=True)
 
     def _rejected_sequence_summary(self, rejected: list[RejectedSequenceImage], limit: int = 10) -> str:
         lines = [f"{item.path.name}: {item.reason}" for item in rejected[:limit]]
@@ -280,6 +311,12 @@ class SequenceBatchMixin:
             raise ValueError(f"第一张图只有 {len(templates)} 个有效恒星配对，至少需要 {MIN_ALIGNMENT_PAIRS} 个。")
         return templates
 
+    def _sequence_pair_targets(self, templates: list[_SequencePairTemplate]) -> tuple[int, int]:
+        base_count = len(templates)
+        minimum_count = max(MIN_ALIGNMENT_PAIRS, int(math.ceil(base_count * SEQUENCE_MIN_PAIR_FRACTION)))
+        desired_count = max(minimum_count, base_count)
+        return minimum_count, desired_count
+
     def _sequence_source_size(self) -> tuple[int, int]:
         if self._current_star_map is None:
             self.render_now()
@@ -287,46 +324,59 @@ class SequenceBatchMixin:
             raise ValueError("当前参考星图尚未生成，无法推算序列理论位置。")
         return int(self._current_star_map.width), int(self._current_star_map.height)
 
-    def _fit_sequence_sim_to_real_transform(
-        self,
-        templates: list[_SequencePairTemplate],
-        source_size: tuple[int, int],
-        target_size: tuple[int, int],
-    ) -> ReferenceAlignmentTransform:
-        source_points = np.asarray(
-            [(item.reference_star.sim_x, item.reference_star.sim_y) for item in templates],
-            dtype=np.float64,
-        )
-        target_points = np.asarray(
-            [(item.fitted_position.x, item.fitted_position.y) for item in templates],
-            dtype=np.float64,
-        )
-        return fit_reference_alignment(
-            source_points=source_points,
-            target_points=target_points,
-            source_size=source_size,
-            target_size=target_size,
+    def _sequence_nominal_time_utc(self, item: ImageSequenceItem) -> datetime:
+        return sequence_item_observation_time_utc(item, self.ui.doubleSpinBoxUtcOffset.value())
+
+    def _sequence_time_with_delta(self, item: ImageSequenceItem, delta_seconds: float) -> datetime:
+        return self._sequence_nominal_time_utc(item) + timedelta(seconds=float(delta_seconds))
+
+    def _sequence_observer_for_item(self, item: ImageSequenceItem, delta_seconds: float = 0.0) -> ObserverSettings:
+        return ObserverSettings(
+            observation_time_utc=self._sequence_time_with_delta(item, delta_seconds),
+            latitude_deg=self.ui.doubleSpinBoxLatitude.value(),
+            longitude_deg=self.ui.doubleSpinBoxLongitude.value(),
+            elevation_m=self.ui.doubleSpinBoxElevation.value(),
         )
 
-    def _fit_sequence_pairs_sim_to_real_transform(
+    def _sequence_fixed_lens_model(self, target_size: tuple[int, int]) -> str:
+        selected_model = self._alignment_model()
+        if selected_model in SKY_KNOWN_PROJECTION_MODELS:
+            return selected_model
+
+        # 序列固定相机模型必须有物理基础投影；交互标定仍可继续使用普适锚点插值。
+        camera = self._camera_settings_for_image_size(target_size[0], target_size[1])
+        if camera.lens_model == FISHEYE_EQUISOLID:
+            return SKY_MATCHING_MODEL_FISHEYE_EQUISOLID
+        return SKY_MATCHING_MODEL_RECTILINEAR
+
+    def _fit_sequence_fixed_camera_model(
         self,
-        pairs: list[_SequenceMatchedPair],
-        source_size: tuple[int, int],
+        templates: list[_SequencePairTemplate],
         target_size: tuple[int, int],
-    ) -> ReferenceAlignmentTransform:
-        source_points = np.asarray(
-            [(item.reference_star.sim_x, item.reference_star.sim_y) for item in pairs],
+    ) -> FixedCameraModel:
+        local_vectors = local_vectors_from_altaz(
+            np.asarray([template.reference_star.alt_deg for template in templates], dtype=np.float64),
+            np.asarray([template.reference_star.az_deg for template in templates], dtype=np.float64),
+        )
+        pixel_points = np.asarray(
+            [(template.fitted_position.x, template.fitted_position.y) for template in templates],
             dtype=np.float64,
         )
-        target_points = np.asarray(
-            [(item.fitted_position.x, item.fitted_position.y) for item in pairs],
-            dtype=np.float64,
+        point_weights = np.asarray([template.fit_weight for template in templates], dtype=np.float64)
+        anchor_mask = np.asarray(
+            [template.fit_constraint_mode != AUTO_MATCH_CONSTRAINT_SOFT for template in templates],
+            dtype=bool,
         )
-        return fit_reference_alignment(
-            source_points=source_points,
-            target_points=target_points,
-            source_size=source_size,
-            target_size=target_size,
+        initial_rotation_matrix = np.vstack(camera_basis_from_view(self._view_settings())).astype(np.float64)
+        return fit_fixed_camera_model(
+            enu_vectors=local_vectors,
+            pixel_points=pixel_points,
+            image_size=target_size,
+            lens_model=self._sequence_fixed_lens_model(target_size),
+            initial_rotation_matrix=initial_rotation_matrix,
+            fisheye_fov_deg=None,
+            point_weights=point_weights,
+            residual_anchor_mask=anchor_mask,
         )
 
     def _sequence_projected_star_map(
@@ -335,12 +385,7 @@ class SequenceBatchMixin:
         source_size: tuple[int, int],
         visible_mag_limit: float,
     ) -> ProjectedStarMap:
-        observer = ObserverSettings(
-            observation_time_utc=sequence_item_observation_time_utc(item, self.ui.doubleSpinBoxUtcOffset.value()),
-            latitude_deg=self.ui.doubleSpinBoxLatitude.value(),
-            longitude_deg=self.ui.doubleSpinBoxLongitude.value(),
-            elevation_m=self.ui.doubleSpinBoxElevation.value(),
-        )
+        observer = self._sequence_observer_for_item(item)
         camera = self._camera_settings_for_image_size(source_size[0], source_size[1])
         horizontal_catalog = self._get_horizontal_catalog(observer, visible_mag_limit)
         return project_horizontal_catalog(
@@ -352,14 +397,18 @@ class SequenceBatchMixin:
 
     def _sequence_candidate_stars(
         self,
-        star_map: ProjectedStarMap,
-        sim_to_real: ReferenceAlignmentTransform,
+        item: ImageSequenceItem,
+        fixed_model: FixedCameraModel,
         target_size: tuple[int, int],
+        initial_delta_seconds: float,
+        visible_mag_limit: float,
     ) -> list[_SequenceCandidate]:
-        if len(star_map) <= 0:
+        observer = self._sequence_observer_for_item(item, initial_delta_seconds)
+        horizontal_catalog = self._get_horizontal_catalog(observer, visible_mag_limit)
+        if len(horizontal_catalog) <= 0:
             return []
-        sim_points = np.column_stack((star_map.x_px, star_map.y_px))
-        predicted = sim_to_real.transform_points(sim_points)
+        local_vectors = local_vectors_from_altaz(horizontal_catalog.alt_deg, horizontal_catalog.az_deg)
+        predicted = fixed_model.project_enu_vectors(local_vectors)
         width_px, height_px = target_size
         finite = np.all(np.isfinite(predicted), axis=1)
         inside = (
@@ -368,10 +417,10 @@ class SequenceBatchMixin:
             & (predicted[:, 0] < width_px)
             & (predicted[:, 1] >= 0.0)
             & (predicted[:, 1] < height_px)
-            & (star_map.alt_deg >= AUTO_MATCH_MIN_ALTITUDE_DEG)
+            & (horizontal_catalog.alt_deg >= AUTO_MATCH_MIN_ALTITUDE_DEG)
         )
         if self.current_sky_mask is not None:
-            mask_allowed = np.zeros(len(star_map), dtype=bool)
+            mask_allowed = np.zeros(len(horizontal_catalog), dtype=bool)
             for index in np.where(inside)[0]:
                 mask_allowed[index] = self._sky_mask_allows_point(
                     float(predicted[index, 0]),
@@ -382,12 +431,28 @@ class SequenceBatchMixin:
         candidate_indices = np.where(inside)[0]
         if candidate_indices.size <= 0:
             return []
-        candidate_indices = candidate_indices[np.argsort(star_map.mag_v[candidate_indices], kind="stable")]
+        candidate_indices = candidate_indices[np.argsort(horizontal_catalog.mag_v[candidate_indices], kind="stable")]
 
         candidates: list[_SequenceCandidate] = []
         seen_star_ids: set[str] = set()
         for star_index in candidate_indices:
-            reference_star = self._reference_star_from_star_map_index(star_map, int(star_index), output_index=0)
+            star_id = str(horizontal_catalog.star_ids[star_index]).strip()
+            display_name = str(horizontal_catalog.display_names[star_index]).strip()
+            common_name = str(horizontal_catalog.common_names[star_index]).strip()
+            reference_star = ReferenceStar(
+                index=0,
+                star_id=star_id,
+                name=common_name or display_name or star_id,
+                display_name=display_name,
+                common_name=common_name,
+                ra_deg=float(horizontal_catalog.ra_deg[star_index]),
+                dec_deg=float(horizontal_catalog.dec_deg[star_index]),
+                mag_v=float(horizontal_catalog.mag_v[star_index]),
+                sim_x=float(predicted[star_index, 0]),
+                sim_y=float(predicted[star_index, 1]),
+                alt_deg=float(horizontal_catalog.alt_deg[star_index]),
+                az_deg=float(horizontal_catalog.az_deg[star_index]),
+            )
             star_id = reference_star.star_id.strip()
             if not star_id or star_id in seen_star_ids:
                 continue
@@ -416,21 +481,15 @@ class SequenceBatchMixin:
         templates: list[_SequencePairTemplate],
         mode: str,
         used_star_ids: set[str],
-    ) -> list[_SequenceCandidate]:
+    ) -> list[tuple[_SequenceCandidate, _SequencePairTemplate]]:
         candidates_by_id = {candidate.reference_star.star_id.strip(): candidate for candidate in candidates}
-        ordered: list[_SequenceCandidate] = []
+        ordered: list[tuple[_SequenceCandidate, _SequencePairTemplate]] = []
         appended: set[str] = set()
         for template in self._sequence_templates_by_mode(templates, mode):
             star_id = template.star_id
             candidate = candidates_by_id.get(star_id)
             if candidate is not None and star_id not in used_star_ids and star_id not in appended:
-                ordered.append(candidate)
-                appended.add(star_id)
-
-        for candidate in candidates:
-            star_id = candidate.reference_star.star_id.strip()
-            if star_id and star_id not in used_star_ids and star_id not in appended:
-                ordered.append(candidate)
+                ordered.append((candidate, template))
                 appended.add(star_id)
         return ordered
 
@@ -456,15 +515,91 @@ class SequenceBatchMixin:
         median_offset = np.median(offset_array[finite], axis=0)
         return float(median_offset[0]), float(median_offset[1])
 
-    def _fit_sequence_candidates_for_mode(
+    def _sequence_spatial_cell_index(
+        self,
+        x_px: float,
+        y_px: float,
+        target_size: tuple[int, int],
+    ) -> int:
+        width_px = max(float(target_size[0]), 1.0)
+        height_px = max(float(target_size[1]), 1.0)
+        column = int(np.clip(math.floor(float(x_px) / width_px * SEQUENCE_FILL_GRID_COLUMNS), 0, SEQUENCE_FILL_GRID_COLUMNS - 1))
+        row = int(np.clip(math.floor(float(y_px) / height_px * SEQUENCE_FILL_GRID_ROWS), 0, SEQUENCE_FILL_GRID_ROWS - 1))
+        return row * SEQUENCE_FILL_GRID_COLUMNS + column
+
+    def _sequence_spatial_cell_counts(
+        self,
+        positions: list[tuple[float, float]],
+        target_size: tuple[int, int],
+    ) -> dict[int, int]:
+        counts: dict[int, int] = {}
+        for x_px, y_px in positions:
+            if not math.isfinite(x_px) or not math.isfinite(y_px):
+                continue
+            cell_index = self._sequence_spatial_cell_index(x_px, y_px, target_size)
+            counts[cell_index] = counts.get(cell_index, 0) + 1
+        return counts
+
+    def _sequence_order_supplemental_candidates(
+        self,
+        candidates: list[_SequenceCandidate],
+        *,
+        used_star_ids: set[str],
+        attempted_star_ids: set[str],
+        accepted_positions: list[tuple[float, float]],
+        target_size: tuple[int, int],
+    ) -> list[_SequenceCandidate]:
+        counts = self._sequence_spatial_cell_counts(accepted_positions, target_size)
+        grouped: dict[int, list[_SequenceCandidate]] = {}
+        for candidate in candidates:
+            star_id = candidate.reference_star.star_id.strip()
+            if not star_id or star_id in used_star_ids or star_id in attempted_star_ids:
+                continue
+            predicted_position = (float(candidate.predicted_x_px), float(candidate.predicted_y_px))
+            if (
+                not math.isfinite(predicted_position[0])
+                or not math.isfinite(predicted_position[1])
+                or self._sequence_position_is_duplicate(predicted_position, accepted_positions)
+            ):
+                continue
+            cell_index = self._sequence_spatial_cell_index(
+                predicted_position[0],
+                predicted_position[1],
+                target_size,
+            )
+            grouped.setdefault(cell_index, []).append(candidate)
+
+        for cell_candidates in grouped.values():
+            cell_candidates.sort(
+                key=lambda candidate: (
+                    float(candidate.reference_star.mag_v),
+                    float(candidate.predicted_x_px),
+                    float(candidate.predicted_y_px),
+                )
+            )
+
+        ordered: list[_SequenceCandidate] = []
+        while grouped:
+            active_cells = sorted(grouped, key=lambda cell_index: (counts.get(cell_index, 0), cell_index))
+            for cell_index in active_cells:
+                cell_candidates = grouped.get(cell_index)
+                if not cell_candidates:
+                    grouped.pop(cell_index, None)
+                    continue
+                ordered.append(cell_candidates.pop(0))
+                counts[cell_index] = counts.get(cell_index, 0) + 1
+                if not cell_candidates:
+                    grouped.pop(cell_index, None)
+        return ordered
+
+    def _fit_sequence_candidate_plans(
         self,
         image,
-        candidates: list[_SequenceCandidate],
-        templates: list[_SequencePairTemplate],
-        mode: str,
+        plans: list[_SequenceFitPlan],
         target_count: int,
         search_radius_px: int,
         used_star_ids: set[str],
+        attempted_star_ids: set[str],
         accepted_positions: list[tuple[float, float]],
         accepted_offsets: list[tuple[float, float]],
         stats: dict[str, int],
@@ -472,13 +607,10 @@ class SequenceBatchMixin:
         matched: list[_SequenceMatchedPair] = []
         if target_count <= 0:
             return matched
-        mode_candidates = self._ordered_sequence_candidates_for_mode(candidates, templates, mode, used_star_ids)
-        fit_weight = self._auto_match_soft_weight() if mode == AUTO_MATCH_CONSTRAINT_SOFT else 1.0
-        pair_origin = "auto_match"
-        attempted_star_ids: set[str] = set()
-        for candidate in mode_candidates:
+        for plan in plans:
             if len(matched) >= target_count:
                 break
+            candidate = plan.candidate
             star_id = candidate.reference_star.star_id.strip()
             if not star_id or star_id in used_star_ids or star_id in attempted_star_ids:
                 continue
@@ -537,13 +669,15 @@ class SequenceBatchMixin:
                 _SequenceMatchedPair(
                     reference_star=candidate.reference_star,
                     fitted_position=fitted_position,
-                    fit_constraint_mode=mode,
-                    fit_weight=fit_weight,
-                    pair_origin=pair_origin,
+                    fit_constraint_mode=AUTO_MATCH_CONSTRAINT_SOFT,
+                    fit_weight=float(plan.fit_weight),
+                    pair_origin=plan.pair_origin,
                     predicted_x_px=candidate.predicted_x_px,
                     predicted_y_px=candidate.predicted_y_px,
                     search_x_px=search_x,
                     search_y_px=search_y,
+                    initial_predicted_x_px=candidate.predicted_x_px,
+                    initial_predicted_y_px=candidate.predicted_y_px,
                     adaptive_offset_x_px=offset_x,
                     adaptive_offset_y_px=offset_y,
                 )
@@ -552,6 +686,86 @@ class SequenceBatchMixin:
             accepted_positions.append(fitted_xy)
         if len(matched) < target_count:
             stats["missing_target"] += target_count - len(matched)
+        return matched
+
+    def _fit_sequence_candidates_for_mode(
+        self,
+        image,
+        candidates: list[_SequenceCandidate],
+        templates: list[_SequencePairTemplate],
+        mode: str,
+        target_count: int,
+        search_radius_px: int,
+        used_star_ids: set[str],
+        attempted_star_ids: set[str],
+        accepted_positions: list[tuple[float, float]],
+        accepted_offsets: list[tuple[float, float]],
+        stats: dict[str, int],
+    ) -> list[_SequenceMatchedPair]:
+        mode_candidates = self._ordered_sequence_candidates_for_mode(candidates, templates, mode, used_star_ids)
+        plans = [
+            _SequenceFitPlan(
+                candidate=candidate,
+                fit_weight=float(template.fit_weight),
+                pair_origin=template.pair_origin,
+            )
+            for candidate, template in mode_candidates
+        ]
+        return self._fit_sequence_candidate_plans(
+            image,
+            plans,
+            target_count,
+            search_radius_px,
+            used_star_ids,
+            attempted_star_ids,
+            accepted_positions,
+            accepted_offsets,
+            stats,
+        )
+
+    def _fit_sequence_supplemental_candidates(
+        self,
+        image,
+        candidates: list[_SequenceCandidate],
+        target_size: tuple[int, int],
+        target_total: int,
+        search_radius_px: int,
+        used_star_ids: set[str],
+        attempted_star_ids: set[str],
+        accepted_positions: list[tuple[float, float]],
+        accepted_offsets: list[tuple[float, float]],
+        stats: dict[str, int],
+    ) -> list[_SequenceMatchedPair]:
+        remaining_count = int(target_total) - len(accepted_positions)
+        if remaining_count <= 0:
+            return []
+        ordered_candidates = self._sequence_order_supplemental_candidates(
+            candidates,
+            used_star_ids=used_star_ids,
+            attempted_star_ids=attempted_star_ids,
+            accepted_positions=accepted_positions,
+            target_size=target_size,
+        )
+        plans = [
+            _SequenceFitPlan(
+                candidate=candidate,
+                fit_weight=SEQUENCE_SUPPLEMENTAL_FIT_WEIGHT,
+                pair_origin=SEQUENCE_SUPPLEMENTAL_PAIR_ORIGIN,
+            )
+            for candidate in ordered_candidates
+        ]
+        matched = self._fit_sequence_candidate_plans(
+            image,
+            plans,
+            remaining_count,
+            search_radius_px,
+            used_star_ids,
+            attempted_star_ids,
+            accepted_positions,
+            accepted_offsets,
+            stats,
+        )
+        stats["supplemental_matched"] += len(matched)
         return matched
 
     def _first_frame_matched_pairs(self, templates: list[_SequencePairTemplate]) -> list[_SequenceMatchedPair]:
@@ -568,6 +782,9 @@ class SequenceBatchMixin:
                     predicted_y_px=template.fitted_position.y,
                     search_x_px=template.fitted_position.x,
                     search_y_px=template.fitted_position.y,
+                    initial_predicted_x_px=template.fitted_position.x,
+                    initial_predicted_y_px=template.fitted_position.y,
+                    time_delta_seconds=0.0,
                 )
             )
         return pairs
@@ -577,17 +794,24 @@ class SequenceBatchMixin:
         item: ImageSequenceItem,
         preview: ImagePreview,
         templates: list[_SequencePairTemplate],
-        sim_to_real: ReferenceAlignmentTransform,
-        source_size: tuple[int, int],
+        fixed_model: FixedCameraModel,
         target_size: tuple[int, int],
+        initial_delta_seconds: float,
+        desired_pair_count: int,
         stats: dict[str, int],
     ) -> list[_SequenceMatchedPair]:
         visible_mag_limit = max(self._reference_catalog_mag_limit(AUTO_MATCH_SEARCH_MAG_LIMIT), AUTO_MATCH_SEARCH_MAG_LIMIT)
-        star_map = self._sequence_projected_star_map(item, source_size, visible_mag_limit)
-        candidates = self._sequence_candidate_stars(star_map, sim_to_real, target_size)
+        candidates = self._sequence_candidate_stars(
+            item,
+            fixed_model,
+            target_size,
+            initial_delta_seconds,
+            visible_mag_limit,
+        )
         anchor_templates = self._sequence_templates_by_mode(templates, "anchor")
         soft_templates = self._sequence_templates_by_mode(templates, AUTO_MATCH_CONSTRAINT_SOFT)
         used_star_ids: set[str] = set()
+        attempted_star_ids: set[str] = set()
         accepted_positions: list[tuple[float, float]] = []
         accepted_offsets: list[tuple[float, float]] = []
         search_radius_px = int(self.ui.spinBoxAutoMatchRadius.value())
@@ -600,6 +824,7 @@ class SequenceBatchMixin:
             len(anchor_templates),
             search_radius_px,
             used_star_ids,
+            attempted_star_ids,
             accepted_positions,
             accepted_offsets,
             stats,
@@ -612,17 +837,82 @@ class SequenceBatchMixin:
             len(soft_templates),
             search_radius_px,
             used_star_ids,
+            attempted_star_ids,
             accepted_positions,
             accepted_offsets,
             stats,
         )
-        return [*anchor_pairs, *soft_pairs]
+        supplemental_pairs = self._fit_sequence_supplemental_candidates(
+            preview.image,
+            candidates,
+            target_size,
+            desired_pair_count,
+            search_radius_px,
+            used_star_ids,
+            attempted_star_ids,
+            accepted_positions,
+            accepted_offsets,
+            stats,
+        )
+        return [*anchor_pairs, *soft_pairs, *supplemental_pairs]
 
-    def _fit_sequence_source_model(
+    def _sequence_fill_frame_pairs_to_target(
+        self,
+        item: ImageSequenceItem,
+        preview: ImagePreview,
+        pairs: list[_SequenceMatchedPair],
+        fixed_model: FixedCameraModel,
+        target_size: tuple[int, int],
+        delta_seconds: float,
+        desired_pair_count: int,
+        stats: dict[str, int],
+    ) -> list[_SequenceMatchedPair]:
+        if len(pairs) >= desired_pair_count:
+            return pairs
+        visible_mag_limit = max(self._reference_catalog_mag_limit(AUTO_MATCH_SEARCH_MAG_LIMIT), AUTO_MATCH_SEARCH_MAG_LIMIT)
+        candidates = self._sequence_candidate_stars(
+            item,
+            fixed_model,
+            target_size,
+            delta_seconds,
+            visible_mag_limit,
+        )
+        used_star_ids = {pair.reference_star.star_id.strip() for pair in pairs if pair.reference_star.star_id.strip()}
+        attempted_star_ids: set[str] = set()
+        accepted_positions = [
+            (float(pair.fitted_position.x), float(pair.fitted_position.y))
+            for pair in pairs
+        ]
+        accepted_offsets = [
+            (
+                float(pair.fitted_position.x - pair.predicted_x_px),
+                float(pair.fitted_position.y - pair.predicted_y_px),
+            )
+            for pair in pairs
+            if pair.predicted_x_px is not None
+            and pair.predicted_y_px is not None
+            and math.isfinite(pair.predicted_x_px)
+            and math.isfinite(pair.predicted_y_px)
+        ]
+        search_radius_px = int(self.ui.spinBoxAutoMatchRadius.value())
+        extra_pairs = self._fit_sequence_supplemental_candidates(
+            preview.image,
+            candidates,
+            target_size,
+            desired_pair_count,
+            search_radius_px,
+            used_star_ids,
+            attempted_star_ids,
+            accepted_positions,
+            accepted_offsets,
+            stats,
+        )
+        return [*pairs, *extra_pairs]
+
+    def _sequence_pair_fit_arrays(
         self,
         pairs: list[_SequenceMatchedPair],
-        image_size: tuple[int, int],
-    ) -> SourceAstrometricModel:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         if len(pairs) < MIN_ALIGNMENT_PAIRS:
             raise ValueError(f"有效配对只有 {len(pairs)} 个，至少需要 {MIN_ALIGNMENT_PAIRS} 个。")
         ra_dec_points = np.asarray(
@@ -634,93 +924,88 @@ class SequenceBatchMixin:
             dtype=np.float64,
         )
         point_weights = np.asarray([pair.fit_weight for pair in pairs], dtype=np.float64)
-        anchor_mask = np.asarray(
-            [pair.fit_constraint_mode != AUTO_MATCH_CONSTRAINT_SOFT for pair in pairs],
-            dtype=bool,
-        )
-        initial_rotation_matrix = self._sequence_initial_projection_rotation_matrix(pairs)
-        return fit_source_astrometric_model(
+        return ra_dec_points, pixel_points, point_weights
+
+    def _sequence_time_fit_for_pairs(
+        self,
+        item: ImageSequenceItem,
+        pairs: list[_SequenceMatchedPair],
+        fixed_model: FixedCameraModel,
+        initial_delta_seconds: float,
+        max_iterations: int | None = None,
+    ) -> FixedCameraTimeFitResult:
+        ra_dec_points, pixel_points, point_weights = self._sequence_pair_fit_arrays(pairs)
+        return estimate_frame_time_correction(
+            fixed_model=fixed_model,
             ra_dec_points=ra_dec_points,
-            pixel_points=pixel_points,
-            image_size=image_size,
-            matching_model=self._alignment_model(),
-            fisheye_fov_deg=None,
-            initial_rotation_matrix=initial_rotation_matrix,
+            observed_pixels=pixel_points,
+            nominal_time_utc=self._sequence_nominal_time_utc(item),
+            latitude_deg=self.ui.doubleSpinBoxLatitude.value(),
+            longitude_deg=self.ui.doubleSpinBoxLongitude.value(),
+            elevation_m=self.ui.doubleSpinBoxElevation.value(),
+            initial_delta_seconds=initial_delta_seconds,
             point_weights=point_weights,
-            residual_anchor_mask=anchor_mask,
+            max_iterations=4 if max_iterations is None else int(max_iterations),
         )
 
-    def _sequence_initial_projection_rotation_matrix(
+    def _apply_sequence_time_fit(
         self,
         pairs: list[_SequenceMatchedPair],
-    ) -> np.ndarray | None:
-        reference_stars = [
-            pair.reference_star
-            for pair in pairs
-            if all(
-                math.isfinite(value)
-                for value in (
-                    pair.reference_star.ra_deg,
-                    pair.reference_star.dec_deg,
-                    pair.reference_star.alt_deg,
-                    pair.reference_star.az_deg,
+        time_fit: FixedCameraTimeFitResult,
+        *,
+        require_accepted: bool,
+    ) -> list[_SequenceMatchedPair]:
+        if len(pairs) != int(time_fit.predicted_pixels.shape[0]):
+            raise ValueError("时间修正结果与星点配对数量不一致。")
+        updated_pairs: list[_SequenceMatchedPair] = []
+        for index, pair in enumerate(pairs):
+            if require_accepted and not bool(time_fit.accepted_mask[index]):
+                continue
+            predicted = time_fit.predicted_pixels[index]
+            if not np.all(np.isfinite(predicted)):
+                continue
+            reference_star = replace(
+                pair.reference_star,
+                sim_x=float(predicted[0]),
+                sim_y=float(predicted[1]),
+                alt_deg=float(time_fit.alt_deg[index]),
+                az_deg=float(time_fit.az_deg[index]),
+            )
+            updated_pairs.append(
+                replace(
+                    pair,
+                    reference_star=reference_star,
+                    predicted_x_px=float(predicted[0]),
+                    predicted_y_px=float(predicted[1]),
+                    initial_predicted_x_px=(
+                        pair.initial_predicted_x_px
+                        if pair.initial_predicted_x_px is not None
+                        else pair.predicted_x_px
+                    ),
+                    initial_predicted_y_px=(
+                        pair.initial_predicted_y_px
+                        if pair.initial_predicted_y_px is not None
+                        else pair.predicted_y_px
+                    ),
+                    time_delta_seconds=float(time_fit.delta_t_seconds),
                 )
             )
-        ]
-        if len(reference_stars) < 3:
-            return None
-
-        world_vectors = radec_to_unit_vectors(
-            np.asarray([star.ra_deg for star in reference_stars], dtype=np.float64),
-            np.asarray([star.dec_deg for star in reference_stars], dtype=np.float64),
-        )
-        local_vectors = local_vectors_from_altaz(
-            np.asarray([star.alt_deg for star in reference_stars], dtype=np.float64),
-            np.asarray([star.az_deg for star in reference_stars], dtype=np.float64),
-        )
-        finite = np.all(np.isfinite(world_vectors), axis=1) & np.all(np.isfinite(local_vectors), axis=1)
-        if np.count_nonzero(finite) < 3:
-            return None
-
-        try:
-            local_from_world_transposed, _residuals, _rank, _singular_values = np.linalg.lstsq(
-                world_vectors[finite],
-                local_vectors[finite],
-                rcond=None,
-            )
-            local_from_world = local_from_world_transposed.T
-            u_matrix, _values, vt_matrix = np.linalg.svd(local_from_world)
-        except np.linalg.LinAlgError:
-            return None
-
-        local_from_world = u_matrix @ vt_matrix
-        if np.linalg.det(local_from_world) < 0.0:
-            u_matrix[:, -1] *= -1.0
-            local_from_world = u_matrix @ vt_matrix
-
-        camera_from_local = np.vstack(camera_basis_from_view(self._view_settings())).astype(np.float64)
-        rotation_matrix = camera_from_local @ local_from_world
-        if rotation_matrix.shape != (3, 3) or not np.all(np.isfinite(rotation_matrix)):
-            return None
-        return rotation_matrix.astype(np.float64)
+        if len(updated_pairs) < MIN_ALIGNMENT_PAIRS:
+            raise ValueError(f"时间修正后可靠配对只有 {len(updated_pairs)} 个，至少需要 {MIN_ALIGNMENT_PAIRS} 个。")
+        return updated_pairs
 
     def _sequence_pair_records(
         self,
         pairs: list[_SequenceMatchedPair],
-        model: SourceAstrometricModel,
     ) -> list[dict[str, object]]:
-        ra_dec_points = np.asarray(
-            [(pair.reference_star.ra_deg, pair.reference_star.dec_deg) for pair in pairs],
-            dtype=np.float64,
-        )
-        predicted_pixels = model.direction_to_pixel_points(ra_dec_points)
         records: list[dict[str, object]] = []
         for output_index, pair in enumerate(pairs, start=1):
             reference_star = pair.reference_star
             fitted = pair.fitted_position
-            predicted_model = predicted_pixels[output_index - 1]
-            residual_dx = float(predicted_model[0] - fitted.x)
-            residual_dy = float(predicted_model[1] - fitted.y)
+            predicted_x = pair.predicted_x_px if pair.predicted_x_px is not None else float("nan")
+            predicted_y = pair.predicted_y_px if pair.predicted_y_px is not None else float("nan")
+            residual_dx = float(predicted_x - fitted.x)
+            residual_dy = float(predicted_y - fitted.y)
             record: dict[str, object] = {
                 "reference_index": output_index,
                 "star_id": reference_star.star_id,
@@ -734,6 +1019,8 @@ class SequenceBatchMixin:
                 "image_y_px": float(fitted.y),
                 "sim_x": float(reference_star.sim_x),
                 "sim_y": float(reference_star.sim_y),
+                "fixed_model_x_px": float(predicted_x),
+                "fixed_model_y_px": float(predicted_y),
                 "alt_deg": float(reference_star.alt_deg),
                 "az_deg": float(reference_star.az_deg),
                 "object_type": "star",
@@ -756,6 +1043,14 @@ class SequenceBatchMixin:
                 )
                 record["adaptive_offset_x_px"] = float(pair.adaptive_offset_x_px)
                 record["adaptive_offset_y_px"] = float(pair.adaptive_offset_y_px)
+            if pair.initial_predicted_x_px is not None and pair.initial_predicted_y_px is not None:
+                record["initial_theoretical_x_px"] = float(pair.initial_predicted_x_px)
+                record["initial_theoretical_y_px"] = float(pair.initial_predicted_y_px)
+                record["psf_offset_from_initial_theory_px"] = float(
+                    np.hypot(fitted.x - pair.initial_predicted_x_px, fitted.y - pair.initial_predicted_y_px)
+                )
+            if pair.time_delta_seconds is not None:
+                record["delta_t_seconds"] = float(pair.time_delta_seconds)
             if pair.search_x_px is not None and pair.search_y_px is not None:
                 record["search_x_px"] = float(pair.search_x_px)
                 record["search_y_px"] = float(pair.search_y_px)
@@ -827,12 +1122,7 @@ class SequenceBatchMixin:
         preview: ImagePreview,
         pairs: list[_SequenceMatchedPair],
     ) -> dict[str, object]:
-        observer = ObserverSettings(
-            observation_time_utc=sequence_item_observation_time_utc(item, self.ui.doubleSpinBoxUtcOffset.value()),
-            latitude_deg=self.ui.doubleSpinBoxLatitude.value(),
-            longitude_deg=self.ui.doubleSpinBoxLongitude.value(),
-            elevation_m=self.ui.doubleSpinBoxElevation.value(),
-        )
+        observer = self._sequence_observer_for_item(item)
         camera = self._camera_settings_for_image_size(preview.image.width(), preview.image.height())
         view = self._view_settings()
         visible_mag_limit = max(
@@ -876,6 +1166,87 @@ class SequenceBatchMixin:
     def _sequence_matching_payload(self) -> dict[str, object]:
         return self._auto_match_settings_payload()
 
+    def _sequence_timing_payload(
+        self,
+        item: ImageSequenceItem,
+        first_item: ImageSequenceItem,
+        time_fit: FixedCameraTimeFitResult,
+    ) -> dict[str, object]:
+        nominal_time_utc = self._sequence_nominal_time_utc(item)
+        effective_time_utc = nominal_time_utc + timedelta(seconds=float(time_fit.delta_t_seconds))
+        first_time_utc = self._sequence_nominal_time_utc(first_item)
+        return {
+            "time_model": "first_frame_relative_exif_plus_per_frame_delta_t",
+            "first_frame_nominal_time_utc": first_time_utc.isoformat(),
+            "frame_nominal_time_utc": nominal_time_utc.isoformat(),
+            "frame_effective_time_utc": effective_time_utc.isoformat(),
+            "exif_delta_from_first_seconds": float(sequence_item_time_delta_seconds(item, first_item)),
+            "delta_t_seconds": float(time_fit.delta_t_seconds),
+            "delta_t_reference": "relative_to_frame_nominal_time_not_chained",
+            "delta_t_0_seconds": 0.0,
+            "time_fit": time_fit.to_json_payload(),
+        }
+
+    def _sequence_model_payload(
+        self,
+        *,
+        item: ImageSequenceItem,
+        first_item: ImageSequenceItem,
+        preview: ImagePreview,
+        model_path: Path,
+        fixed_model: FixedCameraModel,
+        time_fit: FixedCameraTimeFitResult,
+        records: list[dict[str, object]],
+        reference_payload: dict[str, object],
+        generated_at_utc: str,
+    ) -> dict[str, object]:
+        timing_payload = self._sequence_timing_payload(item, first_item, time_fit)
+        return {
+            "format": FIXED_CAMERA_MODEL_FORMAT,
+            "version": FIXED_CAMERA_MODEL_VERSION,
+            "generated_at_utc": generated_at_utc,
+            "source_image": self._sequence_source_image_payload(preview, model_path, item),
+            "mask": self._sky_mask_payload(model_path),
+            "direction_frame": "ICRS RA/Dec converted to local ENU per frame time",
+            "pixel_convention": "0-based pixel coordinates at pixel centers",
+            "model_type": "fixed_camera_model",
+            "image": {
+                "width_px": int(preview.image.width()),
+                "height_px": int(preview.image.height()),
+            },
+            "sky_to_pixel": {
+                "kind": "fixed_camera_local_enu_projection",
+                "input_units": "deg",
+                "input_axis_order": ["ra_deg", "dec_deg"],
+                "output_units": "px",
+                "output_axis_order": ["x_px", "y_px"],
+                "evaluator": {
+                    "steps": [
+                        "ICRS RA/Dec at frame_effective_time_utc to local horizontal Alt/Az",
+                        "Alt/Az to local ENU unit vector",
+                        "apply fixed R_enu_to_camera",
+                        "apply base lens projection",
+                        "apply static residual distortion",
+                    ],
+                },
+            },
+            "dynamic_sky_conversion": {
+                "latitude_deg": self.ui.doubleSpinBoxLatitude.value(),
+                "longitude_deg": self.ui.doubleSpinBoxLongitude.value(),
+                "elevation_m": self.ui.doubleSpinBoxElevation.value(),
+                "utc_offset_hours": self.ui.doubleSpinBoxUtcOffset.value(),
+                **timing_payload,
+            },
+            "fixed_camera_model": fixed_model.to_json_payload(),
+            "diagnostics": {
+                "pair_count": len(records),
+                **time_fit.to_json_payload(),
+            },
+            "matching": self._sequence_matching_payload(),
+            "fit_pairs": records,
+            "reference_payload": reference_payload,
+        }
+
     def _sequence_starpair_json_path(self, image_path: Path) -> Path:
         resolved_path = Path(image_path).expanduser().resolve()
         return resolved_path.with_name(f"{resolved_path.stem}_starpairs.json")
@@ -887,16 +1258,19 @@ class SequenceBatchMixin:
     def _write_sequence_outputs(
         self,
         item: ImageSequenceItem,
+        first_item: ImageSequenceItem,
         preview: ImagePreview,
         pairs: list[_SequenceMatchedPair],
-        model: SourceAstrometricModel,
+        fixed_model: FixedCameraModel,
+        time_fit: FixedCameraTimeFitResult,
     ) -> tuple[Path, Path]:
         image_path = Path(preview.path).expanduser().resolve()
         starpair_path = self._sequence_starpair_json_path(image_path)
         model_path = self._sequence_model_json_path(image_path)
-        records = self._sequence_pair_records(pairs, model)
+        records = self._sequence_pair_records(pairs)
         reference_payload = self._sequence_reference_payload(item, preview, pairs)
         generated_at_utc = datetime.now(timezone.utc).isoformat()
+        timing_payload = self._sequence_timing_payload(item, first_item, time_fit)
         starpair_payload = {
             "format": STAR_PAIR_SESSION_FORMAT,
             "version": STAR_PAIR_SESSION_VERSION,
@@ -904,17 +1278,23 @@ class SequenceBatchMixin:
             "real_image": self._sequence_real_image_payload(preview, starpair_path, item),
             "reference_payload": reference_payload,
             "sky_alignment_model": self._alignment_model(),
+            "image_model": "fixed_camera_model",
+            "sequence_timing": timing_payload,
             "pair_count": len(records),
             "pairs": records,
             "mask": self._sky_mask_payload(starpair_path),
             "matching": self._sequence_matching_payload(),
         }
-        source_payload = model.to_json_payload(
-            source_image=self._sequence_source_image_payload(preview, model_path, item),
-            fit_pairs=records,
-            mask=self._sky_mask_payload(model_path),
-            matching=self._sequence_matching_payload(),
+        source_payload = self._sequence_model_payload(
+            item=item,
+            first_item=first_item,
+            preview=preview,
+            model_path=model_path,
+            fixed_model=fixed_model,
+            time_fit=time_fit,
+            records=records,
             reference_payload=reference_payload,
+            generated_at_utc=generated_at_utc,
         )
 
         starpair_path.write_text(json.dumps(starpair_payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -932,10 +1312,10 @@ class SequenceBatchMixin:
             self.render_now()
             QApplication.processEvents()
             templates = self._sequence_base_templates()
-            source_size = self._sequence_source_size()
+            minimum_pair_count, desired_pair_count = self._sequence_pair_targets(templates)
             assert self.current_image_preview is not None
             target_size = (self.current_image_preview.image.width(), self.current_image_preview.image.height())
-            sim_to_real = self._fit_sequence_sim_to_real_transform(templates, source_size, target_size)
+            fixed_model = self._fit_sequence_fixed_camera_model(templates, target_size)
         except Exception as exc:  # noqa: BLE001 - 批处理入口要把缺失条件直接反馈给用户。
             QMessageBox.warning(self, "无法处理图像序列", str(exc))
             self.ui.statusbar.showMessage(f"无法处理图像序列: {exc}")
@@ -954,6 +1334,7 @@ class SequenceBatchMixin:
 
         processed: list[tuple[Path, Path]] = []
         failures: list[str] = []
+        previous_delta_seconds = 0.0
         self._sequence_processing_active = True
         self._set_image_import_controls_enabled(False)
         self._update_image_sequence_controls()
@@ -977,6 +1358,18 @@ class SequenceBatchMixin:
                         assert self.current_image_preview is not None
                         preview = self.current_image_preview
                         pairs = self._first_frame_matched_pairs(templates)
+                        time_fit = self._sequence_time_fit_for_pairs(
+                            item,
+                            pairs,
+                            fixed_model,
+                            initial_delta_seconds=0.0,
+                            max_iterations=0,
+                        )
+                        pairs = self._apply_sequence_time_fit(
+                            pairs,
+                            time_fit,
+                            require_accepted=False,
+                        )
                     else:
                         preview = load_image_preview(item.path, max_long_side_px=None)
                         if (preview.image.width(), preview.image.height()) != target_size:
@@ -994,29 +1387,70 @@ class SequenceBatchMixin:
                             "skipped_duplicate": 0,
                             "skipped_outside": 0,
                             "missing_target": 0,
+                            "supplemental_matched": 0,
                         }
                         pairs = self._sequence_frame_matched_pairs(
                             item,
                             preview,
                             templates,
-                            sim_to_real,
-                            source_size,
+                            fixed_model,
                             target_size,
+                            previous_delta_seconds,
+                            desired_pair_count,
                             stats,
                         )
-                    model = self._fit_sequence_source_model(pairs, target_size)
+                        time_fit = self._sequence_time_fit_for_pairs(
+                            item,
+                            pairs,
+                            fixed_model,
+                            initial_delta_seconds=previous_delta_seconds,
+                        )
+                        pairs = self._apply_sequence_time_fit(
+                            pairs,
+                            time_fit,
+                            require_accepted=True,
+                        )
+                        if len(pairs) < minimum_pair_count:
+                            stats["second_pass_fill"] = 1
+                            pairs = self._sequence_fill_frame_pairs_to_target(
+                                item,
+                                preview,
+                                pairs,
+                                fixed_model,
+                                target_size,
+                                float(time_fit.delta_t_seconds),
+                                desired_pair_count,
+                                stats,
+                            )
+                            time_fit = self._sequence_time_fit_for_pairs(
+                                item,
+                                pairs,
+                                fixed_model,
+                                initial_delta_seconds=float(time_fit.delta_t_seconds),
+                            )
+                            pairs = self._apply_sequence_time_fit(
+                                pairs,
+                                time_fit,
+                                require_accepted=True,
+                            )
+                        if len(pairs) < minimum_pair_count:
+                            raise ValueError(
+                                "补充匹配后有效配对 {count} 个，低于序列目标下限 {target} 个；"
+                                "请检查云层、遮挡、蒙版或增大自动匹配搜索半径。".format(
+                                    count=len(pairs),
+                                    target=minimum_pair_count,
+                                )
+                            )
                     output_paths = self._write_sequence_outputs(
                         item,
+                        first_item,
                         preview,
                         pairs,
-                        model,
+                        fixed_model,
+                        time_fit,
                     )
                     processed.append(output_paths)
-                    sim_to_real = self._fit_sequence_pairs_sim_to_real_transform(
-                        pairs,
-                        source_size,
-                        target_size,
-                    )
+                    previous_delta_seconds = float(time_fit.delta_t_seconds)
                 except Exception as exc:  # noqa: BLE001 - 单帧失败不影响后续帧。
                     failures.append(f"{item.path.name}: {exc}")
                     continue

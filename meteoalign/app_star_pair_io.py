@@ -3,6 +3,7 @@ from .app_constants import *
 
 import json
 import math
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import numpy as np
@@ -15,11 +16,18 @@ from PyQt5.QtWidgets import (
 from .app_utils import _relative_image_path_for_session, _resolve_star_pair_session_real_image_path
 from .app_workers import StarPairSessionImportWorker, ReferenceJsonImportWorker
 from .catalog import project_root
+from .fixed_camera_model import (
+    FIXED_CAMERA_MODEL_FORMAT,
+    FIXED_CAMERA_MODEL_VERSION,
+    FixedCameraModel,
+    FixedCameraTimeFitResult,
+    estimate_frame_time_correction,
+)
 from .image_preview import load_image_preview, ImagePreview
 from .image_sequence import ImageSequenceItem, read_image_capture_time, sequence_item_observation_time_utc
 from .mapping_validation import MappingValidationDialog
 from .reference import build_reference_payload
-from .simulator import ObserverSettings, ReferenceStar, project_horizontal_catalog
+from .simulator import ObserverSettings, ReferenceStar, compute_altaz_from_radec, project_horizontal_catalog
 from .alignment import MIN_ALIGNMENT_PAIRS
 
 from .app_constants import (
@@ -53,12 +61,14 @@ class StarPairIOMixin:
     _reference_label_mode: object  # method
     _observer_settings: object  # method
     _output_camera_settings: object  # method
+    _camera_settings_for_image_size: object  # method
     _build_projected_star_map: object  # method
     _view_settings: object  # method
     _get_horizontal_catalog: object  # method
     _get_horizontal_milky_way: object  # method
     _get_horizontal_solar_system: object  # method
     _select_current_reference_stars: object  # method
+    _reference_star_with_index: object  # method
     _lens_model: object  # method
     _update_lens_model_controls: object  # method
     _update_reference_label_controls: object  # method
@@ -69,6 +79,12 @@ class StarPairIOMixin:
     _star_pair_alignment_residual: object  # method
     _parse_star_pair_position_text: object  # method
     _star_pair_position_count: object  # method
+    _sequence_base_templates: object  # method
+    _fit_sequence_fixed_camera_model: object  # method
+    _first_frame_matched_pairs: object  # method
+    _sequence_pair_fit_arrays: object  # method
+    _apply_sequence_time_fit: object  # method
+    _sequence_pair_records: object  # method
     _collect_star_pair_states: object  # method
     _clear_star_pair_positions: object  # method
     _clear_star_pair_annotations: object  # method
@@ -85,8 +101,10 @@ class StarPairIOMixin:
     _auto_match_group_expanded_by_id: dict
     _auto_match_next_group_index: int
     _manual_reference_star_ids: list
+    _imported_reference_star_by_id: dict
     _excluded_reference_star_ids: list
     _current_star_map: object | None
+    _sky_alignment_transform: object | None
     _source_astrometric_model: object | None
     _source_model_error_message: str
     _sky_alignment_error_message: str
@@ -181,6 +199,9 @@ class StarPairIOMixin:
         return observer, payload
 
     def _build_reference_payload_for_current_settings(self) -> dict[str, object]:
+        return self._build_reference_payload_for_records(self._star_pair_records())
+
+    def _build_reference_payload_for_records(self, pair_records: list[dict[str, object]]) -> dict[str, object]:
         output_camera = self._output_camera_settings()
         observer, observer_time_payload = self._reference_payload_observer()
         camera = output_camera
@@ -198,6 +219,7 @@ class StarPairIOMixin:
             horizontal_solar_system=horizontal_solar_system,
         )
         reference_stars = self._select_current_reference_stars(star_map)
+        reference_stars = self._reference_stars_with_pair_records(reference_stars, pair_records, observer)
         payload = build_reference_payload(
             star_map=star_map,
             reference_stars=reference_stars,
@@ -214,6 +236,118 @@ class StarPairIOMixin:
         if isinstance(observer_payload, dict):
             observer_payload.update(observer_time_payload)
         return payload
+
+    def _record_float(self, record: dict[str, object], key: str, default_value: float = float("nan")) -> float:
+        try:
+            value = float(record[key])
+        except (KeyError, TypeError, ValueError):
+            return default_value
+        return value if math.isfinite(value) else default_value
+
+    def _record_reference_star(
+        self,
+        record: object,
+        *,
+        observer: ObserverSettings | None = None,
+        output_index: int = 0,
+    ) -> ReferenceStar | None:
+        if not isinstance(record, dict):
+            return None
+        star_id = self._session_pair_star_id(record)
+        if not star_id:
+            return None
+        ra_deg = self._record_float(record, "ra_deg")
+        dec_deg = self._record_float(record, "dec_deg")
+        if not math.isfinite(ra_deg) or not math.isfinite(dec_deg):
+            return None
+
+        alt_deg = self._record_float(record, "alt_deg")
+        az_deg = self._record_float(record, "az_deg")
+        if observer is not None and (not math.isfinite(alt_deg) or not math.isfinite(az_deg)):
+            try:
+                alt_values, az_values = compute_altaz_from_radec(
+                    np.asarray([ra_deg], dtype=np.float64),
+                    np.asarray([dec_deg], dtype=np.float64),
+                    observer,
+                )
+                alt_deg = float(alt_values[0])
+                az_deg = float(az_values[0])
+            except Exception:  # noqa: BLE001 - 兜底参考星缺少地平坐标时不应阻断旧 JSON 导入。
+                pass
+
+        display_name = str(record.get("display_name") or "").strip()
+        common_name = str(record.get("common_name") or "").strip()
+        name = str(record.get("name") or common_name or display_name or star_id).strip()
+        sim_x = self._record_float(
+            record,
+            "sim_x",
+            self._record_float(record, "theoretical_x_px", self._record_float(record, "image_x_px")),
+        )
+        sim_y = self._record_float(
+            record,
+            "sim_y",
+            self._record_float(record, "theoretical_y_px", self._record_float(record, "image_y_px")),
+        )
+        return ReferenceStar(
+            index=output_index,
+            star_id=star_id,
+            name=name or star_id,
+            display_name=display_name or name or star_id,
+            common_name=common_name,
+            ra_deg=ra_deg,
+            dec_deg=dec_deg,
+            mag_v=self._record_float(record, "mag_v"),
+            sim_x=sim_x,
+            sim_y=sim_y,
+            alt_deg=alt_deg,
+            az_deg=az_deg,
+            object_type="star",
+        )
+
+    def _reference_star_lookup_from_records(
+        self,
+        records: object,
+        *,
+        observer: ObserverSettings | None = None,
+    ) -> dict[str, ReferenceStar]:
+        lookup: dict[str, ReferenceStar] = {}
+        if not isinstance(records, list):
+            return lookup
+        for record in records:
+            star = self._record_reference_star(record, observer=observer)
+            if star is not None and star.star_id not in lookup:
+                lookup[star.star_id] = star
+        return lookup
+
+    def _reference_stars_with_pair_records(
+        self,
+        reference_stars: tuple[ReferenceStar, ...],
+        pair_records: list[dict[str, object]],
+        observer: ObserverSettings,
+    ) -> tuple[ReferenceStar, ...]:
+        merged: list[ReferenceStar] = list(reference_stars)
+        seen_star_ids = {star.star_id.strip() for star in merged if star.star_id.strip()}
+        pair_lookup = self._reference_star_lookup_from_records(pair_records, observer=observer)
+        for pair_record in pair_records:
+            star_id = self._session_pair_star_id(pair_record)
+            if not star_id or star_id in seen_star_ids:
+                continue
+            fallback_star = pair_lookup.get(star_id)
+            if fallback_star is None:
+                continue
+            seen_star_ids.add(star_id)
+            merged.append(fallback_star)
+        return tuple(self._reference_star_with_index(star, index) for index, star in enumerate(merged, start=1))
+
+    def _merge_imported_reference_stars_from_pairs(self, pair_payloads: list[object]) -> None:
+        imported_lookup = getattr(self, "_imported_reference_star_by_id", {})
+        if not isinstance(imported_lookup, dict):
+            imported_lookup = {}
+        merged_lookup: dict[str, ReferenceStar] = dict(imported_lookup)
+        pair_lookup = self._reference_star_lookup_from_records(pair_payloads, observer=self._observer_settings())
+        for star_id, star in pair_lookup.items():
+            merged_lookup.setdefault(star_id, star)
+        self._imported_reference_star_by_id = merged_lookup
 
     def _star_pair_records(self) -> list[dict[str, object]]:
         records: list[dict[str, object]] = []
@@ -242,6 +376,8 @@ class StarPairIOMixin:
                 "image_y_px": image_y,
                 "sim_x": reference_star.sim_x,
                 "sim_y": reference_star.sim_y,
+                "alt_deg": reference_star.alt_deg,
+                "az_deg": reference_star.az_deg,
                 "object_type": "star",
                 "pair_origin": "auto_match" if self._is_auto_match_row(row) else "manual",
             }
@@ -370,8 +506,16 @@ class StarPairIOMixin:
         preview = self.current_image_preview
         image_path = Path(preview.path).expanduser().resolve()
         relative_image_path = _relative_image_path_for_session(image_path, json_path)
-        reference_payload = self._build_reference_payload_for_current_settings()
         pair_records = self._star_pair_records()
+        image_model = "manual_star_pair_session"
+        try:
+            fixed_bundle = self._single_image_fixed_camera_export_bundle()
+        except Exception:  # noqa: BLE001 - 配对 JSON 需要支持中途保存，固定模型未就绪时保留普通配对记录。
+            reference_payload = self._build_reference_payload_for_records(pair_records)
+        else:
+            pair_records = fixed_bundle["fit_pairs"]
+            reference_payload = fixed_bundle["reference_payload"]
+            image_model = "fixed_camera_model"
         generated_time = datetime.now(timezone.utc)
         real_image_payload = {
             "path": str(image_path),
@@ -390,11 +534,14 @@ class StarPairIOMixin:
             "real_image": real_image_payload,
             "reference_payload": reference_payload,
             "sky_alignment_model": self._alignment_model(),
+            "image_model": image_model,
             "auto_match_star_ids": list(self._auto_match_reference_star_ids),
             "auto_match_groups": self._auto_match_groups_payload(),
             "auto_match_constraints": self._auto_match_constraints_payload(),
             "pair_count": len(pair_records),
             "pairs": pair_records,
+            "mask": self._sky_mask_payload(json_path),
+            "matching": self._auto_match_settings_payload(),
         }
 
     def export_star_pair_session(self) -> None:
@@ -479,15 +626,136 @@ class StarPairIOMixin:
             raise ValueError(self._source_model_error_message or f"至少需要 {MIN_ALIGNMENT_PAIRS} 对星点才能导出映射。")
         return self._source_astrometric_model
 
-    def _build_source_model_payload(self, json_path: Path) -> dict[str, object]:
-        model = self._current_source_model()
-        return model.to_json_payload(
-            source_image=self._source_image_payload(json_path),
-            fit_pairs=self._star_pair_records(),
-            mask=self._sky_mask_payload(json_path),
-            matching=self._auto_match_settings_payload(),
-            reference_payload=self._build_reference_payload_for_current_settings(),
+    def _single_image_time_fit_for_pairs(
+        self,
+        pairs: list[object],
+        fixed_model: FixedCameraModel,
+        observer: ObserverSettings,
+    ) -> FixedCameraTimeFitResult:
+        ra_dec_points, pixel_points, point_weights = self._sequence_pair_fit_arrays(pairs)
+        return estimate_frame_time_correction(
+            fixed_model=fixed_model,
+            ra_dec_points=ra_dec_points,
+            observed_pixels=pixel_points,
+            nominal_time_utc=observer.observation_time_utc,
+            latitude_deg=observer.latitude_deg,
+            longitude_deg=observer.longitude_deg,
+            elevation_m=observer.elevation_m,
+            initial_delta_seconds=0.0,
+            point_weights=point_weights,
+            max_iterations=0,
         )
+
+    def _single_image_dynamic_sky_payload(
+        self,
+        observer: ObserverSettings,
+        observer_time_payload: dict[str, object],
+    ) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "observation_time_utc": observer.observation_time_utc.astimezone(timezone.utc).isoformat(),
+            "latitude_deg": observer.latitude_deg,
+            "longitude_deg": observer.longitude_deg,
+            "elevation_m": observer.elevation_m,
+            "utc_offset_hours": self.ui.doubleSpinBoxUtcOffset.value(),
+        }
+        payload.update(observer_time_payload)
+        return payload
+
+    def _single_image_fixed_camera_diagnostics(
+        self,
+        records: list[dict[str, object]],
+        time_fit: FixedCameraTimeFitResult,
+    ) -> dict[str, object]:
+        return {
+            "pair_count": len(records),
+            "accepted_count": time_fit.accepted_count,
+            "inlier_ratio": float(time_fit.inlier_ratio),
+            "rms_px": float(time_fit.rms_px),
+            "median_residual_px": float(time_fit.median_residual_px),
+            "max_residual_px": float(time_fit.max_residual_px),
+            "projected_motion_px_per_s_median": float(time_fit.projected_motion_px_per_s_median),
+        }
+
+    def _single_image_fixed_camera_export_bundle(self) -> dict[str, object]:
+        if self.current_image_preview is None:
+            raise ValueError("请先导入真实图像。")
+        if self._sky_alignment_transform is None:
+            self._update_reference_alignment_transform()
+        if self._sky_alignment_transform is None:
+            raise ValueError(
+                self._sky_alignment_error_message
+                or self._reference_alignment_error_message
+                or f"至少需要 {MIN_ALIGNMENT_PAIRS} 对星点才能导出映射。"
+            )
+
+        preview = self.current_image_preview
+        templates = self._sequence_base_templates()
+        target_size = (preview.image.width(), preview.image.height())
+        fixed_model = self._fit_sequence_fixed_camera_model(templates, target_size)
+        observer, observer_time_payload = self._reference_payload_observer()
+        pairs = self._first_frame_matched_pairs(templates)
+        time_fit = self._single_image_time_fit_for_pairs(pairs, fixed_model, observer)
+        pairs = self._apply_sequence_time_fit(pairs, time_fit, require_accepted=False)
+        pairs = [replace(pair, time_delta_seconds=None) for pair in pairs]
+        fit_pairs = self._sequence_pair_records(pairs)
+        reference_payload = self._build_reference_payload_for_records(fit_pairs)
+        return {
+            "fixed_model": fixed_model,
+            "time_fit": time_fit,
+            "fit_pairs": fit_pairs,
+            "reference_payload": reference_payload,
+            "observer": observer,
+            "observer_time_payload": observer_time_payload,
+        }
+
+    def _build_source_model_payload(self, json_path: Path) -> dict[str, object]:
+        if self.current_image_preview is None:
+            raise ValueError("请先导入真实图像。")
+        preview = self.current_image_preview
+        fixed_bundle = self._single_image_fixed_camera_export_bundle()
+        fixed_model = fixed_bundle["fixed_model"]
+        time_fit = fixed_bundle["time_fit"]
+        fit_pairs = fixed_bundle["fit_pairs"]
+        reference_payload = fixed_bundle["reference_payload"]
+        observer = fixed_bundle["observer"]
+        observer_time_payload = fixed_bundle["observer_time_payload"]
+        generated_at_utc = datetime.now(timezone.utc).isoformat()
+        return {
+            "format": FIXED_CAMERA_MODEL_FORMAT,
+            "version": FIXED_CAMERA_MODEL_VERSION,
+            "generated_at_utc": generated_at_utc,
+            "source_image": self._source_image_payload(json_path),
+            "mask": self._sky_mask_payload(json_path),
+            "direction_frame": "ICRS RA/Dec converted to local ENU at observation_time_utc",
+            "pixel_convention": "0-based pixel coordinates at pixel centers",
+            "model_type": "fixed_camera_model",
+            "image": {
+                "width_px": int(preview.image.width()),
+                "height_px": int(preview.image.height()),
+            },
+            "sky_to_pixel": {
+                "kind": "fixed_camera_local_enu_projection",
+                "input_units": "deg",
+                "input_axis_order": ["ra_deg", "dec_deg"],
+                "output_units": "px",
+                "output_axis_order": ["x_px", "y_px"],
+                "evaluator": {
+                    "steps": [
+                        "ICRS RA/Dec at observation_time_utc to local horizontal Alt/Az",
+                        "Alt/Az to local ENU unit vector",
+                        "apply fixed R_enu_to_camera",
+                        "apply base lens projection",
+                        "apply static residual distortion",
+                    ],
+                },
+            },
+            "dynamic_sky_conversion": self._single_image_dynamic_sky_payload(observer, observer_time_payload),
+            "fixed_camera_model": fixed_model.to_json_payload(),
+            "diagnostics": self._single_image_fixed_camera_diagnostics(fit_pairs, time_fit),
+            "matching": self._auto_match_settings_payload(),
+            "fit_pairs": fit_pairs,
+            "reference_payload": reference_payload,
+        }
 
     def export_source_model_json(self) -> None:
         if self.current_image_preview is None:
@@ -524,10 +792,11 @@ class StarPairIOMixin:
             return
 
         try:
-            model = self._current_source_model()
+            fixed_bundle = self._single_image_fixed_camera_export_bundle()
         except Exception as exc:  # noqa: BLE001 - 验证入口需要把模型未就绪原因直接反馈给用户。
             QMessageBox.information(self, "映射尚未就绪", str(exc))
             return
+        model = fixed_bundle["fixed_model"]
 
         old_dialog = getattr(self, "_mapping_validation_dialog", None)
         if old_dialog is not None:
@@ -539,7 +808,7 @@ class StarPairIOMixin:
             except RuntimeError:
                 pass
 
-        observer = self._observer_settings()
+        observer = fixed_bundle["observer"]
         base_camera = self._output_camera_settings()
         initial_view = self._view_settings()
         visible_mag_limit = float(self.ui.doubleSpinBoxMagLimit.value())
@@ -925,6 +1194,7 @@ class StarPairIOMixin:
         try:
             self._set_alignment_model(payload.get("sky_alignment_model"))
             self._apply_reference_payload(reference_payload, source_path)
+            self._merge_imported_reference_stars_from_pairs(pair_payloads)
             self._auto_match_reference_star_ids = auto_match_star_ids
             self._auto_match_constraint_by_star_id = {
                 star_id: auto_match_constraints.get(star_id, (AUTO_MATCH_CONSTRAINT_ANCHOR, 1.0))
@@ -935,8 +1205,7 @@ class StarPairIOMixin:
             self._auto_match_group_expanded_by_id = auto_match_group_expanded_by_id
             self._auto_match_next_group_index = auto_match_next_group_index
             self._normalize_auto_match_groups()
-            if self._auto_match_reference_star_ids:
-                self._refresh_reference_stars_from_current_map()
+            self._refresh_reference_stars_from_current_map()
             self._ensure_pair_record_stars_visible(pair_payloads)
             if preview is None:
                 preview = load_image_preview(image_path, max_long_side_px=None)
@@ -1139,6 +1408,10 @@ class StarPairIOMixin:
                 if star_id and star_id not in restored_manual_star_ids:
                     restored_manual_star_ids.append(star_id)
         self._manual_reference_star_ids = restored_manual_star_ids
+        self._imported_reference_star_by_id = self._reference_star_lookup_from_records(
+            payload.get("stars", []),
+            observer=self._observer_settings(),
+        )
         self._auto_match_reference_star_ids = []
         self._auto_match_constraint_by_star_id = {}
         self._auto_match_group_order = []

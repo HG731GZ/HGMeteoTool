@@ -9,6 +9,7 @@ from PyQt5.QtGui import QImage
 from PyQt5.QtWidgets import QDialog, QGraphicsScene, QMessageBox, QProgressDialog
 
 from .app_graphics_items import GraphicsImageItem
+from .fixed_camera_model import FixedCameraModel
 from .renderer import StarMapRenderer
 from .simulator import (
     CameraSettings,
@@ -24,8 +25,6 @@ from .simulator import (
     project_horizontal_catalog,
     vertical_fov_deg,
 )
-from .simulator import compute_altaz_from_radec
-from .source_model import SourceAstrometricModel
 from .ui.ui_mapping_validation_dialog import Ui_MappingValidationDialog
 
 try:
@@ -80,7 +79,7 @@ def _rgba_array_to_qimage(rgba: np.ndarray) -> QImage:
 
 
 class PixelToSkyValidationWorker(QObject):
-    """后台计算真实图像网格点到天球方向的验证缓存。"""
+    """后台计算真实图像网格点到固定相机本地地平坐标的验证缓存。"""
 
     progress = pyqtSignal(int, str)
     finished = pyqtSignal(object)
@@ -88,15 +87,13 @@ class PixelToSkyValidationWorker(QObject):
 
     def __init__(
         self,
-        model: SourceAstrometricModel,
+        model: FixedCameraModel,
         source_image: QImage,
-        observer: ObserverSettings,
         grid_precision: int,
     ) -> None:
         super().__init__()
         self.model = model
         self.source_image = source_image.copy()
-        self.observer = observer
         self.grid_precision = max(
             VALIDATION_GRID_MIN_PRECISION,
             min(VALIDATION_GRID_MAX_PRECISION, int(grid_precision)),
@@ -145,25 +142,21 @@ class PixelToSkyValidationWorker(QObject):
             f"图像 {width} x {height} px，网格 {columns} x {rows}。",
         )
 
-        radec = np.full((point_count, 2), np.nan, dtype=np.float64)
-        for start in range(0, point_count, VALIDATION_PIXEL_TO_SKY_CHUNK_SIZE):
-            end = min(start + VALIDATION_PIXEL_TO_SKY_CHUNK_SIZE, point_count)
-            radec[start:end] = self.model.pixel_to_radec_points(grid_points[start:end])
-            progress = 2 + int(62 * end / max(point_count, 1))
-            self.progress.emit(progress, f"正在精确求解网格点 pixel_to_sky：{end} / {point_count}。")
-
-        self.progress.emit(86, "正在把天球方向转换为当前观测地平坐标...")
         alt_deg = np.full(point_count, np.nan, dtype=np.float64)
         az_deg = np.full(point_count, np.nan, dtype=np.float64)
-        finite = np.all(np.isfinite(radec), axis=1)
-        if np.any(finite):
-            alt_values, az_values = compute_altaz_from_radec(radec[finite, 0], radec[finite, 1], self.observer)
-            alt_deg[finite] = alt_values
-            az_deg[finite] = az_values
+        valid = np.zeros(point_count, dtype=bool)
+        for start in range(0, point_count, VALIDATION_PIXEL_TO_SKY_CHUNK_SIZE):
+            end = min(start + VALIDATION_PIXEL_TO_SKY_CHUNK_SIZE, point_count)
+            alt_values, az_values, valid_values = self.model.pixel_to_altaz_points(grid_points[start:end])
+            alt_deg[start:end] = alt_values
+            az_deg[start:end] = az_values
+            valid[start:end] = valid_values
+            progress = 2 + int(62 * end / max(point_count, 1))
+            self.progress.emit(progress, f"正在按固定相机模型反解网格点 pixel_to_altaz：{end} / {point_count}。")
 
         self.progress.emit(94, "正在生成显示用真实图像缓存...")
         source_rgb, source_scale_x, source_scale_y = self._source_preview_rgb(width, height)
-        valid = (np.isfinite(alt_deg) & np.isfinite(az_deg)).reshape((rows, columns))
+        valid = (valid & np.isfinite(alt_deg) & np.isfinite(az_deg)).reshape((rows, columns))
         self.progress.emit(100, "映射验证缓存已就绪。")
         return ImageSkyProjectionCache(
             source_width_px=width,
@@ -191,7 +184,7 @@ class MappingValidationDialog(QDialog):
         *,
         parent,
         renderer: StarMapRenderer,
-        model: SourceAstrometricModel,
+        model: FixedCameraModel,
         source_image: QImage,
         observer: ObserverSettings,
         base_camera: CameraSettings,
@@ -565,7 +558,6 @@ class MappingValidationDialog(QDialog):
         worker = PixelToSkyValidationWorker(
             self.model,
             self.source_image,
-            self.observer,
             grid_precision=self._grid_precision_value(),
         )
         worker.moveToThread(thread)
