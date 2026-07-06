@@ -1672,6 +1672,7 @@ class StarPairTableMixin:
         valid_rows = [row for row in sorted(set(rows)) if 0 <= row < table.rowCount()]
         if not valid_rows:
             return 0
+        rows_to_remove = self._rows_expanded_from_groups(valid_rows)
 
         group_ids_to_delete = {
             self._row_auto_match_group_id(row)
@@ -1704,13 +1705,16 @@ class StarPairTableMixin:
         if not auto_star_ids_to_delete and not manual_star_ids_to_delete:
             return 0
 
+        deleted_star_ids = auto_star_ids_to_delete | manual_star_ids_to_delete
         if self._active_star_pair_row is not None:
             active_star_id = self._star_pair_star_id(self._active_star_pair_row)
-            if active_star_id in auto_star_ids_to_delete or active_star_id in manual_star_ids_to_delete:
+            if active_star_id in deleted_star_ids:
                 self._leave_star_pick_mode()
 
-        for star_id in auto_star_ids_to_delete | manual_star_ids_to_delete:
+        for star_id in deleted_star_ids:
             self._remove_star_pair_annotation(star_id)
+            if star_id not in self._excluded_reference_star_ids:
+                self._excluded_reference_star_ids.append(star_id)
 
         self._auto_match_reference_star_ids = [
             star_id for star_id in self._auto_match_reference_star_ids if star_id not in auto_star_ids_to_delete
@@ -1722,23 +1726,24 @@ class StarPairTableMixin:
         self._manual_reference_star_ids = [
             star_id for star_id in self._manual_reference_star_ids if star_id not in manual_star_ids_to_delete
         ]
-        for star_id in manual_star_ids_to_delete:
-            if star_id not in self._excluded_reference_star_ids:
-                self._excluded_reference_star_ids.append(star_id)
 
-        self._normalize_auto_match_groups()
-        if self._current_star_map is None:
-            rows_to_remove = self._rows_expanded_from_groups(valid_rows)
-            signals_were_blocked = table.blockSignals(True)
+        # 先从当前表格中移除旧行，再重建参考星列表。否则刷新逻辑会把带匹配坐标的已删行当作
+        # “需要保留的已匹配星”重新加入，自动匹配行也会因为失去自动分组而落回手动匹配表。
+        signals_were_blocked = table.blockSignals(True)
+        try:
             for row in sorted(rows_to_remove, reverse=True):
                 if 0 <= row < table.rowCount():
                     table.removeRow(row)
+        finally:
             table.blockSignals(signals_were_blocked)
+
+        self._normalize_auto_match_groups()
+        if self._current_star_map is None:
             self._renumber_star_pair_rows_from_table()
         else:
             self._refresh_reference_stars_from_current_map()
         self._update_reference_alignment_transform()
-        deleted_count = len(auto_star_ids_to_delete) + len(manual_star_ids_to_delete)
+        deleted_count = len(deleted_star_ids)
         if table.rowCount() > 0:
             table.selectRow(min(valid_rows[0], table.rowCount() - 1))
         return deleted_count
