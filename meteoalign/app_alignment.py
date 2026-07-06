@@ -330,12 +330,14 @@ class AlignmentMixin:
         try:
             image = self.current_image_preview.image
             initial_rotation_matrix = self._initial_projection_rotation_matrix()
+            # 源图基础投影由真实图像配对拟合，避免复用星空模拟页的镜头投影或鱼眼视场。
+            source_projection_fov_deg = None
             self._sky_alignment_transform = fit_sky_alignment(
                 ra_dec_points=sky_points,
                 target_points=sky_target_points,
                 matching_model=self._alignment_model(),
                 image_size=(image.width(), image.height()),
-                fisheye_fov_deg=self.ui.doubleSpinBoxFisheyeFov.value(),
+                fisheye_fov_deg=source_projection_fov_deg,
                 initial_rotation_matrix=initial_rotation_matrix,
                 point_weights=fit_weights,
                 residual_anchor_mask=anchor_mask,
@@ -351,7 +353,7 @@ class AlignmentMixin:
                     pixel_points=sky_target_points,
                     image_size=(image.width(), image.height()),
                     matching_model=self._alignment_model(),
-                    fisheye_fov_deg=self.ui.doubleSpinBoxFisheyeFov.value(),
+                    fisheye_fov_deg=source_projection_fov_deg,
                     initial_rotation_matrix=initial_rotation_matrix,
                     point_weights=fit_weights,
                     residual_anchor_mask=anchor_mask,

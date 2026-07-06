@@ -15,10 +15,14 @@ SKY_MATCHING_MODEL_POLYNOMIAL = "polynomial"
 SKY_MATCHING_MODEL_RECTILINEAR = "rectilinear"
 SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT = "fisheye_equidistant"
 SKY_MATCHING_MODEL_FISHEYE_EQUISOLID = "fisheye_equisolid"
+SKY_MATCHING_MODEL_MERCATOR = "mercator"
+SKY_MATCHING_MODEL_CYLINDRICAL_EQUIDISTANT = "cylindrical_equidistant"
 SKY_KNOWN_PROJECTION_MODELS = (
     SKY_MATCHING_MODEL_RECTILINEAR,
     SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT,
     SKY_MATCHING_MODEL_FISHEYE_EQUISOLID,
+    SKY_MATCHING_MODEL_MERCATOR,
+    SKY_MATCHING_MODEL_CYLINDRICAL_EQUIDISTANT,
 )
 SKY_SKY_PLANE_INTERPOLATION_MODELS = (SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION, SKY_MATCHING_MODEL_POLYNOMIAL)
 SKY_MATCHING_MODELS = (*SKY_SKY_PLANE_INTERPOLATION_MODELS, *SKY_KNOWN_PROJECTION_MODELS)
@@ -29,6 +33,20 @@ ANCHOR_INTERPOLATION_TPS = "thin_plate_spline"
 FIT_WEIGHT_MIN = 1e-6
 FIT_WEIGHT_MAX = 1.0
 SOFT_CONSTRAINT_TPS_SMOOTHING_BASE = 0.03
+SKY_KNOWN_PROJECTION_DISPLAY_NAMES = {
+    SKY_MATCHING_MODEL_RECTILINEAR: "普通透视镜头(TAN)",
+    SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT: "等距鱼眼(ARC)",
+    SKY_MATCHING_MODEL_FISHEYE_EQUISOLID: "等立体角鱼眼(ZEA)",
+    SKY_MATCHING_MODEL_MERCATOR: "墨卡托(MER)",
+    SKY_MATCHING_MODEL_CYLINDRICAL_EQUIDISTANT: "等距圆柱(CAR)",
+}
+SKY_KNOWN_PROJECTION_CODES = {
+    SKY_MATCHING_MODEL_RECTILINEAR: "TAN",
+    SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT: "ARC",
+    SKY_MATCHING_MODEL_FISHEYE_EQUISOLID: "ZEA",
+    SKY_MATCHING_MODEL_MERCATOR: "MER",
+    SKY_MATCHING_MODEL_CYLINDRICAL_EQUIDISTANT: "CAR",
+}
 
 
 @dataclass(frozen=True)
@@ -204,12 +222,7 @@ class ProjectionSkyAlignmentTransform:
 
     @property
     def display_name(self) -> str:
-        projection_names = {
-            SKY_MATCHING_MODEL_RECTILINEAR: "普通广角透视",
-            SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT: "等距鱼眼",
-            SKY_MATCHING_MODEL_FISHEYE_EQUISOLID: "等立体角鱼眼",
-        }
-        projection_name = projection_names.get(self.lens_model, self.lens_model)
+        projection_name = SKY_KNOWN_PROJECTION_DISPLAY_NAMES.get(self.lens_model, self.lens_model)
         if self.residual_soft_constraint_count > 0:
             return f"{projection_name}+平滑残差"
         if self.residual_kind == RESIDUAL_CORRECTION_TPS:
@@ -523,6 +536,66 @@ def _initial_rectilinear_from_rotation(
     return rotation.astype(np.float64), center_x, center_y, float(scale_px)
 
 
+def _initial_projection_from_rotation(
+    vectors: np.ndarray,
+    target_points: np.ndarray,
+    rotation_matrix: np.ndarray,
+    lens_model: str,
+    point_weights: np.ndarray,
+) -> tuple[np.ndarray, float, float, float]:
+    rotation = _orthonormalized_rotation_matrix(rotation_matrix)
+    camera_vectors = np.asarray(vectors, dtype=np.float64) @ rotation.T
+    projection_points, valid_projection = _projection_plane_coordinates(
+        camera_vectors,
+        lens_model=lens_model,
+        strict_visibility=True,
+    )
+    valid = (
+        valid_projection
+        & np.all(np.isfinite(projection_points), axis=1)
+        & np.all(np.isfinite(target_points), axis=1)
+        & np.isfinite(point_weights)
+    )
+    if np.count_nonzero(valid) < MIN_ALIGNMENT_PAIRS:
+        raise ValueError("投影初值中有效配对星不足。")
+
+    projected_x = projection_points[valid, 0]
+    projected_y = projection_points[valid, 1]
+    valid_targets = target_points[valid]
+    sqrt_weights = np.sqrt(np.clip(point_weights[valid], FIT_WEIGHT_MIN, FIT_WEIGHT_MAX))
+
+    design = np.zeros((int(np.count_nonzero(valid)) * 2, 3), dtype=np.float64)
+    observed = np.zeros(design.shape[0], dtype=np.float64)
+    design[0::2, 0] = 1.0
+    design[0::2, 2] = projected_x
+    observed[0::2] = valid_targets[:, 0]
+    design[1::2, 1] = 1.0
+    design[1::2, 2] = -projected_y
+    observed[1::2] = valid_targets[:, 1]
+    row_weights = np.repeat(sqrt_weights, 2)
+
+    try:
+        solution, _residuals, _rank, _singular_values = np.linalg.lstsq(
+            design * row_weights[:, None],
+            observed * row_weights,
+            rcond=None,
+        )
+    except np.linalg.LinAlgError as exc:
+        raise ValueError("投影主点与尺度初值无法稳定求解。") from exc
+
+    center_x, center_y, scale_px = (float(value) for value in solution)
+    if not all(np.isfinite(value) for value in (center_x, center_y, scale_px)):
+        raise ValueError("投影主点与尺度初值包含无效数值。")
+    if abs(scale_px) <= 1e-9:
+        raise ValueError("投影尺度初值过小。")
+    if scale_px < 0.0:
+        # 负尺度等价于把投影平面绕光轴旋转 180 度，转成正尺度可避免 log(scale) 退化。
+        rotation = rotation.copy()
+        rotation[:2] *= -1.0
+        scale_px = -scale_px
+    return rotation.astype(np.float64), center_x, center_y, float(scale_px)
+
+
 def _fixed_fisheye_scale_px(
     lens_model: str,
     image_size: tuple[int, int],
@@ -626,6 +699,58 @@ def _initial_fisheye_rotation_from_pixels(
     return np.vstack((right, up, center)).astype(np.float64)
 
 
+def _projection_plane_coordinates(
+    camera_vectors: np.ndarray,
+    lens_model: str,
+    strict_visibility: bool,
+) -> tuple[np.ndarray, np.ndarray]:
+    camera_array = np.asarray(camera_vectors, dtype=np.float64)
+    cam_x = camera_array[:, 0]
+    cam_y = camera_array[:, 1]
+    cam_z = camera_array[:, 2]
+    norm = np.linalg.norm(camera_array, axis=1)
+    valid = np.all(np.isfinite(camera_array), axis=1) & (norm > 1e-12)
+
+    projected_x = np.full(camera_array.shape[0], np.nan, dtype=np.float64)
+    projected_y = np.full(camera_array.shape[0], np.nan, dtype=np.float64)
+    if lens_model == SKY_MATCHING_MODEL_RECTILINEAR:
+        visible = cam_z > 1e-8
+        if strict_visibility:
+            valid &= visible
+        safe_z = np.where(np.abs(cam_z) > 1e-8, cam_z, np.where(cam_z >= 0.0, 1e-8, -1e-8))
+        projected_x = cam_x / safe_z
+        projected_y = cam_y / safe_z
+    elif lens_model in (SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT, SKY_MATCHING_MODEL_FISHEYE_EQUISOLID):
+        unit_z = np.clip(cam_z / np.where(norm > 1e-12, norm, 1.0), -1.0, 1.0)
+        theta = np.arccos(unit_z)
+        plane_norm = np.hypot(cam_x, cam_y)
+        unit_x = np.divide(cam_x, plane_norm, out=np.zeros_like(cam_x), where=plane_norm > 1e-12)
+        unit_y = np.divide(cam_y, plane_norm, out=np.zeros_like(cam_y), where=plane_norm > 1e-12)
+        if lens_model == SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT:
+            radius = theta
+        else:
+            radius = 2.0 * np.sin(theta * 0.5)
+        projected_x = radius * unit_x
+        projected_y = radius * unit_y
+    elif lens_model in (SKY_MATCHING_MODEL_MERCATOR, SKY_MATCHING_MODEL_CYLINDRICAL_EQUIDISTANT):
+        unit_y = np.clip(cam_y / np.where(norm > 1e-12, norm, 1.0), -1.0, 1.0)
+        longitude = np.arctan2(cam_x, cam_z)
+        latitude = np.arcsin(unit_y)
+        projected_x = longitude
+        if lens_model == SKY_MATCHING_MODEL_MERCATOR:
+            # 墨卡托在两极发散，避开极点附近的无穷大。
+            valid &= np.abs(latitude) < (np.pi * 0.5 - 1e-8)
+            projected_y = np.arctanh(np.clip(np.sin(latitude), -1.0 + 1e-12, 1.0 - 1e-12))
+        else:
+            projected_y = latitude
+    else:
+        raise ValueError(f"不支持的投影匹配模型：{lens_model}")
+
+    projected = np.column_stack((projected_x, projected_y)).astype(np.float64)
+    valid &= np.all(np.isfinite(projected), axis=1)
+    return projected, valid
+
+
 def _project_unit_vectors_with_known_projection(
     *,
     vectors: np.ndarray,
@@ -639,37 +764,14 @@ def _project_unit_vectors_with_known_projection(
     vector_array = np.asarray(vectors, dtype=np.float64)
     rotation = np.asarray(rotation_matrix, dtype=np.float64)
     camera_vectors = vector_array @ rotation.T
-    cam_x = camera_vectors[:, 0]
-    cam_y = camera_vectors[:, 1]
-    cam_z = camera_vectors[:, 2]
-    valid = np.all(np.isfinite(camera_vectors), axis=1) & np.isfinite(scale_px) & (scale_px > 0.0)
-
-    x_px = np.full(vector_array.shape[0], np.nan, dtype=np.float64)
-    y_px = np.full(vector_array.shape[0], np.nan, dtype=np.float64)
-    if lens_model == SKY_MATCHING_MODEL_RECTILINEAR:
-        visible = cam_z > 1e-8
-        if strict_visibility:
-            valid &= visible
-        safe_z = np.where(np.abs(cam_z) > 1e-8, cam_z, np.where(cam_z >= 0.0, 1e-8, -1e-8))
-        x_px = center_x_px + scale_px * cam_x / safe_z
-        y_px = center_y_px - scale_px * cam_y / safe_z
-    elif lens_model in (SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT, SKY_MATCHING_MODEL_FISHEYE_EQUISOLID):
-        norm = np.linalg.norm(camera_vectors, axis=1)
-        safe_norm = np.where(norm > 1e-12, norm, 1.0)
-        unit_z = np.clip(cam_z / safe_norm, -1.0, 1.0)
-        theta = np.arccos(unit_z)
-        plane_norm = np.hypot(cam_x, cam_y)
-        unit_x = np.divide(cam_x, plane_norm, out=np.zeros_like(cam_x), where=plane_norm > 1e-12)
-        unit_y = np.divide(cam_y, plane_norm, out=np.zeros_like(cam_y), where=plane_norm > 1e-12)
-        if lens_model == SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT:
-            radius = scale_px * theta
-        else:
-            radius = scale_px * 2.0 * np.sin(theta * 0.5)
-        x_px = center_x_px + radius * unit_x
-        y_px = center_y_px - radius * unit_y
-        valid &= norm > 1e-12
-    else:
-        raise ValueError(f"不支持的投影匹配模型：{lens_model}")
+    projection_points, valid = _projection_plane_coordinates(
+        camera_vectors,
+        lens_model=lens_model,
+        strict_visibility=strict_visibility,
+    )
+    valid &= np.isfinite(scale_px) & (scale_px > 0.0)
+    x_px = center_x_px + scale_px * projection_points[:, 0]
+    y_px = center_y_px - scale_px * projection_points[:, 1]
 
     projected = np.column_stack((x_px, y_px)).astype(np.float64)
     valid &= np.all(np.isfinite(projected), axis=1) & (np.abs(projected[:, 0]) < MAX_TRANSFORM_ABS_PX) & (
@@ -781,14 +883,23 @@ def _fit_known_projection_parameters(
         lower = np.asarray((-np.pi, -np.pi, -np.pi, np.log(1e-6), -2.0 * width_px, -2.0 * height_px), dtype=np.float64)
         upper = np.asarray((np.pi, np.pi, np.pi, np.log(1e9), 3.0 * width_px, 3.0 * height_px), dtype=np.float64)
 
-        if lens_model == SKY_MATCHING_MODEL_RECTILINEAR and initial_rotation_matrix is not None:
+        if initial_rotation_matrix is not None:
             try:
-                initial_rotation, initial_cx, initial_cy, initial_scale = _initial_rectilinear_from_rotation(
-                    vectors,
-                    target_points,
-                    initial_rotation_matrix,
-                    point_weights,
-                )
+                if lens_model == SKY_MATCHING_MODEL_RECTILINEAR:
+                    initial_rotation, initial_cx, initial_cy, initial_scale = _initial_rectilinear_from_rotation(
+                        vectors,
+                        target_points,
+                        initial_rotation_matrix,
+                        point_weights,
+                    )
+                else:
+                    initial_rotation, initial_cx, initial_cy, initial_scale = _initial_projection_from_rotation(
+                        vectors,
+                        target_points,
+                        initial_rotation_matrix,
+                        lens_model,
+                        point_weights,
+                    )
                 initial_candidates.append(
                     (
                         initial_rotation,

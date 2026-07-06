@@ -393,7 +393,6 @@ class StarPairIOMixin:
     def _auto_match_settings_payload(self) -> dict[str, object]:
         return {
             "sky_alignment_model": self._alignment_model(),
-            "fisheye_fov_deg": float(self.ui.doubleSpinBoxFisheyeFov.value()),
             "new_star_count": int(self.ui.spinBoxAutoMatchCount.value()),
             "new_constraint_mode": self._auto_match_constraint_mode(),
             "soft_constraint_weight": float(self.ui.doubleSpinBoxAutoMatchSoftWeight.value()),

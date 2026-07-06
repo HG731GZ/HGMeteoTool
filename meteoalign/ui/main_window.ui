@@ -297,17 +297,12 @@
             <widget class="QComboBox" name="comboBoxLensModel">
              <item>
               <property name="text">
-               <string>普通广角透视</string>
+               <string>直线镜头</string>
               </property>
              </item>
              <item>
               <property name="text">
-               <string>等距鱼眼</string>
-              </property>
-             </item>
-             <item>
-              <property name="text">
-               <string>等立体角鱼眼</string>
+               <string>鱼眼镜头</string>
               </property>
              </item>
             </widget>
@@ -869,7 +864,7 @@
                 <item row="0" column="0">
                  <widget class="QLabel" name="labelSkyAlignmentModel">
                   <property name="text">
-                   <string>匹配模型</string>
+                   <string>基础投影模型</string>
                   </property>
                  </widget>
                 </item>
@@ -882,17 +877,27 @@
                   </item>
                   <item>
                    <property name="text">
-                    <string>普通广角透视</string>
+                    <string>普通透视镜头(TAN)</string>
                    </property>
                   </item>
                   <item>
                    <property name="text">
-                    <string>等距鱼眼</string>
+                    <string>等距鱼眼(ARC)</string>
                    </property>
                   </item>
                   <item>
                    <property name="text">
-                    <string>等立体角鱼眼</string>
+                    <string>等立体角鱼眼(ZEA)</string>
+                   </property>
+                  </item>
+                  <item>
+                   <property name="text">
+                    <string>墨卡托(MER)</string>
+                   </property>
+                  </item>
+                  <item>
+                   <property name="text">
+                    <string>等距圆柱(CAR)</string>
                    </property>
                   </item>
                  </widget>

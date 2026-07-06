@@ -9,8 +9,10 @@ import pytest
 from meteoalign.alignment import (
     RESIDUAL_CORRECTION_TPS,
     SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION,
+    SKY_MATCHING_MODEL_CYLINDRICAL_EQUIDISTANT,
     SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT,
     SKY_MATCHING_MODEL_FISHEYE_EQUISOLID,
+    SKY_MATCHING_MODEL_MERCATOR,
     SKY_MATCHING_MODEL_RECTILINEAR,
     _project_unit_vectors_with_known_projection,
     fit_sky_alignment,
@@ -24,6 +26,8 @@ KNOWN_PROJECTION_MODELS = (
     SKY_MATCHING_MODEL_RECTILINEAR,
     SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT,
     SKY_MATCHING_MODEL_FISHEYE_EQUISOLID,
+    SKY_MATCHING_MODEL_MERCATOR,
+    SKY_MATCHING_MODEL_CYLINDRICAL_EQUIDISTANT,
 )
 
 
@@ -144,6 +148,9 @@ def test_source_model_exports_known_projection_payload() -> None:
     assert "degree" not in payload["sky_to_pixel"]
     assert "coeff_x" not in payload["sky_to_pixel"]
     assert payload["known_projection"]["lens_model"] == SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT
+    assert payload["known_projection"]["projection_code"] == "ARC"
+    assert payload["known_projection"]["display_name"] == "等距鱼眼(ARC)"
+    assert payload["known_projection"]["fov_deg"] is None
     assert payload["known_projection"]["residual_correction"]["kind"] == RESIDUAL_CORRECTION_TPS
     assert "degree" not in payload["known_projection"]["residual_correction"]
     assert "coeff_x_px" not in payload["known_projection"]["residual_correction"]
@@ -204,7 +211,7 @@ def _fit_real_pair_payload(payload: dict[str, object], matching_model: str):
         pixels,
         matching_model=matching_model,
         image_size=image_size,
-        fisheye_fov_deg=float(reference_payload["camera"]["fisheye_fov_deg"]),
+        fisheye_fov_deg=None,
         initial_rotation_matrix=_initial_rotation_from_reference_payload(reference_payload),
     )
     return transform, radec, pixels

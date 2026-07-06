@@ -13,6 +13,8 @@ from .alignment import (
     FIT_WEIGHT_MIN,
     MIN_ALIGNMENT_PAIRS,
     ProjectionSkyAlignmentTransform,
+    SKY_KNOWN_PROJECTION_CODES,
+    SKY_KNOWN_PROJECTION_DISPLAY_NAMES,
     SKY_KNOWN_PROJECTION_MODELS,
     SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION,
     SKY_MATCHING_MODELS,
@@ -524,6 +526,8 @@ class SourceAstrometricModel:
 def _projection_transform_payload(transform: ProjectionSkyAlignmentTransform) -> dict[str, Any]:
     return {
         "lens_model": transform.lens_model,
+        "projection_code": SKY_KNOWN_PROJECTION_CODES.get(transform.lens_model, transform.lens_model),
+        "display_name": SKY_KNOWN_PROJECTION_DISPLAY_NAMES.get(transform.lens_model, transform.lens_model),
         "fov_deg": None if transform.fov_deg is None else float(transform.fov_deg),
         "image_width_px": int(transform.image_width_px),
         "image_height_px": int(transform.image_height_px),
