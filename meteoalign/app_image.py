@@ -173,6 +173,8 @@ class ImageMixin:
         self.ui.pushButtonImportImageSequence.setEnabled(enabled)
         self.ui.actionImportSingleImage.setEnabled(enabled)
         self.ui.actionImportImageSequence.setEnabled(enabled)
+        if hasattr(self.ui, "pushButtonProcessImageSequence"):
+            self._update_image_sequence_controls()
 
     def _set_json_import_controls_enabled(self, enabled: bool) -> None:
         self.ui.pushButtonImportReferenceJson.setEnabled(enabled)
@@ -195,7 +197,11 @@ class ImageMixin:
                 height=preview.original_height,
             )
         )
-        if clear_existing_pairs and hasattr(self, "_maybe_auto_import_star_pair_session_for_image"):
+        skip_auto_import = (
+            hasattr(self, "_should_skip_auto_import_star_pair_session")
+            and self._should_skip_auto_import_star_pair_session(Path(preview.path))
+        )
+        if clear_existing_pairs and not skip_auto_import and hasattr(self, "_maybe_auto_import_star_pair_session_for_image"):
             self._maybe_auto_import_star_pair_session_for_image(Path(preview.path))
 
     def _handle_single_image_import_finished(self, preview: object) -> None:
@@ -214,9 +220,6 @@ class ImageMixin:
         self._image_import_worker = None
         self._image_import_progress = None
         self._set_image_import_controls_enabled(True)
-
-    def show_sequence_import_placeholder(self) -> None:
-        QMessageBox.information(self, "序列图像导入", "序列图像导入入口已预留，将在后续阶段实现。")
 
     def import_sky_mask(self) -> None:
         if self._mask_import_thread is not None:

@@ -92,6 +92,7 @@ from .app_star_pair_table import StarPairTableMixin
 from .app_alignment import AlignmentMixin
 from .app_star_pair_io import StarPairIOMixin
 from .app_image import ImageMixin
+from .app_sequence import SequenceBatchMixin
 from .app_auto_match import AutoMatchMixin
 from .app_rendering import RenderingMixin
 from .app_view_controls import ViewControlsMixin
@@ -130,6 +131,7 @@ class MainWindow(
     StarPairTableMixin,
     AlignmentMixin,
     StarPairIOMixin,
+    SequenceBatchMixin,
     ImageMixin,
     AutoMatchMixin,
     RenderingMixin,
@@ -248,6 +250,8 @@ class MainWindow(
         self.current_sky_mask_path: Path | None = None
         self.current_sky_mask: np.ndarray | None = None
         self.current_sky_masked_image: QImage | None = None
+        self._image_sequence_items = []
+        self._sequence_processing_active = False
 
         self._init_defaults()
         self._connect_inputs()
@@ -291,6 +295,7 @@ class MainWindow(
         self.ui.spinBoxAutoMatchRadius.setValue(30)
         self._reset_imported_image_labels()
         self._reset_sky_mask_status()
+        self._reset_image_sequence_status()
         self._update_reference_label_controls()
         self._update_auto_match_controls()
         self._update_lens_model_controls()
@@ -328,7 +333,8 @@ class MainWindow(
         self.ui.pushButtonSwapOrientation.clicked.connect(self._swap_camera_orientation)
         self.ui.pushButtonExportReference.clicked.connect(self.export_reference_map)
         self.ui.pushButtonImportSingleImage.clicked.connect(self.import_single_image)
-        self.ui.pushButtonImportImageSequence.clicked.connect(self.show_sequence_import_placeholder)
+        self.ui.pushButtonImportImageSequence.clicked.connect(self.import_image_sequence)
+        self.ui.pushButtonProcessImageSequence.clicked.connect(self.process_image_sequence)
         self.ui.pushButtonExportStarPairs.clicked.connect(self.export_star_pair_session)
         self.ui.pushButtonImportStarPairs.clicked.connect(self.import_star_pair_session)
         self.ui.pushButtonClearStarPairs.clicked.connect(self.clear_all_star_pair_positions)
@@ -341,7 +347,7 @@ class MainWindow(
         self.ui.pushButtonValidateMapping.clicked.connect(self.show_mapping_validation_dialog)
         self.ui.pushButtonExportSourceModel.clicked.connect(self.export_source_model_json)
         self.ui.actionImportSingleImage.triggered.connect(self.import_single_image)
-        self.ui.actionImportImageSequence.triggered.connect(self.show_sequence_import_placeholder)
+        self.ui.actionImportImageSequence.triggered.connect(self.import_image_sequence)
         self.ui.tabWidgetMain.currentChanged.connect(self._handle_tab_changed)
         self.ui.tableWidgetStarPairs.setContextMenuPolicy(Qt.CustomContextMenu)
         self.ui.tableWidgetStarPairs.customContextMenuRequested.connect(self._show_star_pair_context_menu)

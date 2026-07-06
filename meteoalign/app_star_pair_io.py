@@ -16,9 +16,10 @@ from .app_utils import _relative_image_path_for_session, _resolve_star_pair_sess
 from .app_workers import StarPairSessionImportWorker, ReferenceJsonImportWorker
 from .catalog import project_root
 from .image_preview import load_image_preview, ImagePreview
+from .image_sequence import ImageSequenceItem, read_image_capture_time, sequence_item_observation_time_utc
 from .mapping_validation import MappingValidationDialog
 from .reference import build_reference_payload
-from .simulator import ReferenceStar
+from .simulator import ObserverSettings, ReferenceStar, project_horizontal_catalog
 from .alignment import MIN_ALIGNMENT_PAIRS
 
 from .app_constants import (
@@ -50,8 +51,13 @@ class StarPairIOMixin:
     _auto_match_constraint_mode: object  # method
     _auto_match_soft_weight: object  # method
     _reference_label_mode: object  # method
+    _observer_settings: object  # method
     _output_camera_settings: object  # method
     _build_projected_star_map: object  # method
+    _view_settings: object  # method
+    _get_horizontal_catalog: object  # method
+    _get_horizontal_milky_way: object  # method
+    _get_horizontal_solar_system: object  # method
     _select_current_reference_stars: object  # method
     _lens_model: object  # method
     _update_lens_model_controls: object  # method
@@ -130,11 +136,69 @@ class StarPairIOMixin:
         star_id = star.star_id.strip()
         return star.object_type == "star" and bool(star_id) and not star_id.startswith("solar_system:")
 
+    def _current_real_image_capture_item(self) -> ImageSequenceItem | None:
+        if self.current_image_preview is None:
+            return None
+        try:
+            return read_image_capture_time(Path(self.current_image_preview.path))
+        except Exception:  # noqa: BLE001 - JSON 时间源允许退回到星空模拟页时间。
+            return None
+
+    def _current_real_image_capture_payload(self) -> dict[str, object]:
+        item = self._current_real_image_capture_item()
+        if item is None:
+            return {}
+        payload: dict[str, object] = {
+            "capture_time_source": item.capture_time_source,
+            "exif_capture_time": item.capture_datetime.isoformat(),
+        }
+        if item.capture_datetime_utc is not None:
+            payload["capture_time_utc"] = item.capture_datetime_utc.isoformat()
+        return payload
+
+    def _reference_payload_observer(self) -> tuple[ObserverSettings, dict[str, object]]:
+        base_observer = self._observer_settings()
+        item = self._current_real_image_capture_item()
+        if item is None:
+            return base_observer, {
+                "observation_time_source": "star_simulator_ui",
+            }
+
+        utc_offset_hours = float(self.ui.doubleSpinBoxUtcOffset.value())
+        observer = ObserverSettings(
+            observation_time_utc=sequence_item_observation_time_utc(item, utc_offset_hours),
+            latitude_deg=base_observer.latitude_deg,
+            longitude_deg=base_observer.longitude_deg,
+            elevation_m=base_observer.elevation_m,
+        )
+        payload: dict[str, object] = {
+            "observation_time_source": "real_image_exif",
+            "capture_time_source": item.capture_time_source,
+            "exif_capture_time": item.capture_datetime.isoformat(),
+        }
+        if item.capture_datetime_utc is not None:
+            payload["capture_time_utc"] = item.capture_datetime_utc.isoformat()
+        return observer, payload
+
     def _build_reference_payload_for_current_settings(self) -> dict[str, object]:
         output_camera = self._output_camera_settings()
-        observer, camera, view, mag_limit, star_map = self._build_projected_star_map(camera=output_camera)
+        observer, observer_time_payload = self._reference_payload_observer()
+        camera = output_camera
+        view = self._view_settings()
+        mag_limit = float(self.ui.doubleSpinBoxMagLimit.value())
+        horizontal_catalog = self._get_horizontal_catalog(observer, mag_limit)
+        horizontal_milky_way = self._get_horizontal_milky_way(observer)
+        horizontal_solar_system = self._get_horizontal_solar_system(observer)
+        star_map = project_horizontal_catalog(
+            horizontal_catalog=horizontal_catalog,
+            camera=camera,
+            view=view,
+            visible_mag_limit=mag_limit,
+            horizontal_milky_way=horizontal_milky_way,
+            horizontal_solar_system=horizontal_solar_system,
+        )
         reference_stars = self._select_current_reference_stars(star_map)
-        return build_reference_payload(
+        payload = build_reference_payload(
             star_map=star_map,
             reference_stars=reference_stars,
             observer=observer,
@@ -146,6 +210,10 @@ class StarPairIOMixin:
             reference_mag_limit=self.ui.doubleSpinBoxReferenceMagLimit.value(),
             manual_reference_star_ids=tuple(self._manual_reference_star_ids),
         )
+        observer_payload = payload.get("observer")
+        if isinstance(observer_payload, dict):
+            observer_payload.update(observer_time_payload)
+        return payload
 
     def _star_pair_records(self) -> list[dict[str, object]]:
         records: list[dict[str, object]] = []
@@ -305,19 +373,21 @@ class StarPairIOMixin:
         reference_payload = self._build_reference_payload_for_current_settings()
         pair_records = self._star_pair_records()
         generated_time = datetime.now(timezone.utc)
+        real_image_payload = {
+            "path": str(image_path),
+            "relative_path": relative_image_path,
+            "file_name": image_path.name,
+            "original_width_px": preview.original_width,
+            "original_height_px": preview.original_height,
+            "display_width_px": preview.image.width(),
+            "display_height_px": preview.image.height(),
+        }
+        real_image_payload.update(self._current_real_image_capture_payload())
         return {
             "format": STAR_PAIR_SESSION_FORMAT,
             "version": STAR_PAIR_SESSION_VERSION,
             "generated_at_utc": generated_time.isoformat(),
-            "real_image": {
-                "path": str(image_path),
-                "relative_path": relative_image_path,
-                "file_name": image_path.name,
-                "original_width_px": preview.original_width,
-                "original_height_px": preview.original_height,
-                "display_width_px": preview.image.width(),
-                "display_height_px": preview.image.height(),
-            },
+            "real_image": real_image_payload,
             "reference_payload": reference_payload,
             "sky_alignment_model": self._alignment_model(),
             "auto_match_star_ids": list(self._auto_match_reference_star_ids),
@@ -359,7 +429,7 @@ class StarPairIOMixin:
             raise ValueError("请先导入真实图像。")
         preview = self.current_image_preview
         image_path = Path(preview.path).expanduser().resolve()
-        return {
+        payload = {
             "path": str(image_path),
             "relative_path": _relative_image_path_for_session(image_path, json_path),
             "file_name": image_path.name,
@@ -368,6 +438,8 @@ class StarPairIOMixin:
             "model_width_px": preview.image.width(),
             "model_height_px": preview.image.height(),
         }
+        payload.update(self._current_real_image_capture_payload())
+        return payload
 
     def _sky_mask_payload(self, json_path: Path) -> dict[str, object]:
         if self.current_sky_mask is None:
@@ -414,6 +486,7 @@ class StarPairIOMixin:
             fit_pairs=self._star_pair_records(),
             mask=self._sky_mask_payload(json_path),
             matching=self._auto_match_settings_payload(),
+            reference_payload=self._build_reference_payload_for_current_settings(),
         )
 
     def export_source_model_json(self) -> None:
@@ -826,15 +899,16 @@ class StarPairIOMixin:
     ) -> None:
         if not isinstance(payload, dict):
             raise ValueError("JSON 根对象必须是字典。")
-        if payload.get("format") != STAR_PAIR_SESSION_FORMAT:
+        payload_format = payload.get("format")
+        if payload_format != STAR_PAIR_SESSION_FORMAT:
             raise ValueError("当前只支持 MeteoAlign 星点配对 JSON。")
 
         reference_payload = payload.get("reference_payload")
-        if not isinstance(reference_payload, dict):
-            raise ValueError("JSON 缺少 reference_payload 字段。")
         pair_payloads = payload.get("pairs", [])
         if not isinstance(pair_payloads, list):
             raise ValueError("JSON 中 pairs 字段必须是列表。")
+        if not isinstance(reference_payload, dict):
+            raise ValueError("JSON 缺少 reference_payload 字段。")
         auto_match_star_ids = self._session_auto_match_star_ids(payload, pair_payloads)
         auto_match_constraints = self._session_auto_match_constraints(payload, pair_payloads)
         (

@@ -633,7 +633,7 @@
              <property name="maximumSize">
               <size>
                <width>16777215</width>
-               <height>190</height>
+               <height>245</height>
               </size>
              </property>
              <layout class="QVBoxLayout" name="verticalLayoutImportedImage">
@@ -682,6 +682,35 @@
                   </property>
                  </widget>
                 </item>
+                <item row="2" column="0">
+                 <widget class="QLabel" name="labelImageSequenceStatusTitle">
+                  <property name="text">
+                   <string>序列</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="2" column="1">
+                 <widget class="QLabel" name="labelImageSequenceStatus">
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Ignored" vsizetype="Preferred">
+                    <horstretch>0</horstretch>
+                    <verstretch>0</verstretch>
+                   </sizepolicy>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>0</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="text">
+                   <string>未导入序列</string>
+                  </property>
+                  <property name="wordWrap">
+                   <bool>false</bool>
+                  </property>
+                 </widget>
+                </item>
                </layout>
               </item>
               <item>
@@ -695,6 +724,16 @@
                <widget class="QPushButton" name="pushButtonImportImageSequence">
                 <property name="text">
                  <string>导入序列图像</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QPushButton" name="pushButtonProcessImageSequence">
+                <property name="enabled">
+                 <bool>false</bool>
+                </property>
+                <property name="text">
+                 <string>开始处理图像序列</string>
                 </property>
                </widget>
               </item>
