@@ -90,7 +90,7 @@ class StarPairTableMixin:
     real_image_scene: object
     reference_scene: object
     _syncing_reference_real_views: bool
-    _hide_real_image_annotations: object  # method
+    _show_real_image_annotations: object  # method
     _star_pair_alignment_residual: object  # method
     _residual_warning_thresholds: object  # method
     _update_reference_alignment_transform: object  # method
@@ -1039,7 +1039,7 @@ class StarPairTableMixin:
         self._focused_star_annotations.clear()
 
     def _update_star_pair_annotation_visibility(self) -> None:
-        visible = not self._hide_real_image_annotations()
+        visible = self._show_real_image_annotations()
         for ellipse_item, label_item in self._star_pair_annotations.values():
             ellipse_item.setVisible(visible)
             label_item.setVisible(visible)
@@ -1258,11 +1258,11 @@ class StarPairTableMixin:
             self._syncing_reference_real_views = False
 
     def _set_focus_base_annotations_hidden(self) -> None:
-        if self.ui.checkBoxHideReferenceAnnotations.isChecked() and self.ui.checkBoxHideRealImageAnnotations.isChecked():
+        if not self.ui.checkBoxHideReferenceAnnotations.isChecked() and not self.ui.checkBoxHideRealImageAnnotations.isChecked():
             self._clear_focused_star_annotations()
             return
-        self.ui.checkBoxHideReferenceAnnotations.setChecked(True)
-        self.ui.checkBoxHideRealImageAnnotations.setChecked(True)
+        self.ui.checkBoxHideReferenceAnnotations.setChecked(False)
+        self.ui.checkBoxHideRealImageAnnotations.setChecked(False)
 
     def _set_reference_real_sync_checked(self) -> None:
         self._update_reference_alignment_controls()
@@ -1317,7 +1317,7 @@ class StarPairTableMixin:
         self._create_focus_annotation_items(self.real_image_scene, focus_point, focus_label)
         self.ui.tableWidgetStarPairs.selectRow(row)
         self.ui.statusbar.showMessage(
-            f"已聚焦 {focus_label} 的理论位置: x={predicted_x:.2f}, y={predicted_y:.2f}。切换标注隐藏选项可重置标注显示。"
+            f"已聚焦 {focus_label} 的理论位置: x={predicted_x:.2f}, y={predicted_y:.2f}。切换标注选项可重置标注显示。"
         )
 
     def _selected_star_pair_rows(self) -> list[int]:

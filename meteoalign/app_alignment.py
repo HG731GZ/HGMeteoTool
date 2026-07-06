@@ -368,10 +368,10 @@ class AlignmentMixin:
     def _reference_overlay_opacity(self) -> float:
         return max(0.0, min(1.0, self.ui.doubleSpinBoxReferenceOverlayOpacity.value() / 100.0))
 
-    def _hide_reference_annotations(self) -> bool:
+    def _show_reference_annotations(self) -> bool:
         return self.ui.checkBoxHideReferenceAnnotations.isChecked()
 
-    def _hide_real_image_annotations(self) -> bool:
+    def _show_real_image_annotations(self) -> bool:
         return self.ui.checkBoxHideRealImageAnnotations.isChecked()
 
     def _set_alignment_status_text(self, text: str, tooltip: str | None = None) -> None:
@@ -386,11 +386,11 @@ class AlignmentMixin:
         self.real_reference_overlay_item.setOpacity(self._reference_overlay_opacity())
         self._update_reference_alignment_controls()
 
-    def _handle_hide_reference_annotations_toggled(self, *unused) -> None:  # type: ignore[no-untyped-def]
+    def _handle_show_reference_annotations_toggled(self, *unused) -> None:  # type: ignore[no-untyped-def]
         self._clear_focused_star_annotations()
         self._update_reference_alignment_display()
 
-    def _handle_hide_real_image_annotations_toggled(self, *unused) -> None:  # type: ignore[no-untyped-def]
+    def _handle_show_real_image_annotations_toggled(self, *unused) -> None:  # type: ignore[no-untyped-def]
         self._clear_focused_star_annotations()
         self._update_star_pair_annotation_visibility()
 
@@ -520,7 +520,7 @@ class AlignmentMixin:
             target_size = (int(scene_rect.width()), int(scene_rect.height()))
             display_key: tuple[object, ...] = ("aligned", target_size[0], target_size[1])
             element_scale = self._aligned_star_element_scale(target_size)
-            number_reference_stars = not self._hide_reference_annotations()
+            number_reference_stars = self._show_reference_annotations()
             display_star_map = self._build_aligned_reference_star_map(transform, target_size)
             self._current_reference_star_map = display_star_map
             self.reference_star_map_item.set_star_map(
@@ -537,7 +537,7 @@ class AlignmentMixin:
         else:
             target_size = None
             display_key = ("native", star_map.width, star_map.height)
-            number_reference_stars = not self._hide_reference_annotations()
+            number_reference_stars = self._show_reference_annotations()
             self._current_reference_star_map = star_map
             self.reference_star_map_item.set_star_map(
                 star_map,
@@ -566,7 +566,7 @@ class AlignmentMixin:
                 target_size=target_size,
                 element_scale=self._aligned_star_element_scale(target_size),
                 draw_common_names=False,
-                number_reference_stars=not self._hide_reference_annotations(),
+                number_reference_stars=self._show_reference_annotations(),
             )
             self.real_reference_overlay_item.setOpacity(self._reference_overlay_opacity())
             self.real_reference_overlay_item.setVisible(True)

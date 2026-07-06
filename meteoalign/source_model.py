@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
+from scipy.optimize import least_squares
 
 from .alignment import (
     AnchorInterpolation2D,
@@ -18,11 +19,19 @@ from .alignment import (
     fit_anchor_interpolation,
     fit_projection_sky_alignment,
 )
-from .coordinates import project_radec_to_sky_plane, sky_plane_basis, sky_plane_to_radec, unit_vectors_to_radec
+from .coordinates import (
+    project_radec_to_sky_plane,
+    radec_to_unit_vectors,
+    sky_plane_basis,
+    sky_plane_to_radec,
+    unit_vectors_to_radec,
+)
 
 
 SOURCE_MODEL_FORMAT = "meteoalign_source_astrometric_model"
-SOURCE_MODEL_VERSION = 2
+SOURCE_MODEL_VERSION = 3
+INVERSE_SOLVER_MAX_NFEV = 80
+INVERSE_SOLVER_INVALID_RESIDUAL_PX = 1e6
 
 
 def _as_float_list(values: np.ndarray) -> list[float]:
@@ -62,6 +71,29 @@ def _residual_summary(residual_vectors: np.ndarray) -> tuple[float, float, float
     if residual_vectors.size == 0:
         return float("nan"), float("nan"), float("nan")
     distances = np.linalg.norm(residual_vectors, axis=1)
+    return (
+        float(np.sqrt(np.mean(distances * distances))),
+        float(np.median(distances)),
+        float(np.max(distances)),
+    )
+
+
+def _angular_residual_summary_arcsec(reference_radec: np.ndarray, measured_radec: np.ndarray) -> tuple[float, float, float]:
+    reference = np.asarray(reference_radec, dtype=np.float64)
+    measured = np.asarray(measured_radec, dtype=np.float64)
+    if reference.size == 0 or measured.size == 0:
+        return float("nan"), float("nan"), float("nan")
+    finite = np.all(np.isfinite(reference), axis=1) & np.all(np.isfinite(measured), axis=1)
+    reference = reference[finite]
+    measured = measured[finite]
+    if reference.size == 0:
+        return float("nan"), float("nan"), float("nan")
+    reference_vectors = radec_to_unit_vectors(reference[:, 0], reference[:, 1])
+    measured_vectors = radec_to_unit_vectors(measured[:, 0], measured[:, 1])
+    dots = np.sum(reference_vectors * measured_vectors, axis=1)
+    distances = np.rad2deg(np.arccos(np.clip(dots, -1.0, 1.0))) * 3600.0
+    if distances.size == 0:
+        return float("nan"), float("nan"), float("nan")
     return (
         float(np.sqrt(np.mean(distances * distances))),
         float(np.median(distances)),
@@ -124,12 +156,32 @@ class SourceAstrometricModel:
     rms_px: float
     median_residual_px: float
     max_residual_px: float
-    inverse_rms_arcsec: float
-    inverse_median_arcsec: float
-    inverse_max_arcsec: float
-    wcs: dict[str, Any]
+    inverse_seed_rms_arcsec: float
+    inverse_seed_median_arcsec: float
+    inverse_seed_max_arcsec: float
+    inverse_fit_rms_arcsec: float
+    inverse_fit_median_arcsec: float
+    inverse_fit_max_arcsec: float
+    inverse_roundtrip_rms_px: float
+    inverse_roundtrip_median_px: float
+    inverse_roundtrip_max_px: float
     model_type: str = "local_sky_plane_anchor_interpolation"
     projection_transform: ProjectionSkyAlignmentTransform | None = None
+
+    def _sky_plane_to_pixel_points(self, plane_points: np.ndarray) -> np.ndarray:
+        plane_array = np.asarray(plane_points, dtype=np.float64)
+        if plane_array.ndim == 1:
+            plane_array = plane_array.reshape(1, 2)
+        if plane_array.ndim != 2 or plane_array.shape[1] != 2:
+            raise ValueError("天球平面点必须是 Nx2 数组。")
+
+        radec = sky_plane_to_radec(
+            plane_array,
+            self.center_vector,
+            self.east_vector,
+            self.north_vector,
+        )
+        return self.direction_to_pixel_points(radec)
 
     def direction_to_pixel_points(self, ra_dec_points: np.ndarray) -> np.ndarray:
         ra_dec_array = np.asarray(ra_dec_points, dtype=np.float64)
@@ -152,6 +204,60 @@ class SourceAstrometricModel:
         )
         return self.sky_to_pixel_interpolation.evaluate_points(plane_points)
 
+    def pixel_to_sky_plane_points(self, pixel_points: np.ndarray) -> np.ndarray:
+        pixel_array = np.asarray(pixel_points, dtype=np.float64)
+        if pixel_array.ndim == 1:
+            pixel_array = pixel_array.reshape(1, 2)
+        if pixel_array.ndim != 2 or pixel_array.shape[1] != 2:
+            raise ValueError("pixel_to_sky_plane_points 需要 Nx2 的像素坐标数组。")
+
+        initial_plane = self.pixel_to_sky_plane_interpolation.evaluate_points(pixel_array)
+        refined = np.full_like(initial_plane, np.nan, dtype=np.float64)
+        for index, (pixel, seed) in enumerate(zip(pixel_array, initial_plane, strict=True)):
+            if not np.all(np.isfinite(pixel)) or not np.all(np.isfinite(seed)):
+                continue
+            refined[index] = self._refine_pixel_to_sky_plane(pixel, seed)
+        return refined
+
+    def _refine_pixel_to_sky_plane(self, pixel_point: np.ndarray, seed_plane: np.ndarray) -> np.ndarray:
+        target_pixel = np.asarray(pixel_point, dtype=np.float64)
+        best_plane = np.asarray(seed_plane, dtype=np.float64)
+        best_residual = self._pixel_inverse_residual(best_plane, target_pixel)
+        best_norm = float(np.linalg.norm(best_residual)) if np.all(np.isfinite(best_residual)) else float("inf")
+
+        def residual_function(plane_values: np.ndarray) -> np.ndarray:
+            return self._pixel_inverse_residual(np.asarray(plane_values, dtype=np.float64), target_pixel)
+
+        try:
+            result = least_squares(
+                residual_function,
+                best_plane,
+                max_nfev=INVERSE_SOLVER_MAX_NFEV,
+                xtol=1e-10,
+                ftol=1e-10,
+                gtol=1e-10,
+            )
+        except ValueError:
+            result = None
+
+        if result is not None and np.all(np.isfinite(result.x)):
+            result_residual = self._pixel_inverse_residual(result.x, target_pixel)
+            result_norm = (
+                float(np.linalg.norm(result_residual)) if np.all(np.isfinite(result_residual)) else float("inf")
+            )
+            if result_norm <= best_norm:
+                best_plane = result.x.astype(np.float64)
+        return best_plane.astype(np.float64)
+
+    def _pixel_inverse_residual(self, plane_point: np.ndarray, target_pixel: np.ndarray) -> np.ndarray:
+        projected = self._sky_plane_to_pixel_points(np.asarray(plane_point, dtype=np.float64).reshape(1, 2))[0]
+        if not np.all(np.isfinite(projected)):
+            return np.asarray(
+                [INVERSE_SOLVER_INVALID_RESIDUAL_PX, INVERSE_SOLVER_INVALID_RESIDUAL_PX],
+                dtype=np.float64,
+            )
+        return (projected - target_pixel).astype(np.float64)
+
     def pixel_to_radec_points(self, pixel_points: np.ndarray) -> np.ndarray:
         pixel_array = np.asarray(pixel_points, dtype=np.float64)
         if pixel_array.ndim == 1:
@@ -159,7 +265,7 @@ class SourceAstrometricModel:
         if pixel_array.ndim != 2 or pixel_array.shape[1] != 2:
             raise ValueError("pixel_to_radec_points 需要 Nx2 的像素坐标数组。")
 
-        plane_points = self.pixel_to_sky_plane_interpolation.evaluate_points(pixel_array)
+        plane_points = self.pixel_to_sky_plane_points(pixel_array)
         return sky_plane_to_radec(
             plane_points,
             self.center_vector,
@@ -181,6 +287,7 @@ class SourceAstrometricModel:
         reference_payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         center_radec = unit_vectors_to_radec(self.center_vector)[0]
+        generated_at_utc = datetime.now(timezone.utc).isoformat()
         if self.projection_transform is None and self.sky_to_pixel_interpolation is None:
             raise ValueError("普适源图模型缺少 sky→pixel 锚点插值。")
         sky_to_pixel_payload = (
@@ -199,7 +306,7 @@ class SourceAstrometricModel:
         payload: dict[str, Any] = {
             "format": SOURCE_MODEL_FORMAT,
             "version": SOURCE_MODEL_VERSION,
-            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+            "generated_at_utc": generated_at_utc,
         }
         if source_image is not None:
             payload["source_image"] = source_image
@@ -223,25 +330,41 @@ class SourceAstrometricModel:
                     "center_dec_deg": float(center_radec[1]),
                 },
                 "sky_to_pixel": sky_to_pixel_payload,
-                "pixel_to_sky_plane": _interpolation_payload(
-                    self.pixel_to_sky_plane_interpolation,
-                    input_units="px",
-                    output_units="deg in local sky plane",
-                    input_axis_order=["x_px", "y_px"],
-                    output_axis_order=["u_deg", "v_deg"],
-                    weight_names=("tps_weights_u_deg", "tps_weights_v_deg"),
-                    affine_names=("tps_affine_u_deg", "tps_affine_v_deg"),
-                ),
+                "pixel_to_sky": {
+                    "kind": "numerical_inverse_of_sky_to_pixel",
+                    "input_units": "px",
+                    "output": "ICRS RA/Dec direction",
+                    "solver": {
+                        "method": "least_squares",
+                        "variables": ["u_deg", "v_deg"],
+                        "forward_model": "sky_to_pixel",
+                        "max_nfev": INVERSE_SOLVER_MAX_NFEV,
+                    },
+                    "initial_estimate": _interpolation_payload(
+                        self.pixel_to_sky_plane_interpolation,
+                        input_units="px",
+                        output_units="deg in local sky plane",
+                        input_axis_order=["x_px", "y_px"],
+                        output_axis_order=["u_deg", "v_deg"],
+                        weight_names=("tps_weights_u_deg", "tps_weights_v_deg"),
+                        affine_names=("tps_affine_u_deg", "tps_affine_v_deg"),
+                    ),
+                },
                 "diagnostics": {
                     "pair_count": int(self.pair_count),
                     "rms_px": float(self.rms_px),
                     "median_residual_px": float(self.median_residual_px),
                     "max_residual_px": float(self.max_residual_px),
-                    "inverse_rms_arcsec": float(self.inverse_rms_arcsec),
-                    "inverse_median_arcsec": float(self.inverse_median_arcsec),
-                    "inverse_max_arcsec": float(self.inverse_max_arcsec),
+                    "inverse_seed_rms_arcsec": float(self.inverse_seed_rms_arcsec),
+                    "inverse_seed_median_arcsec": float(self.inverse_seed_median_arcsec),
+                    "inverse_seed_max_arcsec": float(self.inverse_seed_max_arcsec),
+                    "inverse_fit_rms_arcsec": float(self.inverse_fit_rms_arcsec),
+                    "inverse_fit_median_arcsec": float(self.inverse_fit_median_arcsec),
+                    "inverse_fit_max_arcsec": float(self.inverse_fit_max_arcsec),
+                    "inverse_roundtrip_rms_px": float(self.inverse_roundtrip_rms_px),
+                    "inverse_roundtrip_median_px": float(self.inverse_roundtrip_median_px),
+                    "inverse_roundtrip_max_px": float(self.inverse_roundtrip_max_px),
                 },
-                "fits_wcs_compat": self.wcs,
             }
         )
         if self.projection_transform is not None:
@@ -294,73 +417,6 @@ def _projection_transform_payload(transform: ProjectionSkyAlignmentTransform) ->
             "tps_affine_dx_px": _as_float_list(transform.residual_tps_affine_x),
             "tps_affine_dy_px": _as_float_list(transform.residual_tps_affine_y),
         },
-    }
-
-
-def _finite_difference_pixel_to_sky_jacobian(
-    interpolation: AnchorInterpolation2D,
-    x_px: float,
-    y_px: float,
-) -> tuple[float, float, float, float]:
-    step_px = max(min(float(interpolation.scale_x), float(interpolation.scale_y)) * 1e-4, 1.0)
-    sample_points = np.asarray(
-        (
-            (x_px + step_px, y_px),
-            (x_px - step_px, y_px),
-            (x_px, y_px + step_px),
-            (x_px, y_px - step_px),
-        ),
-        dtype=np.float64,
-    )
-    samples = interpolation.evaluate_points(sample_points)
-    if not np.all(np.isfinite(samples)):
-        return float("nan"), float("nan"), float("nan"), float("nan")
-    du_dx, dv_dx = (samples[0] - samples[1]) / (2.0 * step_px)
-    du_dy, dv_dy = (samples[2] - samples[3]) / (2.0 * step_px)
-    return float(du_dx), float(du_dy), float(dv_dx), float(dv_dy)
-
-
-def _build_wcs_compat(
-    *,
-    model: SourceAstrometricModel,
-    center_pixel: np.ndarray,
-) -> dict[str, Any]:
-    center_radec = unit_vectors_to_radec(model.center_vector)[0]
-    x0 = float(center_pixel[0])
-    y0 = float(center_pixel[1])
-    du_dx, du_dy, dv_dx, dv_dy = _finite_difference_pixel_to_sky_jacobian(
-        model.pixel_to_sky_plane_interpolation,
-        x0,
-        y0,
-    )
-    header_cards = {
-        "WCSAXES": 2,
-        "CTYPE1": "RA---TAN",
-        "CTYPE2": "DEC--TAN",
-        "CUNIT1": "deg",
-        "CUNIT2": "deg",
-        "CRVAL1": float(center_radec[0]),
-        "CRVAL2": float(center_radec[1]),
-        "CRPIX1": x0 + 1.0,
-        "CRPIX2": y0 + 1.0,
-        "CD1_1": du_dx,
-        "CD1_2": du_dy,
-        "CD2_1": dv_dx,
-        "CD2_2": dv_dy,
-        "RADESYS": "ICRS",
-        "EQUINOX": 2000.0,
-    }
-    return {
-        "approximate": True,
-        "standard": "FITS WCS TAN local approximation",
-        "note": (
-            "header_cards 是局部线性 TAN WCS 近似；完整映射请使用 pixel_to_sky_plane "
-            "锚点插值与 projection_basis。"
-        ),
-        "header_cards": header_cards,
-        "crpix_is_one_based": True,
-        "pixel_axis_order": ["x", "y"],
-        "world_axis_order": ["RA", "Dec"],
     }
 
 
@@ -437,17 +493,9 @@ def fit_source_astrometric_model(
         model_type = "local_sky_plane_anchor_interpolation"
     rms_px, median_px, max_px = _residual_summary(predicted_pixels - pixels)
 
-    predicted_plane = pixel_to_sky_plane_interpolation.evaluate_points(pixels)
-    inverse_rms_deg, inverse_median_deg, inverse_max_deg = _residual_summary(predicted_plane - sky_plane)
-    if projection_transform is not None:
-        center_radec = sky_plane_to_radec(np.asarray([[0.0, 0.0]], dtype=np.float64), center, east, north)
-        center_pixel = projection_transform.transform_radec_points(center_radec)[0]
-    else:
-        center_pixel = sky_to_pixel_interpolation.evaluate_points(np.asarray([[0.0, 0.0]], dtype=np.float64))[0]
-    if not np.all(np.isfinite(center_pixel)):
-        center_pixel = np.asarray([image_width / 2.0, image_height / 2.0], dtype=np.float64)
-
-    placeholder_wcs: dict[str, Any] = {}
+    seed_plane = pixel_to_sky_plane_interpolation.evaluate_points(pixels)
+    seed_radec = sky_plane_to_radec(seed_plane, center, east, north)
+    seed_rms_arcsec, seed_median_arcsec, seed_max_arcsec = _angular_residual_summary_arcsec(sky_radec, seed_radec)
     model = SourceAstrometricModel(
         image_width_px=image_width,
         image_height_px=image_height,
@@ -460,12 +508,31 @@ def fit_source_astrometric_model(
         rms_px=float(rms_px),
         median_residual_px=float(median_px),
         max_residual_px=float(max_px),
-        inverse_rms_arcsec=float(inverse_rms_deg * 3600.0),
-        inverse_median_arcsec=float(inverse_median_deg * 3600.0),
-        inverse_max_arcsec=float(inverse_max_deg * 3600.0),
-        wcs=placeholder_wcs,
+        inverse_seed_rms_arcsec=float(seed_rms_arcsec),
+        inverse_seed_median_arcsec=float(seed_median_arcsec),
+        inverse_seed_max_arcsec=float(seed_max_arcsec),
+        inverse_fit_rms_arcsec=float("nan"),
+        inverse_fit_median_arcsec=float("nan"),
+        inverse_fit_max_arcsec=float("nan"),
+        inverse_roundtrip_rms_px=float("nan"),
+        inverse_roundtrip_median_px=float("nan"),
+        inverse_roundtrip_max_px=float("nan"),
         model_type=model_type,
         projection_transform=projection_transform,
     )
-    object.__setattr__(model, "wcs", _build_wcs_compat(model=model, center_pixel=center_pixel))
+    inverse_radec = model.pixel_to_radec_points(pixels)
+    inverse_rms_arcsec, inverse_median_arcsec, inverse_max_arcsec = _angular_residual_summary_arcsec(
+        sky_radec,
+        inverse_radec,
+    )
+    inverse_pixels = model.direction_to_pixel_points(inverse_radec)
+    inverse_roundtrip_rms_px, inverse_roundtrip_median_px, inverse_roundtrip_max_px = _residual_summary(
+        inverse_pixels - pixels
+    )
+    object.__setattr__(model, "inverse_fit_rms_arcsec", float(inverse_rms_arcsec))
+    object.__setattr__(model, "inverse_fit_median_arcsec", float(inverse_median_arcsec))
+    object.__setattr__(model, "inverse_fit_max_arcsec", float(inverse_max_arcsec))
+    object.__setattr__(model, "inverse_roundtrip_rms_px", float(inverse_roundtrip_rms_px))
+    object.__setattr__(model, "inverse_roundtrip_median_px", float(inverse_roundtrip_median_px))
+    object.__setattr__(model, "inverse_roundtrip_max_px", float(inverse_roundtrip_max_px))
     return model

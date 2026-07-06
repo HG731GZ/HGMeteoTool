@@ -148,6 +148,7 @@ def test_source_model_exports_known_projection_payload() -> None:
     assert "degree" not in payload["known_projection"]["residual_correction"]
     assert "coeff_x_px" not in payload["known_projection"]["residual_correction"]
     assert payload["diagnostics"]["rms_px"] < 1e-6
+    assert payload["diagnostics"]["inverse_roundtrip_rms_px"] < 1e-6
 
 
 def _initial_rotation_from_reference_payload(reference_payload: dict[str, object]) -> np.ndarray:

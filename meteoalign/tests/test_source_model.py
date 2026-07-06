@@ -21,7 +21,7 @@ def _angular_error_arcsec(first_radec: np.ndarray, second_radec: np.ndarray) -> 
     return np.rad2deg(np.arccos(np.clip(dot, -1.0, 1.0))) * 3600.0
 
 
-def test_source_astrometric_model_round_trip_and_wcs_payload() -> None:
+def test_source_astrometric_model_round_trip_and_json_payload() -> None:
     center, east, north = _local_basis(120.0, 30.0)
     sky_plane = np.asarray(
         [
@@ -49,16 +49,22 @@ def test_source_astrometric_model_round_trip_and_wcs_payload() -> None:
     recovered_radec = model.pixel_to_radec_points(pixels)
     assert float(np.max(_angular_error_arcsec(radec, recovered_radec))) < 1e-2
 
+    sample_plane = np.asarray([[0.35, -0.25], [-0.55, 0.65]], dtype=np.float64)
+    sample_radec = sky_plane_to_radec(sample_plane, center, east, north)
+    sample_pixels = model.direction_to_pixel_points(sample_radec)
+    round_trip_pixels = model.direction_to_pixel_points(model.pixel_to_radec_points(sample_pixels))
+    assert np.max(np.linalg.norm(round_trip_pixels - sample_pixels, axis=1)) < 1e-6
+
     payload = model.to_json_payload()
     assert payload["format"] == SOURCE_MODEL_FORMAT
-    assert payload["version"] == 2
+    assert payload["version"] == 3
     assert payload["model_type"] == "local_sky_plane_anchor_interpolation"
     assert payload["sky_to_pixel"]["kind"] == "thin_plate_spline"
     assert "degree" not in payload["sky_to_pixel"]
     assert "coeff_x" not in payload["sky_to_pixel"]
-    assert payload["pixel_to_sky_plane"]["kind"] == "thin_plate_spline"
-    assert payload["fits_wcs_compat"]["header_cards"]["CTYPE1"] == "RA---TAN"
-    assert payload["fits_wcs_compat"]["header_cards"]["CTYPE2"] == "DEC--TAN"
+    assert payload["pixel_to_sky"]["kind"] == "numerical_inverse_of_sky_to_pixel"
+    assert payload["pixel_to_sky"]["initial_estimate"]["kind"] == "thin_plate_spline"
+    assert "fits_wcs_compat" not in payload
 
 
 def test_source_astrometric_model_path_sections_are_near_json_start() -> None:

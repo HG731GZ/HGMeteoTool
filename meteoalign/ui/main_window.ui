@@ -1103,7 +1103,17 @@
               <item>
                <widget class="QCheckBox" name="checkBoxSyncReferenceAndRealView">
                 <property name="text">
-                 <string>同步拖拽</string>
+                 <string>同步</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <widget class="QCheckBox" name="checkBoxHideReferenceAnnotations">
+                <property name="text">
+                 <string>标注</string>
+                </property>
+                <property name="checked">
+                 <bool>true</bool>
                 </property>
                </widget>
               </item>
@@ -1111,13 +1121,6 @@
                <widget class="QCheckBox" name="checkBoxOverlayReferenceMap">
                 <property name="text">
                  <string>叠加显示</string>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <widget class="QCheckBox" name="checkBoxHideReferenceAnnotations">
-                <property name="text">
-                 <string>隐藏参考标注</string>
                 </property>
                </widget>
               </item>
@@ -1205,21 +1208,24 @@
                  </font>
                 </property>
                 <property name="text">
-                 <string>真实图像预览</string>
+                 <string>真实图像</string>
                 </property>
                </widget>
               </item>
               <item>
                <widget class="QCheckBox" name="checkBoxShowSkyMask">
                 <property name="text">
-                 <string>显示蒙版</string>
+                 <string>蒙版</string>
                 </property>
                </widget>
               </item>
               <item>
                <widget class="QCheckBox" name="checkBoxHideRealImageAnnotations">
                 <property name="text">
-                 <string>隐藏真实标注</string>
+                 <string>标注</string>
+                </property>
+                <property name="checked">
+                 <bool>true</bool>
                 </property>
                </widget>
               </item>
