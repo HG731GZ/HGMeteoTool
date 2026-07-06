@@ -62,6 +62,15 @@ class SolarSystemObjectSpec:
 
 SOLAR_SYSTEM_OBJECT_SPECS = (
     SolarSystemObjectSpec(
+        object_id="sun",
+        display_name="太阳",
+        kernel_name="sun",
+        mag_v=-26.7,
+        color_rgb=(255, 232, 150),
+        radius_px=9.5,
+        reference_allowed=False,
+    ),
+    SolarSystemObjectSpec(
         object_id="mercury",
         display_name="水星",
         kernel_name="mercury barycenter",

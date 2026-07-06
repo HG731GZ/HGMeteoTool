@@ -20,6 +20,9 @@ class StarMapRenderer:
         number_reference_stars: bool = True,
         draw_background: bool = True,
         draw_horizon_shadow: bool = True,
+        draw_grid: bool = True,
+        draw_solar_system_labels: bool = True,
+        draw_direction_labels: bool = True,
         star_radius_scale: float = 1.0,
     ) -> QImage:
         element_scale = max(float(element_scale), 0.05)
@@ -39,6 +42,9 @@ class StarMapRenderer:
             number_reference_stars=number_reference_stars,
             draw_background=draw_background,
             draw_horizon_shadow=draw_horizon_shadow,
+            draw_grid=draw_grid,
+            draw_solar_system_labels=draw_solar_system_labels,
+            draw_direction_labels=draw_direction_labels,
             star_radius_scale=star_radius_scale,
         )
         painter.end()
@@ -54,6 +60,9 @@ class StarMapRenderer:
         number_reference_stars: bool = True,
         draw_background: bool = True,
         draw_horizon_shadow: bool = True,
+        draw_grid: bool = True,
+        draw_solar_system_labels: bool = True,
+        draw_direction_labels: bool = True,
         star_radius_scale: float = 1.0,
     ) -> None:
         element_scale = max(float(element_scale), 0.05)
@@ -78,7 +87,8 @@ class StarMapRenderer:
         self._draw_solar_system_objects(painter, star_map, element_scale, star_radius_scale)
         if draw_horizon_shadow:
             self._draw_horizon_shadow(painter, star_map)
-        self._draw_grid(painter, star_map, element_scale)
+        if draw_grid:
+            self._draw_grid(painter, star_map, element_scale)
         reference_object_ids = {reference_star.star_id for reference_star in reference_stars}
         if reference_stars and number_reference_stars:
             self._draw_reference_stars(painter, star_map, reference_stars, element_scale)
@@ -86,8 +96,10 @@ class StarMapRenderer:
             self._draw_reference_star_names(painter, star_map, reference_stars, element_scale)
         elif draw_common_names:
             self._draw_star_names(painter, star_map, element_scale)
-        self._draw_solar_system_labels(painter, star_map, element_scale, excluded_object_ids=reference_object_ids)
-        self._draw_direction_labels(painter, star_map, element_scale)
+        if draw_solar_system_labels:
+            self._draw_solar_system_labels(painter, star_map, element_scale, excluded_object_ids=reference_object_ids)
+        if draw_direction_labels:
+            self._draw_direction_labels(painter, star_map, element_scale)
 
     def _draw_sky_background(self, painter: QPainter, star_map: ProjectedStarMap) -> None:
         painter.setPen(Qt.NoPen)

@@ -29,9 +29,14 @@ from .coordinates import (
 
 
 SOURCE_MODEL_FORMAT = "meteoalign_source_astrometric_model"
-SOURCE_MODEL_VERSION = 3
+SOURCE_MODEL_VERSION = 4
 INVERSE_SOLVER_MAX_NFEV = 80
 INVERSE_SOLVER_INVALID_RESIDUAL_PX = 1e6
+INVERSE_SOLVER_MAX_ITERATIONS = 14
+INVERSE_SOLVER_TOLERANCE_PX = 1e-5
+INVERSE_SOLVER_FINITE_DIFF_STEP_DEG = 1e-5
+INVERSE_SOLVER_MAX_STEP_DEG = 2.0
+INVERSE_SOLVER_SCALAR_FALLBACK_LIMIT = 8
 
 
 def _as_float_list(values: np.ndarray) -> list[float]:
@@ -137,9 +142,18 @@ def _interpolation_payload(
 def _known_projection_sky_to_pixel_payload() -> dict[str, Any]:
     return {
         "kind": "known_projection_with_residual_anchor_interpolation",
-        "input": "ICRS RA/Dec direction",
-        "projection": "see known_projection",
-        "residual_correction": "see known_projection.residual_correction",
+        "input_units": "deg",
+        "output_units": "px",
+        "input_axis_order": ["ra_deg", "dec_deg"],
+        "output_axis_order": ["x_px", "y_px"],
+        "projection": "known_projection",
+        "residual_correction": "known_projection.residual_correction",
+        "evaluator": {
+            "steps": [
+                "ICRS RA/Dec direction to camera projection",
+                "apply residual anchor interpolation in projected pixel space",
+            ],
+        },
     }
 
 
@@ -212,12 +226,127 @@ class SourceAstrometricModel:
             raise ValueError("pixel_to_sky_plane_points 需要 Nx2 的像素坐标数组。")
 
         initial_plane = self.pixel_to_sky_plane_interpolation.evaluate_points(pixel_array)
+        if pixel_array.shape[0] > INVERSE_SOLVER_SCALAR_FALLBACK_LIMIT:
+            return self._refine_pixel_to_sky_plane_points(pixel_array, initial_plane)
+
         refined = np.full_like(initial_plane, np.nan, dtype=np.float64)
         for index, (pixel, seed) in enumerate(zip(pixel_array, initial_plane, strict=True)):
             if not np.all(np.isfinite(pixel)) or not np.all(np.isfinite(seed)):
                 continue
             refined[index] = self._refine_pixel_to_sky_plane(pixel, seed)
         return refined
+
+    def _refine_pixel_to_sky_plane_points(self, pixel_points: np.ndarray, seed_plane_points: np.ndarray) -> np.ndarray:
+        pixels = np.asarray(pixel_points, dtype=np.float64)
+        seeds = np.asarray(seed_plane_points, dtype=np.float64)
+        refined = np.full_like(seeds, np.nan, dtype=np.float64)
+        valid = np.all(np.isfinite(pixels), axis=1) & np.all(np.isfinite(seeds), axis=1)
+        if not np.any(valid):
+            return refined
+
+        target_pixels = pixels[valid]
+        current_plane = seeds[valid].copy()
+        best_plane = current_plane.copy()
+        best_norm = self._pixel_inverse_residual_norms(best_plane, target_pixels)
+        active = np.isfinite(best_norm)
+        if not np.any(active):
+            refined[valid] = best_plane
+            return refined
+
+        finite_diff_step = INVERSE_SOLVER_FINITE_DIFF_STEP_DEG
+        step_u = np.asarray([finite_diff_step, 0.0], dtype=np.float64)
+        step_v = np.asarray([0.0, finite_diff_step], dtype=np.float64)
+        for _iteration in range(INVERSE_SOLVER_MAX_ITERATIONS):
+            active_indices = np.flatnonzero(active)
+            if active_indices.size == 0:
+                break
+
+            plane = current_plane[active_indices]
+            projected = self._sky_plane_to_pixel_points(plane)
+            residual = projected - target_pixels[active_indices]
+            residual_norm = np.linalg.norm(residual, axis=1)
+            finite_residual = np.all(np.isfinite(residual), axis=1) & np.isfinite(residual_norm)
+            if not np.any(finite_residual):
+                active[active_indices] = False
+                continue
+
+            finite_indices = active_indices[finite_residual]
+            finite_plane = plane[finite_residual]
+            finite_residual_vectors = residual[finite_residual]
+            finite_norm = residual_norm[finite_residual]
+            improved = finite_norm < best_norm[finite_indices]
+            if np.any(improved):
+                improved_indices = finite_indices[improved]
+                best_plane[improved_indices] = finite_plane[improved]
+                best_norm[improved_indices] = finite_norm[improved]
+
+            converged = finite_norm <= INVERSE_SOLVER_TOLERANCE_PX
+            if np.any(converged):
+                active[finite_indices[converged]] = False
+
+            solve_indices = finite_indices[~converged]
+            if solve_indices.size == 0:
+                continue
+
+            solve_plane = current_plane[solve_indices]
+            base_projected = projected[finite_residual][~converged]
+            projected_u = self._sky_plane_to_pixel_points(solve_plane + step_u)
+            projected_v = self._sky_plane_to_pixel_points(solve_plane + step_v)
+            j00 = (projected_u[:, 0] - base_projected[:, 0]) / finite_diff_step
+            j10 = (projected_u[:, 1] - base_projected[:, 1]) / finite_diff_step
+            j01 = (projected_v[:, 0] - base_projected[:, 0]) / finite_diff_step
+            j11 = (projected_v[:, 1] - base_projected[:, 1]) / finite_diff_step
+            determinant = j00 * j11 - j01 * j10
+            solve_residual = finite_residual_vectors[~converged]
+
+            finite_jacobian = (
+                np.isfinite(determinant)
+                & (np.abs(determinant) > 1e-14)
+                & np.all(np.isfinite(projected_u), axis=1)
+                & np.all(np.isfinite(projected_v), axis=1)
+            )
+            if not np.any(finite_jacobian):
+                active[solve_indices] = False
+                continue
+
+            delta_u = (solve_residual[:, 0] * j11 - j01 * solve_residual[:, 1]) / determinant
+            delta_v = (j00 * solve_residual[:, 1] - solve_residual[:, 0] * j10) / determinant
+            delta = np.column_stack((delta_u, delta_v))
+            finite_delta = finite_jacobian & np.all(np.isfinite(delta), axis=1)
+            if not np.any(finite_delta):
+                active[solve_indices] = False
+                continue
+
+            accepted_indices = solve_indices[finite_delta]
+            accepted_delta = delta[finite_delta]
+            delta_norm = np.linalg.norm(accepted_delta, axis=1)
+            damping = np.divide(
+                INVERSE_SOLVER_MAX_STEP_DEG,
+                delta_norm,
+                out=np.ones_like(delta_norm),
+                where=delta_norm > INVERSE_SOLVER_MAX_STEP_DEG,
+            )
+            current_plane[accepted_indices] = current_plane[accepted_indices] - accepted_delta * damping[:, None]
+
+            rejected_indices = solve_indices[~finite_delta]
+            if rejected_indices.size:
+                active[rejected_indices] = False
+
+        final_norm = self._pixel_inverse_residual_norms(current_plane, target_pixels)
+        improved = np.isfinite(final_norm) & (final_norm < best_norm)
+        if np.any(improved):
+            best_plane[improved] = current_plane[improved]
+        refined[valid] = best_plane
+        return refined
+
+    def _pixel_inverse_residual_norms(self, plane_points: np.ndarray, target_pixels: np.ndarray) -> np.ndarray:
+        projected = self._sky_plane_to_pixel_points(plane_points)
+        residual = projected - target_pixels
+        finite = np.all(np.isfinite(residual), axis=1)
+        norms = np.full(projected.shape[0], np.inf, dtype=np.float64)
+        if np.any(finite):
+            norms[finite] = np.linalg.norm(residual[finite], axis=1)
+        return norms
 
     def _refine_pixel_to_sky_plane(self, pixel_point: np.ndarray, seed_plane: np.ndarray) -> np.ndarray:
         target_pixel = np.asarray(pixel_point, dtype=np.float64)
@@ -333,12 +462,23 @@ class SourceAstrometricModel:
                 "pixel_to_sky": {
                     "kind": "numerical_inverse_of_sky_to_pixel",
                     "input_units": "px",
+                    "input_axis_order": ["x_px", "y_px"],
                     "output": "ICRS RA/Dec direction",
+                    "output_units": "deg",
+                    "output_axis_order": ["ra_deg", "dec_deg"],
+                    "precision": {
+                        "mode": "exact_numerical_inverse",
+                        "definition": "pixel_to_sky is the solved inverse of the serialized sky_to_pixel model; the TPS below is only the initial seed.",
+                        "forward_residual_tolerance_px": INVERSE_SOLVER_TOLERANCE_PX,
+                    },
                     "solver": {
-                        "method": "least_squares",
+                        "method": "vectorized_newton_with_scalar_least_squares_fallback",
                         "variables": ["u_deg", "v_deg"],
                         "forward_model": "sky_to_pixel",
                         "max_nfev": INVERSE_SOLVER_MAX_NFEV,
+                        "max_iterations": INVERSE_SOLVER_MAX_ITERATIONS,
+                        "finite_difference_step_deg": INVERSE_SOLVER_FINITE_DIFF_STEP_DEG,
+                        "max_step_deg": INVERSE_SOLVER_MAX_STEP_DEG,
                     },
                     "initial_estimate": _interpolation_payload(
                         self.pixel_to_sky_plane_interpolation,

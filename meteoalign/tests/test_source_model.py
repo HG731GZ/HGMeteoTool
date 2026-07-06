@@ -57,7 +57,7 @@ def test_source_astrometric_model_round_trip_and_json_payload() -> None:
 
     payload = model.to_json_payload()
     assert payload["format"] == SOURCE_MODEL_FORMAT
-    assert payload["version"] == 3
+    assert payload["version"] == 4
     assert payload["model_type"] == "local_sky_plane_anchor_interpolation"
     assert payload["sky_to_pixel"]["kind"] == "thin_plate_spline"
     assert "degree" not in payload["sky_to_pixel"]

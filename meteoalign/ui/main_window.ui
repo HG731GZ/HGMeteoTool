@@ -1000,11 +1000,22 @@
                </widget>
               </item>
               <item>
-               <widget class="QPushButton" name="pushButtonExportSourceModel">
-                <property name="text">
-                 <string>导出 xy→RA/Dec 映射 JSON</string>
-                </property>
-               </widget>
+               <layout class="QHBoxLayout" name="horizontalLayoutSourceModelButtons">
+                <item>
+                 <widget class="QPushButton" name="pushButtonValidateMapping">
+                  <property name="text">
+                   <string>映射验证</string>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QPushButton" name="pushButtonExportSourceModel">
+                  <property name="text">
+                   <string>导出映射</string>
+                  </property>
+                 </widget>
+                </item>
+               </layout>
               </item>
              </layout>
             </widget>

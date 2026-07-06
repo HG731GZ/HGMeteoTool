@@ -424,6 +424,7 @@ class AlignmentMixin:
             self.ui.checkBoxShowSkyMask.setChecked(False)
             self.ui.checkBoxShowSkyMask.blockSignals(was_blocked)
         self.ui.pushButtonAutoMatchFieldStars.setEnabled(has_alignment)
+        self.ui.pushButtonValidateMapping.setEnabled(has_source_model)
         self.ui.pushButtonExportSourceModel.setEnabled(has_source_model)
         if not has_alignment and self.ui.checkBoxSyncReferenceAndRealView.isChecked():
             self.ui.checkBoxSyncReferenceAndRealView.blockSignals(True)
