@@ -1656,11 +1656,11 @@
           </property>
           <widget class="QWidget" name="widgetMosaicSidePanel">
            <property name="geometry">
-            <rect>
+           <rect>
              <x>0</x>
              <y>0</y>
              <width>360</width>
-             <height>760</height>
+             <height>980</height>
             </rect>
            </property>
            <layout class="QVBoxLayout" name="verticalLayoutMosaicSidePanel">
@@ -1747,6 +1747,132 @@
                 <widget class="QPushButton" name="pushButtonImportMosaicModel">
                  <property name="text">
                   <string>导入模型 JSON</string>
+                 </property>
+                </widget>
+               </item>
+             </layout>
+             </widget>
+            </item>
+            <item>
+             <widget class="QGroupBox" name="groupBoxMosaicObserver">
+              <property name="title">
+               <string>拍摄信息</string>
+              </property>
+              <layout class="QVBoxLayout" name="verticalLayoutMosaicObserver">
+               <item>
+                <layout class="QFormLayout" name="formLayoutMosaicObserver">
+                 <item row="0" column="0">
+                  <widget class="QLabel" name="labelMosaicObservationTime">
+                   <property name="text">
+                    <string>拍摄时间</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="0" column="1">
+                  <widget class="QDateTimeEdit" name="dateTimeEditMosaicObservation">
+                   <property name="calendarPopup">
+                    <bool>true</bool>
+                   </property>
+                   <property name="displayFormat">
+                    <string>yyyy-MM-dd HH:mm:ss</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="1" column="0">
+                  <widget class="QLabel" name="labelMosaicUtcOffset">
+                   <property name="text">
+                    <string>UTC 偏移</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="1" column="1">
+                  <widget class="QDoubleSpinBox" name="doubleSpinBoxMosaicUtcOffset">
+                   <property name="minimum">
+                    <double>-12.000000000000000</double>
+                   </property>
+                   <property name="maximum">
+                    <double>14.000000000000000</double>
+                   </property>
+                   <property name="singleStep">
+                    <double>0.500000000000000</double>
+                   </property>
+                   <property name="suffix">
+                    <string> h</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="2" column="0">
+                  <widget class="QLabel" name="labelMosaicLatitude">
+                   <property name="text">
+                    <string>纬度</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="2" column="1">
+                  <widget class="QDoubleSpinBox" name="doubleSpinBoxMosaicLatitude">
+                   <property name="decimals">
+                    <number>6</number>
+                   </property>
+                   <property name="minimum">
+                    <double>-90.000000000000000</double>
+                   </property>
+                   <property name="maximum">
+                    <double>90.000000000000000</double>
+                   </property>
+                   <property name="suffix">
+                    <string> deg</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="3" column="0">
+                  <widget class="QLabel" name="labelMosaicLongitude">
+                   <property name="text">
+                    <string>经度</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="3" column="1">
+                  <widget class="QDoubleSpinBox" name="doubleSpinBoxMosaicLongitude">
+                   <property name="decimals">
+                    <number>6</number>
+                   </property>
+                   <property name="minimum">
+                    <double>-180.000000000000000</double>
+                   </property>
+                   <property name="maximum">
+                    <double>180.000000000000000</double>
+                   </property>
+                   <property name="suffix">
+                    <string> deg</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="4" column="0">
+                  <widget class="QLabel" name="labelMosaicElevation">
+                   <property name="text">
+                    <string>海拔</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="4" column="1">
+                  <widget class="QDoubleSpinBox" name="doubleSpinBoxMosaicElevation">
+                   <property name="minimum">
+                    <double>-500.000000000000000</double>
+                   </property>
+                   <property name="maximum">
+                    <double>9000.000000000000000</double>
+                   </property>
+                   <property name="suffix">
+                    <string> m</string>
+                   </property>
+                  </widget>
+                 </item>
+                </layout>
+               </item>
+               <item>
+                <widget class="QPushButton" name="pushButtonResetMosaicObserver">
+                 <property name="text">
+                  <string>回到 JSON 设置</string>
                  </property>
                 </widget>
                </item>

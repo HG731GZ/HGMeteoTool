@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
-from PyQt5.QtCore import QEvent, QPoint, QPointF, QTimer, Qt
+from PyQt5.QtCore import QDateTime, QEvent, QPoint, QPointF, QTimer, Qt
 from PyQt5.QtGui import QColor, QImage, QPainter, QPolygonF
 from PyQt5.QtWidgets import QApplication, QFileDialog, QGraphicsScene, QMessageBox
 
@@ -20,6 +20,7 @@ from .alignment import (
     SKY_MATCHING_MODEL_RECTILINEAR,
 )
 from .app_constants import (
+    AUTO_MATCH_CONSTRAINT_SOFT,
     SOURCE_MODEL_JSON_FILTER,
     TOUCHPAD_ZOOM_MAX_FACTOR,
     TOUCHPAD_ZOOM_MIN_FACTOR,
@@ -27,13 +28,14 @@ from .app_constants import (
 )
 from .app_graphics_items import GraphicsImageItem
 from .catalog import project_root
-from .fixed_camera_model import FixedCameraModel
+from .fixed_camera_model import FixedCameraModel, fit_fixed_camera_model
 from .simulator import (
     CYLINDRICAL_LENS_MODELS,
     CameraSettings,
     ObserverSettings,
     ViewSettings,
     camera_basis_from_view,
+    compute_altaz_from_radec,
     horizontal_fov_deg,
     local_vectors_from_altaz,
     project_horizontal_catalog,
@@ -53,6 +55,19 @@ MOSAIC_PROJECTION_MODELS = (
 MOSAIC_RENDER_MIN_SIZE_PX = 128
 MOSAIC_COVERAGE_GRID_LONG_SIDE = 54
 MOSAIC_ZOOM_FACTOR = 1.18
+MOSAIC_MODEL_REFIT_MIN_PAIRS = 4
+
+
+@dataclass(frozen=True)
+class MosaicModelFitData:
+    ra_dec_points: np.ndarray
+    pixel_points: np.ndarray
+    point_weights: np.ndarray
+    residual_anchor_mask: np.ndarray
+
+    @property
+    def pair_count(self) -> int:
+        return int(self.ra_dec_points.shape[0])
 
 
 @dataclass(frozen=True)
@@ -62,6 +77,8 @@ class MosaicSourceModel:
     source_image_text: str
     model: FixedCameraModel
     observer: ObserverSettings
+    utc_offset_hours: float
+    fit_data: MosaicModelFitData | None
     image_width_px: int
     image_height_px: int
     pair_count: int
@@ -106,6 +123,16 @@ def _payload_float(value: object, field_name: str, default: float | None = None)
     return result
 
 
+def _payload_optional_float(value: object, default: float) -> float:
+    if value is None:
+        return float(default)
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    return float(result) if np.isfinite(result) else float(default)
+
+
 def _payload_observer(payload: dict[str, object]) -> ObserverSettings:
     dynamic = _payload_mapping(payload.get("dynamic_sky_conversion"), "dynamic_sky_conversion")
     time_value = None
@@ -131,6 +158,50 @@ def _payload_observer(payload: dict[str, object]) -> ObserverSettings:
         latitude_deg=_payload_float(dynamic.get("latitude_deg"), "dynamic_sky_conversion.latitude_deg"),
         longitude_deg=_payload_float(dynamic.get("longitude_deg"), "dynamic_sky_conversion.longitude_deg"),
         elevation_m=_payload_float(dynamic.get("elevation_m"), "dynamic_sky_conversion.elevation_m", default=0.0),
+    )
+
+
+def _payload_utc_offset_hours(payload: dict[str, object]) -> float:
+    dynamic = payload.get("dynamic_sky_conversion")
+    if isinstance(dynamic, dict):
+        return _payload_optional_float(dynamic.get("utc_offset_hours"), 0.0)
+    return 0.0
+
+
+def _load_mosaic_fit_data(payload: dict[str, object]) -> MosaicModelFitData | None:
+    pair_payload = payload.get("fit_pairs")
+    if not isinstance(pair_payload, list):
+        pair_payload = payload.get("pairs")
+    if not isinstance(pair_payload, list):
+        return None
+
+    ra_dec_points: list[tuple[float, float]] = []
+    pixel_points: list[tuple[float, float]] = []
+    point_weights: list[float] = []
+    residual_anchor_mask: list[bool] = []
+    for record in pair_payload:
+        if not isinstance(record, dict):
+            continue
+        ra_deg = _payload_optional_float(record.get("ra_deg"), float("nan"))
+        dec_deg = _payload_optional_float(record.get("dec_deg"), float("nan"))
+        image_x_px = _payload_optional_float(record.get("image_x_px"), float("nan"))
+        image_y_px = _payload_optional_float(record.get("image_y_px"), float("nan"))
+        if not all(np.isfinite(value) for value in (ra_deg, dec_deg, image_x_px, image_y_px)):
+            continue
+        fit_weight = _payload_optional_float(record.get("fit_weight"), 1.0)
+        constraint_mode = str(record.get("fit_constraint_mode") or "").strip()
+        ra_dec_points.append((float(ra_deg), float(dec_deg)))
+        pixel_points.append((float(image_x_px), float(image_y_px)))
+        point_weights.append(float(fit_weight))
+        residual_anchor_mask.append(constraint_mode != AUTO_MATCH_CONSTRAINT_SOFT)
+
+    if len(ra_dec_points) < MOSAIC_MODEL_REFIT_MIN_PAIRS:
+        return None
+    return MosaicModelFitData(
+        ra_dec_points=np.asarray(ra_dec_points, dtype=np.float64),
+        pixel_points=np.asarray(pixel_points, dtype=np.float64),
+        point_weights=np.asarray(point_weights, dtype=np.float64),
+        residual_anchor_mask=np.asarray(residual_anchor_mask, dtype=bool),
     )
 
 
@@ -166,18 +237,23 @@ def _load_mosaic_source_model(json_path: Path) -> MosaicSourceModel:
 
     model = FixedCameraModel.from_json_payload(fixed_payload)
     observer = _payload_observer(payload)
+    utc_offset_hours = _payload_utc_offset_hours(payload)
+    fit_data = _load_mosaic_fit_data(payload)
     source_image_path, source_image_text = _resolve_source_image_path(payload, json_path)
     diagnostics = fixed_payload.get("diagnostics")
     diagnostics_mapping = diagnostics if isinstance(diagnostics, dict) else {}
+    diagnostics_pair_count = int(diagnostics_mapping.get("fit_pair_count", 0) or 0)
     return MosaicSourceModel(
         json_path=json_path,
         source_image_path=source_image_path,
         source_image_text=source_image_text,
         model=model,
         observer=observer,
+        utc_offset_hours=utc_offset_hours,
+        fit_data=fit_data,
         image_width_px=int(model.image_width_px),
         image_height_px=int(model.image_height_px),
-        pair_count=int(diagnostics_mapping.get("fit_pair_count", 0) or 0),
+        pair_count=diagnostics_pair_count or (0 if fit_data is None else fit_data.pair_count),
         rms_px=float(diagnostics_mapping.get("rms_px", float("nan"))),
     )
 
@@ -207,6 +283,10 @@ class MosaicProjectionMixin:
         self.mosaic_render_timer.timeout.connect(self.render_mosaic_projection_now)
         self._mosaic_source_model: MosaicSourceModel | None = None
         self._mosaic_coverage_cache: MosaicCoverageCache | None = None
+        self._mosaic_adjusted_model_cache_key: tuple[object, ...] | None = None
+        self._mosaic_adjusted_model: FixedCameraModel | None = None
+        self._mosaic_adjusted_coverage_cache: MosaicCoverageCache | None = None
+        self._mosaic_adjusted_model_error_key: tuple[object, ...] | None = None
         self._mosaic_last_drag_pos: QPoint | None = None
         self._mosaic_center_az_deg = 0.0
         self._mosaic_center_alt_deg = 20.0
@@ -226,9 +306,23 @@ class MosaicProjectionMixin:
             self.ui.doubleSpinBoxMosaicRoll.setValue(self._mosaic_roll_deg)
         self.ui.doubleSpinBoxMosaicMagLimit.setValue(6.5)
         self.ui.doubleSpinBoxMosaicCoverageOpacity.setValue(45.0)
+        self._init_mosaic_observer_controls()
         self._update_mosaic_projection_controls()
         self._update_mosaic_model_labels()
         self._update_mosaic_view_label()
+
+    def _init_mosaic_observer_controls(self) -> None:
+        if not hasattr(self.ui, "dateTimeEditMosaicObservation"):
+            return
+        self.ui.dateTimeEditMosaicObservation.setDateTime(QDateTime.currentDateTime())
+        utc_offset = datetime.now().astimezone().utcoffset()
+        if utc_offset is None:
+            utc_offset = timedelta(hours=8)
+        self.ui.doubleSpinBoxMosaicUtcOffset.setValue(utc_offset.total_seconds() / 3600.0)
+        self.ui.doubleSpinBoxMosaicLatitude.setValue(0.0)
+        self.ui.doubleSpinBoxMosaicLongitude.setValue(0.0)
+        self.ui.doubleSpinBoxMosaicElevation.setValue(0.0)
+        self._set_mosaic_observer_controls_enabled(False)
 
     def _connect_mosaic_projection_inputs(self) -> None:
         if not hasattr(self.ui, "pushButtonImportMosaicModel"):
@@ -247,6 +341,13 @@ class MosaicProjectionMixin:
         self.ui.checkBoxMosaicShowCoverage.toggled.connect(self.schedule_mosaic_render)
         self.ui.doubleSpinBoxMosaicCoverageOpacity.valueChanged.connect(self.schedule_mosaic_render)
         self.ui.pushButtonResetMosaicView.clicked.connect(self.reset_mosaic_projection_view)
+        if hasattr(self.ui, "dateTimeEditMosaicObservation"):
+            self.ui.dateTimeEditMosaicObservation.dateTimeChanged.connect(self._handle_mosaic_observer_changed)
+            self.ui.doubleSpinBoxMosaicUtcOffset.valueChanged.connect(self._handle_mosaic_observer_changed)
+            self.ui.doubleSpinBoxMosaicLatitude.valueChanged.connect(self._handle_mosaic_observer_changed)
+            self.ui.doubleSpinBoxMosaicLongitude.valueChanged.connect(self._handle_mosaic_observer_changed)
+            self.ui.doubleSpinBoxMosaicElevation.valueChanged.connect(self._handle_mosaic_observer_changed)
+            self.ui.pushButtonResetMosaicObserver.clicked.connect(self.reset_mosaic_observer_from_json)
         self.ui.labelMosaicModelPath.installEventFilter(self)
         self.ui.labelMosaicSourceImage.installEventFilter(self)
         self.ui.labelMosaicModelInfo.installEventFilter(self)
@@ -270,6 +371,16 @@ class MosaicProjectionMixin:
         self._set_mosaic_view_controls_from_state()
         self._update_mosaic_view_label()
         self.schedule_mosaic_render(delay_ms=10)
+
+    def _handle_mosaic_observer_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        self._invalidate_mosaic_adjusted_model_cache()
+        self.schedule_mosaic_render(delay_ms=120)
+
+    def _invalidate_mosaic_adjusted_model_cache(self) -> None:
+        self._mosaic_adjusted_model_cache_key = None
+        self._mosaic_adjusted_model = None
+        self._mosaic_adjusted_coverage_cache = None
+        self._mosaic_adjusted_model_error_key = None
 
     def _update_mosaic_projection_controls(self) -> None:
         if not hasattr(self.ui, "doubleSpinBoxMosaicFov"):
@@ -326,10 +437,97 @@ class MosaicProjectionMixin:
 
         self._mosaic_source_model = source_model
         self._mosaic_coverage_cache = coverage_cache
+        self._invalidate_mosaic_adjusted_model_cache()
+        self._set_mosaic_observer_controls_from_source_model(source_model)
+        self._set_mosaic_observer_controls_enabled(True)
         self._reset_mosaic_center_from_model()
         self._update_mosaic_model_labels()
         self.schedule_mosaic_render(delay_ms=0)
         self.ui.statusbar.showMessage(f"已导入源图模型: {source_model.json_path}")
+
+    def _bounded_mosaic_utc_offset(self, offset_hours: float) -> float:
+        if not hasattr(self.ui, "doubleSpinBoxMosaicUtcOffset"):
+            return float(offset_hours)
+        return max(
+            float(self.ui.doubleSpinBoxMosaicUtcOffset.minimum()),
+            min(float(self.ui.doubleSpinBoxMosaicUtcOffset.maximum()), float(offset_hours)),
+        )
+
+    def _mosaic_qdatetime_for_observer(self, observer: ObserverSettings, utc_offset_hours: float) -> QDateTime:
+        local_timezone = timezone(timedelta(hours=self._bounded_mosaic_utc_offset(utc_offset_hours)))
+        local_time = observer.observation_time_utc.astimezone(local_timezone)
+        qt_time = QDateTime.fromString(local_time.strftime("%Y-%m-%d %H:%M:%S"), "yyyy-MM-dd HH:mm:ss")
+        if qt_time.isValid():
+            return qt_time
+        return QDateTime.currentDateTime()
+
+    def _set_mosaic_observer_controls_enabled(self, enabled: bool) -> None:
+        if not hasattr(self.ui, "dateTimeEditMosaicObservation"):
+            return
+        for control_name in (
+            "dateTimeEditMosaicObservation",
+            "doubleSpinBoxMosaicUtcOffset",
+            "doubleSpinBoxMosaicLatitude",
+            "doubleSpinBoxMosaicLongitude",
+            "doubleSpinBoxMosaicElevation",
+            "pushButtonResetMosaicObserver",
+        ):
+            getattr(self.ui, control_name).setEnabled(enabled)
+
+    def _set_mosaic_observer_controls_from_source_model(self, source_model: MosaicSourceModel) -> None:
+        if not hasattr(self.ui, "dateTimeEditMosaicObservation"):
+            return
+        controls = (
+            self.ui.dateTimeEditMosaicObservation,
+            self.ui.doubleSpinBoxMosaicUtcOffset,
+            self.ui.doubleSpinBoxMosaicLatitude,
+            self.ui.doubleSpinBoxMosaicLongitude,
+            self.ui.doubleSpinBoxMosaicElevation,
+        )
+        previous_blocks = [control.blockSignals(True) for control in controls]
+        try:
+            utc_offset_hours = self._bounded_mosaic_utc_offset(source_model.utc_offset_hours)
+            self.ui.dateTimeEditMosaicObservation.setDateTime(
+                self._mosaic_qdatetime_for_observer(source_model.observer, utc_offset_hours)
+            )
+            self.ui.doubleSpinBoxMosaicUtcOffset.setValue(utc_offset_hours)
+            self.ui.doubleSpinBoxMosaicLatitude.setValue(float(source_model.observer.latitude_deg))
+            self.ui.doubleSpinBoxMosaicLongitude.setValue(float(source_model.observer.longitude_deg))
+            self.ui.doubleSpinBoxMosaicElevation.setValue(float(source_model.observer.elevation_m))
+        finally:
+            for control, was_blocked in zip(controls, previous_blocks, strict=True):
+                control.blockSignals(was_blocked)
+
+    def reset_mosaic_observer_from_json(self) -> None:
+        source_model = self._mosaic_source_model
+        if source_model is None:
+            return
+        self._set_mosaic_observer_controls_from_source_model(source_model)
+        self._invalidate_mosaic_adjusted_model_cache()
+        self.schedule_mosaic_render(delay_ms=0)
+
+    def _mosaic_observer_from_controls(self) -> ObserverSettings | None:
+        if self._mosaic_source_model is None:
+            return None
+        if not hasattr(self.ui, "dateTimeEditMosaicObservation"):
+            return self._mosaic_source_model.observer
+        local_dt = self.ui.dateTimeEditMosaicObservation.dateTime().toPyDateTime()
+        offset = timezone(timedelta(hours=float(self.ui.doubleSpinBoxMosaicUtcOffset.value())))
+        aware_dt = local_dt.replace(tzinfo=offset)
+        return ObserverSettings(
+            observation_time_utc=aware_dt.astimezone(timezone.utc),
+            latitude_deg=float(self.ui.doubleSpinBoxMosaicLatitude.value()),
+            longitude_deg=float(self.ui.doubleSpinBoxMosaicLongitude.value()),
+            elevation_m=float(self.ui.doubleSpinBoxMosaicElevation.value()),
+        )
+
+    def _mosaic_observer_cache_key(self, observer: ObserverSettings) -> tuple[int, float, float, float]:
+        return (
+            int(observer.observation_time_utc.timestamp()),
+            round(float(observer.latitude_deg), 8),
+            round(float(observer.longitude_deg), 8),
+            round(float(observer.elevation_m), 3),
+        )
 
     def _build_mosaic_coverage_cache(self, model: FixedCameraModel) -> MosaicCoverageCache:
         width = max(1, int(model.image_width_px))
@@ -356,8 +554,8 @@ class MosaicProjectionMixin:
 
     def _reset_mosaic_center_from_model(self) -> None:
         source_model = self._mosaic_source_model
-        cache = self._mosaic_coverage_cache
-        if source_model is None or cache is None:
+        effective_model, cache, _observer = self._effective_mosaic_model_and_coverage()
+        if source_model is None or effective_model is None or cache is None:
             self._mosaic_center_az_deg = 0.0
             self._mosaic_center_alt_deg = 20.0
             self._mosaic_roll_deg = 0.0
@@ -368,7 +566,7 @@ class MosaicProjectionMixin:
             [[source_model.image_width_px * 0.5, source_model.image_height_px * 0.5]],
             dtype=np.float64,
         )
-        alt_deg, az_deg, valid = source_model.model.pixel_to_altaz_points(center_point)
+        alt_deg, az_deg, valid = effective_model.pixel_to_altaz_points(center_point)
         if bool(valid[0]) and np.isfinite(alt_deg[0]) and np.isfinite(az_deg[0]):
             self._mosaic_center_alt_deg = float(alt_deg[0])
             self._mosaic_center_az_deg = float(az_deg[0]) % 360.0
@@ -383,12 +581,13 @@ class MosaicProjectionMixin:
                     self._mosaic_center_alt_deg = float(np.rad2deg(np.arcsin(np.clip(mean_vector[2], -1.0, 1.0))))
                     self._mosaic_center_az_deg = float(np.rad2deg(np.arctan2(mean_vector[0], mean_vector[1]))) % 360.0
         self._mosaic_roll_deg = 0.0
-        self._set_mosaic_fov_from_coverage()
+        self._set_mosaic_fov_from_coverage(cache)
         self._set_mosaic_view_controls_from_state()
         self._update_mosaic_view_label()
 
-    def _set_mosaic_fov_from_coverage(self) -> None:
-        cache = self._mosaic_coverage_cache
+    def _set_mosaic_fov_from_coverage(self, cache: MosaicCoverageCache | None = None) -> None:
+        if cache is None:
+            cache = self._mosaic_coverage_cache
         if cache is None:
             return
         valid = cache.valid & np.isfinite(cache.alt_deg) & np.isfinite(cache.az_deg)
@@ -451,6 +650,74 @@ class MosaicProjectionMixin:
             roll_deg=self._mosaic_roll_deg,
         )
 
+    def _refit_mosaic_model_for_observer(
+        self,
+        source_model: MosaicSourceModel,
+        observer: ObserverSettings,
+    ) -> FixedCameraModel:
+        fit_data = source_model.fit_data
+        if fit_data is None:
+            raise ValueError("当前 JSON 不包含 fit_pairs，无法按新拍摄信息重新拟合源图模型。")
+        alt_deg, az_deg = compute_altaz_from_radec(
+            fit_data.ra_dec_points[:, 0],
+            fit_data.ra_dec_points[:, 1],
+            observer,
+        )
+        local_vectors = local_vectors_from_altaz(alt_deg, az_deg)
+        transform = source_model.model.projection_transform
+        return fit_fixed_camera_model(
+            enu_vectors=local_vectors,
+            pixel_points=fit_data.pixel_points,
+            image_size=(source_model.image_width_px, source_model.image_height_px),
+            lens_model=transform.lens_model,
+            initial_rotation_matrix=np.asarray(transform.rotation_matrix, dtype=np.float64),
+            fisheye_fov_deg=transform.fov_deg,
+            point_weights=fit_data.point_weights,
+            residual_anchor_mask=fit_data.residual_anchor_mask,
+        )
+
+    def _effective_mosaic_model_and_coverage(
+        self,
+    ) -> tuple[FixedCameraModel | None, MosaicCoverageCache | None, ObserverSettings | None]:
+        source_model = self._mosaic_source_model
+        if source_model is None:
+            return None, None, None
+        observer = self._mosaic_observer_from_controls() or source_model.observer
+        current_observer_key = self._mosaic_observer_cache_key(observer)
+        source_observer_key = self._mosaic_observer_cache_key(source_model.observer)
+        if current_observer_key == source_observer_key:
+            return source_model.model, self._mosaic_coverage_cache, observer
+        if source_model.fit_data is None:
+            cache_key = (source_model.json_path, "missing-fit-pairs", current_observer_key)
+            if self._mosaic_adjusted_model_error_key != cache_key:
+                self.ui.statusbar.showMessage("当前 JSON 不包含 fit_pairs，拍摄信息调整只能刷新星空，不能重拟合源图地平坐标。")
+                self._mosaic_adjusted_model_error_key = cache_key
+            return source_model.model, self._mosaic_coverage_cache, observer
+
+        cache_key = (source_model.json_path, current_observer_key)
+        if (
+            self._mosaic_adjusted_model_cache_key == cache_key
+            and self._mosaic_adjusted_model is not None
+            and self._mosaic_adjusted_coverage_cache is not None
+        ):
+            return self._mosaic_adjusted_model, self._mosaic_adjusted_coverage_cache, observer
+
+        try:
+            adjusted_model = self._refit_mosaic_model_for_observer(source_model, observer)
+            adjusted_cache = self._build_mosaic_coverage_cache(adjusted_model)
+        except Exception as exc:  # noqa: BLE001 - 控件联动重拟合失败时回退到导入模型并反馈。
+            error_key = (*cache_key, str(exc))
+            if self._mosaic_adjusted_model_error_key != error_key:
+                self.ui.statusbar.showMessage(f"按当前拍摄信息重拟合源图模型失败，已使用 JSON 原模型: {exc}")
+                self._mosaic_adjusted_model_error_key = error_key
+            return source_model.model, self._mosaic_coverage_cache, observer
+
+        self._mosaic_adjusted_model_cache_key = cache_key
+        self._mosaic_adjusted_model = adjusted_model
+        self._mosaic_adjusted_coverage_cache = adjusted_cache
+        self._mosaic_adjusted_model_error_key = None
+        return adjusted_model, adjusted_cache, observer
+
     def _set_mosaic_view_controls_from_state(self) -> None:
         control_values = (
             ("doubleSpinBoxMosaicAz", self._mosaic_center_az_deg % 360.0),
@@ -470,7 +737,8 @@ class MosaicProjectionMixin:
             return
         width, height = self._mosaic_render_size()
         source_model = self._mosaic_source_model
-        if source_model is None:
+        effective_model, coverage_cache, observer = self._effective_mosaic_model_and_coverage()
+        if source_model is None or effective_model is None or coverage_cache is None or observer is None:
             image = QImage(width, height, QImage.Format_ARGB32_Premultiplied)
             image.fill(QColor(0, 0, 0))
             self.mosaic_image_item.set_image(image)
@@ -482,9 +750,9 @@ class MosaicProjectionMixin:
             camera = self._mosaic_camera_for_render(width, height)
             view = self._mosaic_view_settings()
             mag_limit = float(self.ui.doubleSpinBoxMosaicMagLimit.value())
-            horizontal_catalog = self._get_horizontal_catalog(source_model.observer, mag_limit)
-            horizontal_milky_way = self._get_horizontal_milky_way(source_model.observer)
-            horizontal_solar_system = self._get_horizontal_solar_system(source_model.observer)
+            horizontal_catalog = self._get_horizontal_catalog(observer, mag_limit)
+            horizontal_milky_way = self._get_horizontal_milky_way(observer)
+            horizontal_solar_system = self._get_horizontal_solar_system(observer)
             star_map = project_horizontal_catalog(
                 horizontal_catalog=horizontal_catalog,
                 camera=camera,
@@ -506,7 +774,7 @@ class MosaicProjectionMixin:
                 draw_direction_labels=self.ui.checkBoxMosaicShowGrid.isChecked(),
             )
             if self.ui.checkBoxMosaicShowCoverage.isChecked():
-                self._paint_mosaic_coverage(image, camera, view)
+                self._paint_mosaic_coverage(image, camera, view, coverage_cache)
             self.mosaic_image_item.set_image(image)
             self.mosaic_scene.setSceneRect(0.0, 0.0, float(width), float(height))
             self.ui.mosaicProjectionView.resetTransform()
@@ -514,8 +782,13 @@ class MosaicProjectionMixin:
         except Exception as exc:  # noqa: BLE001 - 预览渲染要把模型和投影错误反馈给用户。
             self.ui.statusbar.showMessage(f"自由投影预览渲染失败: {exc}")
 
-    def _paint_mosaic_coverage(self, image: QImage, camera: CameraSettings, view: ViewSettings) -> None:
-        cache = self._mosaic_coverage_cache
+    def _paint_mosaic_coverage(
+        self,
+        image: QImage,
+        camera: CameraSettings,
+        view: ViewSettings,
+        cache: MosaicCoverageCache | None,
+    ) -> None:
         if cache is None:
             return
         basis = camera_basis_from_view(view)
