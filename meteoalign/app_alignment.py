@@ -590,7 +590,12 @@ class AlignmentMixin:
             and self.current_image_preview is not None
         )
 
-    def _sync_reference_real_view_from(self, source_view: QGraphicsView, force: bool = False) -> None:
+    def _sync_reference_real_view_from(
+        self,
+        source_view: QGraphicsView,
+        force: bool = False,
+        source_center=None,
+    ) -> None:
         if self._syncing_reference_real_views:
             return
         if not force and not self._can_sync_reference_real_views():
@@ -602,8 +607,10 @@ class AlignmentMixin:
         self._syncing_reference_real_views = True
         try:
             target_view.setTransform(source_view.transform())
-            source_center = source_view.mapToScene(source_view.viewport().rect().center())
-            target_view.centerOn(source_center)
+            center = source_center
+            if center is None:
+                center = source_view.mapToScene(source_view.viewport().rect().center())
+            target_view.centerOn(center)
             if target_view is self.ui.realImageView:
                 self._cap_graphics_view_to_max_scale(target_view)
             self._update_live_star_map_zoom_scale(source_view)

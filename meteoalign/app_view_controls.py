@@ -2,8 +2,9 @@ from __future__ import annotations
 from .app_constants import *
 
 import math
+from collections.abc import Callable
 
-from PyQt5.QtCore import QEvent, QPoint, Qt, QTimer
+from PyQt5.QtCore import QEvent, QPoint, QPointF, Qt, QTimer
 from PyQt5.QtWidgets import QApplication, QGraphicsView, QMainWindow, QMessageBox
 
 from .app_constants import (
@@ -45,6 +46,29 @@ class ViewControlsMixin:
     last_drag_pos: QPoint | None
     render_timer: QTimer
     _reference_pick_press_pos: QPoint | None
+
+    def _native_zoom_centers(self) -> dict[int, QPointF]:
+        centers = getattr(self, "_graphics_view_native_zoom_centers", None)
+        if centers is None:
+            centers = {}
+            self._graphics_view_native_zoom_centers = centers
+        return centers
+
+    def _clear_graphics_view_native_zoom_center(self, view: QGraphicsView | None = None) -> None:
+        centers = self._native_zoom_centers()
+        if view is None:
+            centers.clear()
+            return
+        centers.pop(id(view), None)
+
+    def _graphics_view_native_zoom_center(self, view: QGraphicsView) -> QPointF:
+        centers = self._native_zoom_centers()
+        key = id(view)
+        center = centers.get(key)
+        if center is None:
+            center = view.mapToScene(view.viewport().rect().center())
+            centers[key] = center
+        return center
 
     def _configure_reference_preview_splitter(self) -> None:
         splitter = self.ui.splitterReferenceAndRealImage
@@ -233,6 +257,7 @@ class ViewControlsMixin:
                 self._reference_pick_press_pos = None
                 self.ui.referenceImageView.viewport().unsetCursor()
             if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+                self._clear_graphics_view_native_zoom_center(self.ui.referenceImageView)
                 if self._event_ctrl_pressed(event):
                     self._update_reference_map_cursor(True)
                     self._reference_pick_press_pos = event.pos()
@@ -249,6 +274,7 @@ class ViewControlsMixin:
                         self._handle_reference_map_click(event.pos())
                     return True
             if event.type() == QEvent.Wheel:
+                self._clear_graphics_view_native_zoom_center(self.ui.referenceImageView)
                 return self._handle_graphics_view_wheel_zoom(self.ui.referenceImageView, event)
             if event.type() == QEvent.NativeGesture and self._handle_graphics_view_native_zoom(
                 self.ui.referenceImageView,
@@ -263,6 +289,7 @@ class ViewControlsMixin:
                 if event.type() == QEvent.Leave:
                     self.ui.realImageView.viewport().unsetCursor()
                 if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+                    self._clear_graphics_view_native_zoom_center(self.ui.realImageView)
                     if self._event_ctrl_pressed(event):
                         self._handle_real_image_pick_click(event.pos())
                         return True
@@ -291,6 +318,7 @@ class ViewControlsMixin:
                 if event.type() == QEvent.KeyPress and self._handle_star_pick_key_press(event):
                     return True
             if event.type() == QEvent.Wheel:
+                self._clear_graphics_view_native_zoom_center(self.ui.realImageView)
                 return self._handle_graphics_view_wheel_zoom(self.ui.realImageView, event)
             if event.type() == QEvent.NativeGesture and self._handle_graphics_view_native_zoom(
                 self.ui.realImageView,
@@ -299,6 +327,7 @@ class ViewControlsMixin:
                 return True
         if hasattr(self.ui, "imageSequenceView") and watched is self.ui.imageSequenceView.viewport():
             if event.type() == QEvent.Wheel:
+                self._clear_graphics_view_native_zoom_center(self.ui.imageSequenceView)
                 return self._handle_graphics_view_wheel_zoom(self.ui.imageSequenceView, event)
             if event.type() == QEvent.NativeGesture and self._handle_graphics_view_native_zoom(
                 self.ui.imageSequenceView,
@@ -347,27 +376,40 @@ class ViewControlsMixin:
         view: QGraphicsView,
         factor: float,
         *,
-        center_on_viewport: bool = False,
-    ) -> None:
+        center_scene: QPointF | None = None,
+    ) -> QPointF | None:
+        center_on_viewport = center_scene is not None
         if not center_on_viewport:
             view.scale(factor, factor)
-            return
+            return None
 
-        center = view.mapToScene(view.viewport().rect().center())
         previous_anchor = view.transformationAnchor()
         view.setTransformationAnchor(QGraphicsView.AnchorViewCenter)
         try:
             view.scale(factor, factor)
         finally:
             view.setTransformationAnchor(previous_anchor)
-        view.centerOn(center)
+        view.centerOn(center_scene)
+        return center_scene
+
+    def _run_with_reference_real_sync_suspended(self, view: QGraphicsView, operation: Callable[[], None]) -> None:
+        should_suspend = view in (self.ui.referenceImageView, self.ui.realImageView)
+        if not should_suspend or self._syncing_reference_real_views:
+            operation()
+            return
+
+        self._syncing_reference_real_views = True
+        try:
+            operation()
+        finally:
+            self._syncing_reference_real_views = False
 
     def _apply_graphics_view_zoom_factor(
         self,
         view: QGraphicsView,
         factor: float,
         *,
-        center_on_viewport: bool = False,
+        center_scene: QPointF | None = None,
     ) -> None:
         if factor <= 0.0 or not math.isfinite(factor) or abs(factor - 1.0) <= 1e-4:
             return
@@ -375,20 +417,30 @@ class ViewControlsMixin:
             min_scale = self._graphics_view_fit_scale(view)
             current_scale = self._graphics_view_current_scale(view)
             if current_scale * factor <= min_scale:
-                self._fit_graphics_view_to_scene(view)
+                self._run_with_reference_real_sync_suspended(view, lambda: self._fit_graphics_view_to_scene(view))
                 self._sync_reference_real_view_from(view)
                 return
         if factor > 1.0:
             max_scale = self._graphics_view_max_scale(view)
             current_scale = self._graphics_view_current_scale(view)
             if max_scale is not None and current_scale * factor >= max_scale:
-                self._set_graphics_view_scale(view, max_scale)
-                self._update_live_star_map_zoom_scale(view)
+                def apply_max_scale() -> None:
+                    self._set_graphics_view_scale(view, max_scale)
+                    self._update_live_star_map_zoom_scale(view)
+
+                self._run_with_reference_real_sync_suspended(view, apply_max_scale)
                 self._sync_reference_real_view_from(view)
                 return
-        self._scale_graphics_view(view, factor, center_on_viewport=center_on_viewport)
-        self._update_live_star_map_zoom_scale(view)
-        self._sync_reference_real_view_from(view)
+
+        applied_center: QPointF | None = None
+
+        def apply_scale() -> None:
+            nonlocal applied_center
+            applied_center = self._scale_graphics_view(view, factor, center_scene=center_scene)
+            self._update_live_star_map_zoom_scale(view)
+
+        self._run_with_reference_real_sync_suspended(view, apply_scale)
+        self._sync_reference_real_view_from(view, source_center=applied_center)
 
     def _native_gesture_zoom_value(self, event) -> float:  # type: ignore[no-untyped-def]
         if not self._touchpad_pinch_zoom_enabled():
@@ -418,10 +470,21 @@ class ViewControlsMixin:
         return max(TOUCHPAD_ZOOM_MIN_FACTOR, min(TOUCHPAD_ZOOM_MAX_FACTOR, factor))
 
     def _handle_graphics_view_native_zoom(self, view: QGraphicsView, event) -> bool:  # type: ignore[no-untyped-def]
+        begin_gesture = getattr(Qt, "BeginNativeGesture", None)
+        if begin_gesture is not None and event.gestureType() == begin_gesture:
+            self._clear_graphics_view_native_zoom_center(view)
+            self._graphics_view_native_zoom_center(view)
+            return False
+
+        end_gesture = getattr(Qt, "EndNativeGesture", None)
+        if end_gesture is not None and event.gestureType() == end_gesture:
+            self._clear_graphics_view_native_zoom_center(view)
+            return False
+
         factor = self._native_gesture_zoom_factor(event)
         if abs(factor - 1.0) <= 1e-4:
             return False
-        self._apply_graphics_view_zoom_factor(view, factor, center_on_viewport=True)
+        self._apply_graphics_view_zoom_factor(view, factor, center_scene=self._graphics_view_native_zoom_center(view))
         return True
 
     def _handle_star_pick_native_zoom(self, event) -> bool:  # type: ignore[no-untyped-def]
