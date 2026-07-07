@@ -38,8 +38,6 @@ from .app_constants import (
 from .app_utils import _image_with_binary_mask, _relative_image_path_for_session
 from .app_workers import ImageSequenceCollectWorker
 from .fixed_camera_model import (
-    FIXED_CAMERA_MODEL_FORMAT,
-    FIXED_CAMERA_MODEL_VERSION,
     FixedCameraModel,
     FixedCameraTimeFitResult,
     estimate_frame_time_correction,
@@ -63,6 +61,7 @@ from .simulator import (
     local_vectors_from_altaz,
     project_horizontal_catalog,
 )
+from .sequence_geometry import frame_astrometric_model_from_fixed_camera
 from .source_model import SourceAstrometricModel
 from .star_fitting import FittedStarPosition, fit_star_position
 
@@ -1839,51 +1838,49 @@ class SequenceBatchMixin:
         generated_at_utc: str,
     ) -> dict[str, object]:
         timing_payload = self._sequence_timing_payload(item, first_item, time_fit)
-        return {
-            "format": FIXED_CAMERA_MODEL_FORMAT,
-            "version": FIXED_CAMERA_MODEL_VERSION,
-            "generated_at_utc": generated_at_utc,
-            "source_image": self._sequence_source_image_payload(preview, model_path, item),
-            "mask": self._sky_mask_payload(model_path),
-            "direction_frame": "ICRS RA/Dec converted to local ENU per frame time",
-            "pixel_convention": "0-based pixel coordinates at pixel centers",
-            "model_type": "fixed_camera_model",
-            "image": {
-                "width_px": int(preview.image.width()),
-                "height_px": int(preview.image.height()),
-            },
-            "sky_to_pixel": {
-                "kind": "fixed_camera_local_enu_projection",
-                "input_units": "deg",
-                "input_axis_order": ["ra_deg", "dec_deg"],
-                "output_units": "px",
-                "output_axis_order": ["x_px", "y_px"],
-                "evaluator": {
-                    "steps": [
-                        "ICRS RA/Dec at frame_effective_time_utc to local horizontal Alt/Az",
-                        "Alt/Az to local ENU unit vector",
-                        "apply fixed R_enu_to_camera",
-                        "apply base lens projection",
-                        "apply static residual distortion",
-                    ],
-                },
-            },
-            "dynamic_sky_conversion": {
-                "latitude_deg": self.ui.doubleSpinBoxLatitude.value(),
-                "longitude_deg": self.ui.doubleSpinBoxLongitude.value(),
-                "elevation_m": self.ui.doubleSpinBoxElevation.value(),
-                "utc_offset_hours": self.ui.doubleSpinBoxUtcOffset.value(),
-                **timing_payload,
-            },
-            "fixed_camera_model": fixed_model.to_json_payload(),
-            "diagnostics": {
-                "pair_count": len(records),
-                **time_fit.to_json_payload(),
-            },
-            "matching": self._sequence_matching_payload(),
-            "fit_pairs": records,
-            "reference_payload": reference_payload,
+        observer = ObserverSettings(
+            observation_time_utc=datetime.fromisoformat(
+                str(timing_payload["frame_effective_time_utc"]).replace("Z", "+00:00")
+            ).astimezone(timezone.utc),
+            latitude_deg=float(self.ui.doubleSpinBoxLatitude.value()),
+            longitude_deg=float(self.ui.doubleSpinBoxLongitude.value()),
+            elevation_m=float(self.ui.doubleSpinBoxElevation.value()),
+        )
+        diagnostics = {
+            "pair_count": len(records),
+            "rms_px": float(time_fit.rms_px),
+            "median_residual_px": float(time_fit.median_residual_px),
+            "max_residual_px": float(time_fit.max_residual_px),
+            **time_fit.to_json_payload(),
         }
+        frame_model = frame_astrometric_model_from_fixed_camera(
+            fixed_camera_model=fixed_model,
+            observer=observer,
+            fit_metadata={
+                "model_type": "sequence_frame_astrometric_model",
+                "source_sequence_model": "fixed_camera_enu_sequence_geometry",
+                "control_point_count": len(records),
+                "sequence_timing": timing_payload,
+                "scene_observer_hint": {
+                    "observation_time_utc": observer.observation_time_utc.isoformat(),
+                    "latitude_deg": observer.latitude_deg,
+                    "longitude_deg": observer.longitude_deg,
+                    "elevation_m": observer.elevation_m,
+                    "utc_offset_hours": float(self.ui.doubleSpinBoxUtcOffset.value()),
+                    **timing_payload,
+                },
+                "scene_observer_hint_role": "metadata_only_not_required_for_pixel_icrs_model",
+            },
+            diagnostics=diagnostics,
+        )
+        return frame_model.to_json_payload(
+            source_image=self._sequence_source_image_payload(preview, model_path, item),
+            mask=self._sky_mask_payload(model_path),
+            matching=self._sequence_matching_payload(),
+            fit_pairs=records,
+            reference_payload=reference_payload,
+            generated_at_utc=generated_at_utc,
+        )
 
     def _sequence_starpair_json_path(self, image_path: Path) -> Path:
         resolved_path = Path(image_path).expanduser().resolve()

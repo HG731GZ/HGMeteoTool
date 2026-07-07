@@ -18,6 +18,7 @@ from meteoalign.alignment import (
     fit_sky_alignment,
 )
 from meteoalign.coordinates import normalize_vector, radec_to_unit_vectors, sky_plane_to_radec
+from meteoalign.frame_astrometry import FrameAstrometricModel
 from meteoalign.simulator import ViewSettings, camera_basis_from_view, local_vectors_from_altaz
 from meteoalign.source_model import fit_source_astrometric_model
 
@@ -143,19 +144,28 @@ def test_source_model_exports_known_projection_payload() -> None:
     )
 
     payload = model.to_json_payload()
-    assert payload["model_type"] == "known_projection_with_residual_interpolation"
-    assert payload["sky_to_pixel"]["kind"] == "known_projection_with_residual_anchor_interpolation"
-    assert "degree" not in payload["sky_to_pixel"]
-    assert "coeff_x" not in payload["sky_to_pixel"]
-    assert payload["known_projection"]["lens_model"] == SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT
-    assert payload["known_projection"]["projection_code"] == "ARC"
-    assert payload["known_projection"]["display_name"] == "等距鱼眼(ARC)"
-    assert payload["known_projection"]["fov_deg"] is None
-    assert payload["known_projection"]["residual_correction"]["kind"] == RESIDUAL_CORRECTION_TPS
-    assert "degree" not in payload["known_projection"]["residual_correction"]
-    assert "coeff_x_px" not in payload["known_projection"]["residual_correction"]
+    assert payload["fit_metadata"]["model_type"] == "known_projection_with_residual_interpolation"
+    assert payload["frame_pose"]["type"] == "rotation_matrix"
+    profile = payload["camera_calibration_profile"]
+    assert profile["base_projection"]["type"] == SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT
+    assert profile["base_projection"]["parameters"]["projection_code"] == "ARC"
+    assert profile["base_projection"]["parameters"]["display_name"] == "等距鱼眼(ARC)"
+    assert profile["base_projection"]["parameters"]["fov_deg"] is None
+    assert profile["global_distortion"]["type"] == "tps_residual_field"
+    assert profile["global_distortion"]["parameters"]["kind"] == RESIDUAL_CORRECTION_TPS
+    assert "degree" not in profile["global_distortion"]["parameters"]
+    assert "coeff_x_px" not in profile["global_distortion"]["parameters"]
+    assert payload["frame_local_residual"]["enabled"] is False
     assert payload["diagnostics"]["rms_px"] < 1e-6
-    assert payload["diagnostics"]["inverse_roundtrip_rms_px"] < 1e-6
+    assert payload["diagnostics"]["round_trip_rms_px"] < 1e-6
+
+    restored = FrameAstrometricModel.from_json_payload(payload)
+    restored_pixels = restored.sky_to_pixel_points(radec)
+    assert np.max(np.linalg.norm(restored_pixels - pixels, axis=1)) < 1e-5
+    restored_radec = restored.pixel_to_sky_points(pixels)
+    expected_vectors = radec_to_unit_vectors(radec[:, 0], radec[:, 1])
+    actual_vectors = radec_to_unit_vectors(restored_radec[:, 0], restored_radec[:, 1])
+    assert np.max(np.linalg.norm(actual_vectors - expected_vectors, axis=1)) < 1e-6
 
 
 def _initial_rotation_from_reference_payload(reference_payload: dict[str, object]) -> np.ndarray:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from meteoalign.coordinates import normalize_vector, radec_to_unit_vectors, sky_plane_to_radec
+from meteoalign.frame_astrometry import FrameAstrometricModel, FramePose
 from meteoalign.source_model import SOURCE_MODEL_FORMAT, fit_source_astrometric_model
 
 
@@ -56,15 +57,23 @@ def test_source_astrometric_model_round_trip_and_json_payload() -> None:
     assert np.max(np.linalg.norm(round_trip_pixels - sample_pixels, axis=1)) < 1e-6
 
     payload = model.to_json_payload()
-    assert payload["format"] == SOURCE_MODEL_FORMAT
-    assert payload["version"] == 4
-    assert payload["model_type"] == "local_sky_plane_anchor_interpolation"
-    assert payload["sky_to_pixel"]["kind"] == "thin_plate_spline"
-    assert "degree" not in payload["sky_to_pixel"]
-    assert "coeff_x" not in payload["sky_to_pixel"]
-    assert payload["pixel_to_sky"]["kind"] == "numerical_inverse_of_sky_to_pixel"
-    assert payload["pixel_to_sky"]["initial_estimate"]["kind"] == "thin_plate_spline"
-    assert "fits_wcs_compat" not in payload
+    assert payload["schema"] == SOURCE_MODEL_FORMAT
+    assert payload["version"] == 3
+    assert payload["direction_frame"] == "ICRS"
+    assert payload["image_geometry"]["width_px"] == 1000
+    assert payload["fit_metadata"]["model_type"] == "local_sky_plane_anchor_interpolation"
+    assert payload["frame_pose"]["type"] == "rotation_matrix"
+    profile = payload["camera_calibration_profile"]
+    assert profile["base_projection"]["type"] == "azimuthal_equidistant_tangent"
+    assert profile["global_distortion"]["type"] == "tangent_plane_to_pixel_tps"
+    assert profile["inverse_model"]["type"] == "tangent_plane_tps_seed_with_numerical_forward_inverse"
+    assert payload["frame_local_residual"]["enabled"] is False
+    assert "sky_to_pixel" not in payload
+    assert "known_projection" not in payload
+
+    restored = FrameAstrometricModel.from_json_payload(payload)
+    restored_sample_pixels = restored.sky_to_pixel_points(sample_radec)
+    assert np.max(np.linalg.norm(restored_sample_pixels - sample_pixels, axis=1)) < 1e-6
 
 
 def test_source_astrometric_model_path_sections_are_near_json_start() -> None:
@@ -100,4 +109,19 @@ def test_source_astrometric_model_path_sections_are_near_json_start() -> None:
         },
     )
 
-    assert list(payload)[:5] == ["format", "version", "generated_at_utc", "source_image", "mask"]
+    assert list(payload)[:5] == ["schema", "version", "generated_at_utc", "source_image", "mask"]
+
+
+def test_frame_pose_preserves_projection_handedness() -> None:
+    pose = FramePose(
+        np.asarray(
+            [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, -1.0],
+            ],
+            dtype=np.float64,
+        )
+    )
+
+    assert np.linalg.det(pose.icrs_to_camera) < 0.0

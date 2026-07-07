@@ -9,6 +9,7 @@ from astropy.time import Time
 
 from meteoalign.alignment import SKY_MATCHING_MODEL_RECTILINEAR, _project_unit_vectors_with_known_projection
 from meteoalign.fixed_camera_model import FixedCameraModel, estimate_frame_time_correction, fit_fixed_camera_model
+from meteoalign.sequence_geometry import frame_astrometric_model_from_fixed_camera
 from meteoalign.simulator import ObserverSettings, ViewSettings, camera_basis_from_view, local_vectors_from_altaz
 
 
@@ -146,3 +147,24 @@ def test_fixed_camera_model_restores_from_json_payload() -> None:
     expected_vectors = local_vectors_from_altaz(expected_alt_deg, expected_az_deg)
     actual_vectors = local_vectors_from_altaz(actual_alt_deg, actual_az_deg)
     assert np.max(np.linalg.norm(actual_vectors - expected_vectors, axis=1)) < 1e-8
+
+
+def test_fixed_camera_model_exports_frame_astrometric_model() -> None:
+    fixed_model, observer, radec, pixels = _synthetic_fixed_camera_fixture()
+
+    frame_model = frame_astrometric_model_from_fixed_camera(
+        fixed_camera_model=fixed_model,
+        observer=observer,
+        fit_metadata={"model_type": "sequence_frame_astrometric_model"},
+        diagnostics={"pair_count": int(radec.shape[0])},
+    )
+    predicted = frame_model.sky_to_pixel_points(radec)
+    payload = frame_model.to_json_payload()
+
+    assert payload["schema"] == "hgmeteo_source_astrometric_model"
+    assert payload["direction_frame"] == "ICRS"
+    assert payload["fit_metadata"]["model_type"] == "sequence_frame_astrometric_model"
+    assert payload["camera_calibration_profile"]["base_projection"]["type"] == SKY_MATCHING_MODEL_RECTILINEAR
+    assert "fixed_camera_model" not in payload
+    assert "dynamic_sky_conversion" not in payload
+    assert np.max(np.linalg.norm(predicted - pixels, axis=1)) < 0.2

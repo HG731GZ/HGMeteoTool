@@ -17,8 +17,6 @@ from .app_utils import _relative_image_path_for_session, _resolve_star_pair_sess
 from .app_workers import StarPairSessionImportWorker, ReferenceJsonImportWorker
 from .catalog import project_root
 from .fixed_camera_model import (
-    FIXED_CAMERA_MODEL_FORMAT,
-    FIXED_CAMERA_MODEL_VERSION,
     FixedCameraModel,
     FixedCameraTimeFitResult,
     estimate_frame_time_correction,
@@ -718,51 +716,31 @@ class StarPairIOMixin:
     def _build_source_model_payload(self, json_path: Path) -> dict[str, object]:
         if self.current_image_preview is None:
             raise ValueError("请先导入真实图像。")
-        preview = self.current_image_preview
-        fixed_bundle = self._single_image_fixed_camera_export_bundle()
-        fixed_model = fixed_bundle["fixed_model"]
-        time_fit = fixed_bundle["time_fit"]
-        fit_pairs = fixed_bundle["fit_pairs"]
-        reference_payload = fixed_bundle["reference_payload"]
-        observer = fixed_bundle["observer"]
-        observer_time_payload = fixed_bundle["observer_time_payload"]
-        generated_at_utc = datetime.now(timezone.utc).isoformat()
-        return {
-            "format": FIXED_CAMERA_MODEL_FORMAT,
-            "version": FIXED_CAMERA_MODEL_VERSION,
-            "generated_at_utc": generated_at_utc,
-            "source_image": self._source_image_payload(json_path),
-            "mask": self._sky_mask_payload(json_path),
-            "direction_frame": "ICRS RA/Dec converted to local ENU at observation_time_utc",
-            "pixel_convention": "0-based pixel coordinates at pixel centers",
-            "model_type": "fixed_camera_model",
-            "image": {
-                "width_px": int(preview.image.width()),
-                "height_px": int(preview.image.height()),
-            },
-            "sky_to_pixel": {
-                "kind": "fixed_camera_local_enu_projection",
-                "input_units": "deg",
-                "input_axis_order": ["ra_deg", "dec_deg"],
-                "output_units": "px",
-                "output_axis_order": ["x_px", "y_px"],
-                "evaluator": {
-                    "steps": [
-                        "ICRS RA/Dec at observation_time_utc to local horizontal Alt/Az",
-                        "Alt/Az to local ENU unit vector",
-                        "apply fixed R_enu_to_camera",
-                        "apply base lens projection",
-                        "apply static residual distortion",
-                    ],
+        source_model = self._current_source_model()
+        fit_pairs = self._star_pair_records()
+        reference_payload = self._build_reference_payload_for_records(fit_pairs)
+        observer, observer_time_payload = self._reference_payload_observer()
+        frame_model = source_model.to_frame_astrometric_model(
+            fit_metadata={
+                "scene_observer_hint": {
+                    "observation_time_utc": observer.observation_time_utc.astimezone(timezone.utc).isoformat(),
+                    "latitude_deg": float(observer.latitude_deg),
+                    "longitude_deg": float(observer.longitude_deg),
+                    "elevation_m": float(observer.elevation_m),
+                    "utc_offset_hours": float(self.ui.doubleSpinBoxUtcOffset.value()),
+                    **observer_time_payload,
                 },
-            },
-            "dynamic_sky_conversion": self._single_image_dynamic_sky_payload(observer, observer_time_payload),
-            "fixed_camera_model": fixed_model.to_json_payload(),
-            "diagnostics": self._single_image_fixed_camera_diagnostics(fit_pairs, time_fit),
-            "matching": self._auto_match_settings_payload(),
-            "fit_pairs": fit_pairs,
-            "reference_payload": reference_payload,
-        }
+                "scene_observer_hint_role": "metadata_only_not_required_for_pixel_icrs_model",
+            }
+        )
+        return frame_model.to_json_payload(
+            source_image=self._source_image_payload(json_path),
+            mask=self._sky_mask_payload(json_path),
+            matching=self._auto_match_settings_payload(),
+            fit_pairs=fit_pairs,
+            reference_payload=reference_payload,
+            generated_at_utc=datetime.now(timezone.utc).isoformat(),
+        )
 
     def export_source_model_json(self) -> None:
         if self.current_image_preview is None:
@@ -799,11 +777,10 @@ class StarPairIOMixin:
             return
 
         try:
-            fixed_bundle = self._single_image_fixed_camera_export_bundle()
+            model = self._current_source_model().to_frame_astrometric_model()
         except Exception as exc:  # noqa: BLE001 - 验证入口需要把模型未就绪原因直接反馈给用户。
             QMessageBox.information(self, "映射尚未就绪", str(exc))
             return
-        model = fixed_bundle["fixed_model"]
 
         old_dialog = getattr(self, "_mapping_validation_dialog", None)
         if old_dialog is not None:
@@ -815,7 +792,7 @@ class StarPairIOMixin:
             except RuntimeError:
                 pass
 
-        observer = fixed_bundle["observer"]
+        observer = self._observer_settings()
         base_camera = self._output_camera_settings()
         initial_view = self._view_settings()
         visible_mag_limit = float(self.ui.doubleSpinBoxMagLimit.value())

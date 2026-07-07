@@ -13,8 +13,6 @@ from .alignment import (
     FIT_WEIGHT_MIN,
     MIN_ALIGNMENT_PAIRS,
     ProjectionSkyAlignmentTransform,
-    SKY_KNOWN_PROJECTION_CODES,
-    SKY_KNOWN_PROJECTION_DISPLAY_NAMES,
     SKY_KNOWN_PROJECTION_MODELS,
     SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION,
     SKY_MATCHING_MODELS,
@@ -26,12 +24,19 @@ from .coordinates import (
     radec_to_unit_vectors,
     sky_plane_basis,
     sky_plane_to_radec,
-    unit_vectors_to_radec,
+)
+from .camera_calibration import CameraCalibrationProfile
+from .frame_astrometry import (
+    FrameAstrometricModel,
+    FrameLocalResidual,
+    FramePose,
+    SOURCE_MODEL_SCHEMA,
+    SOURCE_MODEL_VERSION as FRAME_SOURCE_MODEL_VERSION,
 )
 
 
-SOURCE_MODEL_FORMAT = "meteoalign_source_astrometric_model"
-SOURCE_MODEL_VERSION = 4
+SOURCE_MODEL_FORMAT = SOURCE_MODEL_SCHEMA
+SOURCE_MODEL_VERSION = FRAME_SOURCE_MODEL_VERSION
 INVERSE_SOLVER_MAX_NFEV = 80
 INVERSE_SOLVER_INVALID_RESIDUAL_PX = 1e6
 INVERSE_SOLVER_MAX_ITERATIONS = 14
@@ -39,10 +44,6 @@ INVERSE_SOLVER_TOLERANCE_PX = 1e-5
 INVERSE_SOLVER_FINITE_DIFF_STEP_DEG = 1e-5
 INVERSE_SOLVER_MAX_STEP_DEG = 2.0
 INVERSE_SOLVER_SCALAR_FALLBACK_LIMIT = 8
-
-
-def _as_float_list(values: np.ndarray) -> list[float]:
-    return [float(value) for value in np.asarray(values, dtype=np.float64).ravel()]
 
 
 def _finite_point_mask(*arrays: np.ndarray) -> np.ndarray:
@@ -106,57 +107,6 @@ def _angular_residual_summary_arcsec(reference_radec: np.ndarray, measured_radec
         float(np.median(distances)),
         float(np.max(distances)),
     )
-
-
-def _interpolation_payload(
-    interpolation: AnchorInterpolation2D,
-    *,
-    input_units: str,
-    output_units: str,
-    input_axis_order: list[str],
-    output_axis_order: list[str],
-    weight_names: tuple[str, str],
-    affine_names: tuple[str, str],
-) -> dict[str, Any]:
-    return {
-        "kind": interpolation.kind,
-        "input_units": input_units,
-        "output_units": output_units,
-        "input_axis_order": input_axis_order,
-        "output_axis_order": output_axis_order,
-        "normalization": {
-            "origin_x": float(interpolation.origin_x),
-            "origin_y": float(interpolation.origin_y),
-            "scale_x": float(interpolation.scale_x),
-            "scale_y": float(interpolation.scale_y),
-        },
-        "anchor_count": int(interpolation.anchor_points.shape[0]),
-        "anchor_points_normalized": [
-            _as_float_list(row) for row in np.asarray(interpolation.anchor_points, dtype=np.float64)
-        ],
-        weight_names[0]: _as_float_list(interpolation.tps_weights_x),
-        weight_names[1]: _as_float_list(interpolation.tps_weights_y),
-        affine_names[0]: _as_float_list(interpolation.tps_affine_x),
-        affine_names[1]: _as_float_list(interpolation.tps_affine_y),
-    }
-
-
-def _known_projection_sky_to_pixel_payload() -> dict[str, Any]:
-    return {
-        "kind": "known_projection_with_residual_anchor_interpolation",
-        "input_units": "deg",
-        "output_units": "px",
-        "input_axis_order": ["ra_deg", "dec_deg"],
-        "output_axis_order": ["x_px", "y_px"],
-        "projection": "known_projection",
-        "residual_correction": "known_projection.residual_correction",
-        "evaluator": {
-            "steps": [
-                "ICRS RA/Dec direction to camera projection",
-                "apply residual anchor interpolation in projected pixel space",
-            ],
-        },
-    }
 
 
 @dataclass(frozen=True)
@@ -408,6 +358,80 @@ class SourceAstrometricModel:
         result = self.pixel_to_radec_points(np.asarray([[x_px, y_px]], dtype=np.float64))[0]
         return float(result[0]), float(result[1])
 
+    def to_frame_astrometric_model(
+        self,
+        *,
+        fit_metadata: dict[str, Any] | None = None,
+        diagnostics: dict[str, Any] | None = None,
+    ) -> FrameAstrometricModel:
+        metadata: dict[str, Any] = {
+            "model_type": self.model_type,
+            "control_point_count": int(self.pair_count),
+        }
+        if fit_metadata is not None:
+            metadata.update(fit_metadata)
+
+        model_diagnostics: dict[str, Any] = {
+            "pair_count": int(self.pair_count),
+            "rms_px": float(self.rms_px),
+            "median_residual_px": float(self.median_residual_px),
+            "max_residual_px": float(self.max_residual_px),
+            "sky_to_pixel_rms_px": float(self.rms_px),
+            "sky_to_pixel_median_px": float(self.median_residual_px),
+            "sky_to_pixel_max_px": float(self.max_residual_px),
+            "pixel_to_sky_seed_rms_arcsec": float(self.inverse_seed_rms_arcsec),
+            "pixel_to_sky_seed_median_arcsec": float(self.inverse_seed_median_arcsec),
+            "pixel_to_sky_seed_max_arcsec": float(self.inverse_seed_max_arcsec),
+            "pixel_to_sky_rms_arcsec": float(self.inverse_fit_rms_arcsec),
+            "pixel_to_sky_median_arcsec": float(self.inverse_fit_median_arcsec),
+            "pixel_to_sky_max_arcsec": float(self.inverse_fit_max_arcsec),
+            "round_trip_rms_px": float(self.inverse_roundtrip_rms_px),
+            "round_trip_median_px": float(self.inverse_roundtrip_median_px),
+            "round_trip_max_px": float(self.inverse_roundtrip_max_px),
+        }
+        if self.projection_transform is not None:
+            model_diagnostics["projection_rms_px_before_global_distortion"] = float(
+                self.projection_transform.projection_rms_px
+            )
+        if diagnostics is not None:
+            model_diagnostics.update(diagnostics)
+
+        if self.projection_transform is not None:
+            frame_pose = FramePose(np.asarray(self.projection_transform.rotation_matrix, dtype=np.float64))
+            calibration_profile = CameraCalibrationProfile.from_projection_transform(self.projection_transform)
+        else:
+            if self.sky_to_pixel_interpolation is None:
+                raise ValueError("普适源图模型缺少 sky→pixel 锚点插值。")
+            frame_pose = FramePose(
+                np.vstack(
+                    (
+                        np.asarray(self.east_vector, dtype=np.float64),
+                        np.asarray(self.north_vector, dtype=np.float64),
+                        np.asarray(self.center_vector, dtype=np.float64),
+                    )
+                )
+            )
+            calibration_profile = CameraCalibrationProfile.from_tangent_anchor_interpolation(
+                image_width_px=int(self.image_width_px),
+                image_height_px=int(self.image_height_px),
+                sky_to_pixel_interpolation=self.sky_to_pixel_interpolation,
+                pixel_to_plane_interpolation=self.pixel_to_sky_plane_interpolation,
+                diagnostics={
+                    "rms_px": float(self.rms_px),
+                    "fit_pair_count": int(self.pair_count),
+                },
+            )
+
+        return FrameAstrometricModel(
+            image_width_px=int(self.image_width_px),
+            image_height_px=int(self.image_height_px),
+            frame_pose=frame_pose,
+            camera_calibration_profile=calibration_profile,
+            frame_local_residual=FrameLocalResidual(),
+            fit_metadata=metadata,
+            diagnostics=model_diagnostics,
+        )
+
     def to_json_payload(
         self,
         *,
@@ -417,151 +441,14 @@ class SourceAstrometricModel:
         matching: dict[str, Any] | None = None,
         reference_payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        center_radec = unit_vectors_to_radec(self.center_vector)[0]
-        generated_at_utc = datetime.now(timezone.utc).isoformat()
-        if self.projection_transform is None and self.sky_to_pixel_interpolation is None:
-            raise ValueError("普适源图模型缺少 sky→pixel 锚点插值。")
-        sky_to_pixel_payload = (
-            _known_projection_sky_to_pixel_payload()
-            if self.projection_transform is not None
-            else _interpolation_payload(
-                self.sky_to_pixel_interpolation,
-                input_units="deg in local sky plane",
-                output_units="px",
-                input_axis_order=["u_deg", "v_deg"],
-                output_axis_order=["x_px", "y_px"],
-                weight_names=("tps_weights_x_px", "tps_weights_y_px"),
-                affine_names=("tps_affine_x_px", "tps_affine_y_px"),
-            )
+        return self.to_frame_astrometric_model().to_json_payload(
+            source_image=source_image,
+            fit_pairs=fit_pairs,
+            mask=mask,
+            matching=matching,
+            reference_payload=reference_payload,
+            generated_at_utc=datetime.now(timezone.utc).isoformat(),
         )
-        payload: dict[str, Any] = {
-            "format": SOURCE_MODEL_FORMAT,
-            "version": SOURCE_MODEL_VERSION,
-            "generated_at_utc": generated_at_utc,
-        }
-        if source_image is not None:
-            payload["source_image"] = source_image
-        if mask is not None:
-            payload["mask"] = mask
-        payload.update(
-            {
-                "direction_frame": "ICRS",
-                "pixel_convention": "0-based pixel coordinates at pixel centers",
-                "model_type": self.model_type,
-                "image": {
-                    "width_px": int(self.image_width_px),
-                    "height_px": int(self.image_height_px),
-                },
-                "projection_basis": {
-                    "plane_projection": "azimuthal_equidistant_local_tangent",
-                    "center_vector": _as_float_list(self.center_vector),
-                    "east_vector": _as_float_list(self.east_vector),
-                    "north_vector": _as_float_list(self.north_vector),
-                    "center_ra_deg": float(center_radec[0]),
-                    "center_dec_deg": float(center_radec[1]),
-                },
-                "sky_to_pixel": sky_to_pixel_payload,
-                "pixel_to_sky": {
-                    "kind": "numerical_inverse_of_sky_to_pixel",
-                    "input_units": "px",
-                    "input_axis_order": ["x_px", "y_px"],
-                    "output": "ICRS RA/Dec direction",
-                    "output_units": "deg",
-                    "output_axis_order": ["ra_deg", "dec_deg"],
-                    "precision": {
-                        "mode": "exact_numerical_inverse",
-                        "definition": "pixel_to_sky is the solved inverse of the serialized sky_to_pixel model; the TPS below is only the initial seed.",
-                        "forward_residual_tolerance_px": INVERSE_SOLVER_TOLERANCE_PX,
-                    },
-                    "solver": {
-                        "method": "vectorized_newton_with_scalar_least_squares_fallback",
-                        "variables": ["u_deg", "v_deg"],
-                        "forward_model": "sky_to_pixel",
-                        "max_nfev": INVERSE_SOLVER_MAX_NFEV,
-                        "max_iterations": INVERSE_SOLVER_MAX_ITERATIONS,
-                        "finite_difference_step_deg": INVERSE_SOLVER_FINITE_DIFF_STEP_DEG,
-                        "max_step_deg": INVERSE_SOLVER_MAX_STEP_DEG,
-                    },
-                    "initial_estimate": _interpolation_payload(
-                        self.pixel_to_sky_plane_interpolation,
-                        input_units="px",
-                        output_units="deg in local sky plane",
-                        input_axis_order=["x_px", "y_px"],
-                        output_axis_order=["u_deg", "v_deg"],
-                        weight_names=("tps_weights_u_deg", "tps_weights_v_deg"),
-                        affine_names=("tps_affine_u_deg", "tps_affine_v_deg"),
-                    ),
-                },
-                "diagnostics": {
-                    "pair_count": int(self.pair_count),
-                    "rms_px": float(self.rms_px),
-                    "median_residual_px": float(self.median_residual_px),
-                    "max_residual_px": float(self.max_residual_px),
-                    "inverse_seed_rms_arcsec": float(self.inverse_seed_rms_arcsec),
-                    "inverse_seed_median_arcsec": float(self.inverse_seed_median_arcsec),
-                    "inverse_seed_max_arcsec": float(self.inverse_seed_max_arcsec),
-                    "inverse_fit_rms_arcsec": float(self.inverse_fit_rms_arcsec),
-                    "inverse_fit_median_arcsec": float(self.inverse_fit_median_arcsec),
-                    "inverse_fit_max_arcsec": float(self.inverse_fit_max_arcsec),
-                    "inverse_roundtrip_rms_px": float(self.inverse_roundtrip_rms_px),
-                    "inverse_roundtrip_median_px": float(self.inverse_roundtrip_median_px),
-                    "inverse_roundtrip_max_px": float(self.inverse_roundtrip_max_px),
-                },
-            }
-        )
-        if self.projection_transform is not None:
-            payload["known_projection"] = _projection_transform_payload(self.projection_transform)
-            payload["diagnostics"]["projection_rms_px_before_residual"] = float(
-                self.projection_transform.projection_rms_px
-            )
-        if matching is not None:
-            payload["matching"] = matching
-        if fit_pairs is not None:
-            payload["fit_pairs"] = fit_pairs
-        if reference_payload is not None:
-            payload["reference_payload"] = reference_payload
-        return payload
-
-
-def _projection_transform_payload(transform: ProjectionSkyAlignmentTransform) -> dict[str, Any]:
-    return {
-        "lens_model": transform.lens_model,
-        "projection_code": SKY_KNOWN_PROJECTION_CODES.get(transform.lens_model, transform.lens_model),
-        "display_name": SKY_KNOWN_PROJECTION_DISPLAY_NAMES.get(transform.lens_model, transform.lens_model),
-        "fov_deg": None if transform.fov_deg is None else float(transform.fov_deg),
-        "image_width_px": int(transform.image_width_px),
-        "image_height_px": int(transform.image_height_px),
-        "rotation_matrix_world_to_camera": [
-            _as_float_list(row) for row in np.asarray(transform.rotation_matrix, dtype=np.float64)
-        ],
-        "principal_point_px": {
-            "x": float(transform.center_x_px),
-            "y": float(transform.center_y_px),
-        },
-        "scale_px": float(transform.scale_px),
-        "residual_correction": {
-            "kind": transform.residual_kind,
-            "input": "raw projection pixel coordinates normalized by image size",
-            "normalization": {
-                "origin_x_px": float(transform.residual_origin_x_px),
-                "origin_y_px": float(transform.residual_origin_y_px),
-                "scale_x_px": float(transform.residual_scale_x_px),
-                "scale_y_px": float(transform.residual_scale_y_px),
-            },
-            "anchor_count": int(transform.residual_anchor_points.shape[0]),
-            "hard_anchor_count": int(transform.residual_hard_anchor_count),
-            "soft_constraint_count": int(transform.residual_soft_constraint_count),
-            "soft_constraint_weight_min": float(transform.residual_soft_weight_min),
-            "soft_constraint_weight_max": float(transform.residual_soft_weight_max),
-            "anchor_points_normalized": [
-                _as_float_list(row) for row in np.asarray(transform.residual_anchor_points, dtype=np.float64)
-            ],
-            "tps_weights_dx_px": _as_float_list(transform.residual_tps_weights_x),
-            "tps_weights_dy_px": _as_float_list(transform.residual_tps_weights_y),
-            "tps_affine_dx_px": _as_float_list(transform.residual_tps_affine_x),
-            "tps_affine_dy_px": _as_float_list(transform.residual_tps_affine_y),
-        },
-    }
 
 
 def fit_source_astrometric_model(

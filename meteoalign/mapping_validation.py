@@ -12,6 +12,7 @@ from .app_constants import TOUCHPAD_ZOOM_MAX_FACTOR, TOUCHPAD_ZOOM_MIN_FACTOR, T
 from .app_graphics_items import GraphicsImageItem
 from .config import StarMapUiConfig
 from .fixed_camera_model import FixedCameraModel
+from .frame_astrometry import FrameAstrometricModel
 from .renderer import StarMapRenderer
 from .simulator import (
     CameraSettings,
@@ -23,6 +24,7 @@ from .simulator import (
     ViewSettings,
     _project_altaz_points,
     camera_basis_from_view,
+    compute_altaz_from_radec,
     horizontal_fov_deg,
     project_horizontal_catalog,
     vertical_fov_deg,
@@ -81,7 +83,7 @@ def _rgba_array_to_qimage(rgba: np.ndarray) -> QImage:
 
 
 class PixelToSkyValidationWorker(QObject):
-    """后台计算真实图像网格点到固定相机本地地平坐标的验证缓存。"""
+    """后台计算真实图像网格点到当前 Scene Observer 地平坐标的验证缓存。"""
 
     progress = pyqtSignal(int, str)
     finished = pyqtSignal(object)
@@ -89,13 +91,15 @@ class PixelToSkyValidationWorker(QObject):
 
     def __init__(
         self,
-        model: FixedCameraModel,
+        model: FrameAstrometricModel | FixedCameraModel,
         source_image: QImage,
+        observer: ObserverSettings,
         grid_precision: int,
     ) -> None:
         super().__init__()
         self.model = model
         self.source_image = source_image.copy()
+        self.observer = observer
         self.grid_precision = max(
             VALIDATION_GRID_MIN_PRECISION,
             min(VALIDATION_GRID_MAX_PRECISION, int(grid_precision)),
@@ -149,12 +153,12 @@ class PixelToSkyValidationWorker(QObject):
         valid = np.zeros(point_count, dtype=bool)
         for start in range(0, point_count, VALIDATION_PIXEL_TO_SKY_CHUNK_SIZE):
             end = min(start + VALIDATION_PIXEL_TO_SKY_CHUNK_SIZE, point_count)
-            alt_values, az_values, valid_values = self.model.pixel_to_altaz_points(grid_points[start:end])
+            alt_values, az_values, valid_values = self._pixel_to_altaz_points(grid_points[start:end])
             alt_deg[start:end] = alt_values
             az_deg[start:end] = az_values
             valid[start:end] = valid_values
             progress = 2 + int(62 * end / max(point_count, 1))
-            self.progress.emit(progress, f"正在按固定相机模型反解网格点 pixel_to_altaz：{end} / {point_count}。")
+            self.progress.emit(progress, f"正在按源图模型反解网格点 pixel_to_sky：{end} / {point_count}。")
 
         self.progress.emit(94, "正在生成显示用真实图像缓存...")
         source_rgb, source_scale_x, source_scale_y = self._source_preview_rgb(width, height)
@@ -177,6 +181,24 @@ class PixelToSkyValidationWorker(QObject):
             source_rgb=source_rgb.astype(np.uint8),
         )
 
+    def _pixel_to_altaz_points(self, pixel_points: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        if isinstance(self.model, FrameAstrometricModel):
+            radec = self.model.pixel_to_sky_points(pixel_points)
+            valid_input = np.all(np.isfinite(radec), axis=1)
+            alt_deg = np.full(radec.shape[0], np.nan, dtype=np.float64)
+            az_deg = np.full(radec.shape[0], np.nan, dtype=np.float64)
+            if np.any(valid_input):
+                alt_values, az_values = compute_altaz_from_radec(
+                    radec[valid_input, 0],
+                    radec[valid_input, 1],
+                    self.observer,
+                )
+                alt_deg[valid_input] = alt_values
+                az_deg[valid_input] = az_values
+            valid = valid_input & np.isfinite(alt_deg) & np.isfinite(az_deg)
+            return alt_deg.astype(np.float64), az_deg.astype(np.float64), valid.astype(bool)
+        return self.model.pixel_to_altaz_points(pixel_points)
+
 
 class MappingValidationDialog(QDialog):
     """源图映射验证窗口。"""
@@ -186,7 +208,7 @@ class MappingValidationDialog(QDialog):
         *,
         parent,
         renderer: StarMapRenderer,
-        model: FixedCameraModel,
+        model: FrameAstrometricModel | FixedCameraModel,
         source_image: QImage,
         observer: ObserverSettings,
         base_camera: CameraSettings,
@@ -611,6 +633,7 @@ class MappingValidationDialog(QDialog):
         worker = PixelToSkyValidationWorker(
             self.model,
             self.source_image,
+            self.observer,
             grid_precision=self._grid_precision_value(),
         )
         worker.moveToThread(thread)
