@@ -1827,13 +1827,94 @@
                   </widget>
                  </item>
                  <item row="2" column="0">
+                  <widget class="QLabel" name="labelMosaicAz">
+                   <property name="text">
+                    <string>中心方位</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="2" column="1">
+                  <widget class="QDoubleSpinBox" name="doubleSpinBoxMosaicAz">
+                   <property name="decimals">
+                    <number>2</number>
+                   </property>
+                   <property name="minimum">
+                    <double>0.000000000000000</double>
+                   </property>
+                   <property name="maximum">
+                    <double>359.990000000000009</double>
+                   </property>
+                   <property name="singleStep">
+                    <double>1.000000000000000</double>
+                   </property>
+                   <property name="suffix">
+                    <string> deg</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="3" column="0">
+                  <widget class="QLabel" name="labelMosaicAlt">
+                   <property name="text">
+                    <string>中心高度</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="3" column="1">
+                  <widget class="QDoubleSpinBox" name="doubleSpinBoxMosaicAlt">
+                   <property name="decimals">
+                    <number>2</number>
+                   </property>
+                   <property name="minimum">
+                    <double>-90.000000000000000</double>
+                   </property>
+                   <property name="maximum">
+                    <double>90.000000000000000</double>
+                   </property>
+                   <property name="singleStep">
+                    <double>1.000000000000000</double>
+                   </property>
+                   <property name="value">
+                    <double>20.000000000000000</double>
+                   </property>
+                   <property name="suffix">
+                    <string> deg</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="4" column="0">
+                  <widget class="QLabel" name="labelMosaicRoll">
+                   <property name="text">
+                    <string>Roll</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="4" column="1">
+                  <widget class="QDoubleSpinBox" name="doubleSpinBoxMosaicRoll">
+                   <property name="decimals">
+                    <number>2</number>
+                   </property>
+                   <property name="minimum">
+                    <double>-180.000000000000000</double>
+                   </property>
+                   <property name="maximum">
+                    <double>180.000000000000000</double>
+                   </property>
+                   <property name="singleStep">
+                    <double>1.000000000000000</double>
+                   </property>
+                   <property name="suffix">
+                    <string> deg</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="5" column="0">
                   <widget class="QLabel" name="labelMosaicMagLimit">
                    <property name="text">
                     <string>极限星等</string>
                    </property>
                   </widget>
                  </item>
-                 <item row="2" column="1">
+                 <item row="5" column="1">
                   <widget class="QDoubleSpinBox" name="doubleSpinBoxMosaicMagLimit">
                    <property name="decimals">
                     <number>1</number>
@@ -1852,14 +1933,14 @@
                    </property>
                   </widget>
                  </item>
-                 <item row="3" column="0">
+                 <item row="6" column="0">
                   <widget class="QLabel" name="labelMosaicCoverageOpacity">
                    <property name="text">
                     <string>覆盖透明度</string>
                    </property>
                   </widget>
                  </item>
-                 <item row="3" column="1">
+                 <item row="6" column="1">
                   <widget class="QDoubleSpinBox" name="doubleSpinBoxMosaicCoverageOpacity">
                    <property name="decimals">
                     <number>1</number>

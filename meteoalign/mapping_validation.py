@@ -8,6 +8,7 @@ from PyQt5.QtCore import QEvent, QObject, QPoint, QThread, QTimer, Qt, pyqtSigna
 from PyQt5.QtGui import QImage
 from PyQt5.QtWidgets import QDialog, QGraphicsScene, QMessageBox, QProgressDialog
 
+from .app_constants import TOUCHPAD_ZOOM_MAX_FACTOR, TOUCHPAD_ZOOM_MIN_FACTOR, TOUCHPAD_ZOOM_SENSITIVITY
 from .app_graphics_items import GraphicsImageItem
 from .fixed_camera_model import FixedCameraModel
 from .renderer import StarMapRenderer
@@ -225,6 +226,7 @@ class MappingValidationDialog(QDialog):
         self.scene.addItem(self.sky_item)
         self.scene.addItem(self.image_overlay_item)
         self.ui.graphicsViewValidation.setScene(self.scene)
+        self.ui.graphicsViewValidation.installEventFilter(self)
         self.ui.graphicsViewValidation.viewport().installEventFilter(self)
         self.ui.graphicsViewValidation.viewport().setMouseTracking(True)
 
@@ -248,6 +250,9 @@ class MappingValidationDialog(QDialog):
         super().closeEvent(event)
 
     def eventFilter(self, watched, event) -> bool:  # type: ignore[no-untyped-def]
+        if watched in (self.ui.graphicsViewValidation, self.ui.graphicsViewValidation.viewport()):
+            if event.type() == QEvent.NativeGesture and self._handle_native_fov_zoom(event):
+                return True
         if watched is self.ui.graphicsViewValidation.viewport():
             if event.type() == QEvent.Resize:
                 self.schedule_render()
@@ -260,7 +265,10 @@ class MappingValidationDialog(QDialog):
                 dx = event.pos().x() - self.last_drag_pos.x()
                 dy = event.pos().y() - self.last_drag_pos.y()
                 self.last_drag_pos = event.pos()
-                self._apply_drag_delta(dx, dy)
+                if event.modifiers() & Qt.ControlModifier:
+                    self._apply_roll_drag_delta(dx)
+                else:
+                    self._apply_drag_delta(dx, dy)
                 return True
             if event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
                 self.last_drag_pos = None
@@ -343,17 +351,49 @@ class MappingValidationDialog(QDialog):
         self.center_alt_deg = max(-90.0, min(90.0, self.center_alt_deg + dy * alt_degrees_per_pixel))
         self.schedule_render(delay_ms=10)
 
+    def _apply_roll_drag_delta(self, dx: int) -> None:
+        self.fixed_roll_deg -= dx * 0.25
+        while self.fixed_roll_deg > 180.0:
+            self.fixed_roll_deg -= 360.0
+        while self.fixed_roll_deg < -180.0:
+            self.fixed_roll_deg += 360.0
+        self.schedule_render(delay_ms=10)
+
     def _apply_fov_wheel(self, wheel_delta: int) -> None:
         if wheel_delta == 0:
             return
-        zoom_in = wheel_delta > 0
+        zoom_factor = VALIDATION_ZOOM_FACTOR if wheel_delta > 0 else 1.0 / VALIDATION_ZOOM_FACTOR
+        self._apply_fov_zoom_factor(zoom_factor)
+
+    def _apply_fov_zoom_factor(self, zoom_factor: float) -> None:
+        if not np.isfinite(zoom_factor) or zoom_factor <= 0.0 or abs(zoom_factor - 1.0) <= 1e-4:
+            return
         if self.base_camera.lens_model in FISHEYE_LENS_MODELS:
-            factor = 1.0 / VALIDATION_ZOOM_FACTOR if zoom_in else VALIDATION_ZOOM_FACTOR
-            self.fisheye_fov_deg = max(1.0, min(300.0, self.fisheye_fov_deg * factor))
+            self.fisheye_fov_deg = max(1.0, min(300.0, self.fisheye_fov_deg / zoom_factor))
         else:
-            factor = VALIDATION_ZOOM_FACTOR if zoom_in else 1.0 / VALIDATION_ZOOM_FACTOR
-            self.focal_length_mm = max(0.2, min(5000.0, self.focal_length_mm * factor))
+            self.focal_length_mm = max(0.2, min(5000.0, self.focal_length_mm * zoom_factor))
         self.render_now()
+
+    def _native_gesture_zoom_value(self, event) -> float:  # type: ignore[no-untyped-def]
+        zoom_gesture = getattr(Qt, "ZoomNativeGesture", None)
+        if zoom_gesture is None or event.gestureType() != zoom_gesture:
+            return 0.0
+        try:
+            value = float(event.value())
+        except (TypeError, ValueError):
+            return 0.0
+        if not np.isfinite(value) or abs(value) <= 1e-6:
+            return 0.0
+        return value
+
+    def _handle_native_fov_zoom(self, event) -> bool:  # type: ignore[no-untyped-def]
+        value = self._native_gesture_zoom_value(event)
+        if value == 0.0:
+            return False
+        zoom_factor = math.exp(value * TOUCHPAD_ZOOM_SENSITIVITY)
+        zoom_factor = max(TOUCHPAD_ZOOM_MIN_FACTOR, min(TOUCHPAD_ZOOM_MAX_FACTOR, zoom_factor))
+        self._apply_fov_zoom_factor(zoom_factor)
+        return True
 
     def _update_overlay_opacity(self, *unused) -> None:  # type: ignore[no-untyped-def]
         if not self.ui.checkBoxOverlayEnabled.isChecked():

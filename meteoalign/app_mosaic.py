@@ -19,7 +19,12 @@ from .alignment import (
     SKY_MATCHING_MODEL_MERCATOR,
     SKY_MATCHING_MODEL_RECTILINEAR,
 )
-from .app_constants import SOURCE_MODEL_JSON_FILTER
+from .app_constants import (
+    SOURCE_MODEL_JSON_FILTER,
+    TOUCHPAD_ZOOM_MAX_FACTOR,
+    TOUCHPAD_ZOOM_MIN_FACTOR,
+    TOUCHPAD_ZOOM_SENSITIVITY,
+)
 from .app_graphics_items import GraphicsImageItem
 from .catalog import project_root
 from .fixed_camera_model import FixedCameraModel
@@ -193,6 +198,7 @@ class MosaicProjectionMixin:
         self.mosaic_image_item = GraphicsImageItem()
         self.mosaic_scene.addItem(self.mosaic_image_item)
         self.ui.mosaicProjectionView.setScene(self.mosaic_scene)
+        self.ui.mosaicProjectionView.installEventFilter(self)
         self.ui.mosaicProjectionView.viewport().installEventFilter(self)
         self.ui.mosaicProjectionView.viewport().setMouseTracking(True)
 
@@ -212,6 +218,12 @@ class MosaicProjectionMixin:
             return
         self.ui.comboBoxMosaicProjection.setCurrentIndex(0)
         self.ui.doubleSpinBoxMosaicFov.setValue(120.0)
+        if hasattr(self.ui, "doubleSpinBoxMosaicAz"):
+            self.ui.doubleSpinBoxMosaicAz.setValue(self._mosaic_center_az_deg)
+        if hasattr(self.ui, "doubleSpinBoxMosaicAlt"):
+            self.ui.doubleSpinBoxMosaicAlt.setValue(self._mosaic_center_alt_deg)
+        if hasattr(self.ui, "doubleSpinBoxMosaicRoll"):
+            self.ui.doubleSpinBoxMosaicRoll.setValue(self._mosaic_roll_deg)
         self.ui.doubleSpinBoxMosaicMagLimit.setValue(6.5)
         self.ui.doubleSpinBoxMosaicCoverageOpacity.setValue(45.0)
         self._update_mosaic_projection_controls()
@@ -224,6 +236,12 @@ class MosaicProjectionMixin:
         self.ui.pushButtonImportMosaicModel.clicked.connect(self.import_mosaic_model_json)
         self.ui.comboBoxMosaicProjection.currentIndexChanged.connect(self._handle_mosaic_projection_changed)
         self.ui.doubleSpinBoxMosaicFov.valueChanged.connect(self.schedule_mosaic_render)
+        if hasattr(self.ui, "doubleSpinBoxMosaicAz"):
+            self.ui.doubleSpinBoxMosaicAz.valueChanged.connect(self._handle_mosaic_view_controls_changed)
+        if hasattr(self.ui, "doubleSpinBoxMosaicAlt"):
+            self.ui.doubleSpinBoxMosaicAlt.valueChanged.connect(self._handle_mosaic_view_controls_changed)
+        if hasattr(self.ui, "doubleSpinBoxMosaicRoll"):
+            self.ui.doubleSpinBoxMosaicRoll.valueChanged.connect(self._handle_mosaic_view_controls_changed)
         self.ui.doubleSpinBoxMosaicMagLimit.valueChanged.connect(self.schedule_mosaic_render)
         self.ui.checkBoxMosaicShowGrid.toggled.connect(self.schedule_mosaic_render)
         self.ui.checkBoxMosaicShowCoverage.toggled.connect(self.schedule_mosaic_render)
@@ -237,6 +255,21 @@ class MosaicProjectionMixin:
     def _handle_mosaic_projection_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
         self._update_mosaic_projection_controls()
         self.schedule_mosaic_render()
+
+    def _handle_mosaic_view_controls_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        if hasattr(self.ui, "doubleSpinBoxMosaicAz"):
+            self._mosaic_center_az_deg = float(self.ui.doubleSpinBoxMosaicAz.value()) % 360.0
+        if hasattr(self.ui, "doubleSpinBoxMosaicAlt"):
+            self._mosaic_center_alt_deg = max(-90.0, min(90.0, float(self.ui.doubleSpinBoxMosaicAlt.value())))
+        if hasattr(self.ui, "doubleSpinBoxMosaicRoll"):
+            self._mosaic_roll_deg = float(self.ui.doubleSpinBoxMosaicRoll.value())
+            while self._mosaic_roll_deg > 180.0:
+                self._mosaic_roll_deg -= 360.0
+            while self._mosaic_roll_deg < -180.0:
+                self._mosaic_roll_deg += 360.0
+        self._set_mosaic_view_controls_from_state()
+        self._update_mosaic_view_label()
+        self.schedule_mosaic_render(delay_ms=10)
 
     def _update_mosaic_projection_controls(self) -> None:
         if not hasattr(self.ui, "doubleSpinBoxMosaicFov"):
@@ -351,6 +384,7 @@ class MosaicProjectionMixin:
                     self._mosaic_center_az_deg = float(np.rad2deg(np.arctan2(mean_vector[0], mean_vector[1]))) % 360.0
         self._mosaic_roll_deg = 0.0
         self._set_mosaic_fov_from_coverage()
+        self._set_mosaic_view_controls_from_state()
         self._update_mosaic_view_label()
 
     def _set_mosaic_fov_from_coverage(self) -> None:
@@ -416,6 +450,20 @@ class MosaicProjectionMixin:
             center_alt_deg=self._mosaic_center_alt_deg,
             roll_deg=self._mosaic_roll_deg,
         )
+
+    def _set_mosaic_view_controls_from_state(self) -> None:
+        control_values = (
+            ("doubleSpinBoxMosaicAz", self._mosaic_center_az_deg % 360.0),
+            ("doubleSpinBoxMosaicAlt", self._mosaic_center_alt_deg),
+            ("doubleSpinBoxMosaicRoll", self._mosaic_roll_deg),
+        )
+        for control_name, value in control_values:
+            if not hasattr(self.ui, control_name):
+                continue
+            control = getattr(self.ui, control_name)
+            was_blocked = control.blockSignals(True)
+            control.setValue(float(value))
+            control.blockSignals(was_blocked)
 
     def render_mosaic_projection_now(self) -> None:
         if not hasattr(self.ui, "mosaicProjectionView"):
@@ -606,6 +654,9 @@ class MosaicProjectionMixin:
             if event.type() in (QEvent.Resize, QEvent.Show):
                 QTimer.singleShot(0, lambda label=watched: self._refresh_elided_label(label))
             return False
+        if watched in (self.ui.mosaicProjectionView, self.ui.mosaicProjectionView.viewport()):
+            if event.type() == QEvent.NativeGesture and self._handle_mosaic_native_fov_zoom(event):
+                return True
         if watched is not self.ui.mosaicProjectionView.viewport():
             return False
         if event.type() == QEvent.Resize:
@@ -641,26 +692,56 @@ class MosaicProjectionMixin:
         alt_degrees_per_pixel = max(vertical_fov_deg(camera) / max(height, 1), 0.005)
         self._mosaic_center_az_deg = (self._mosaic_center_az_deg - dx * az_degrees_per_pixel) % 360.0
         self._mosaic_center_alt_deg = max(-90.0, min(90.0, self._mosaic_center_alt_deg + dy * alt_degrees_per_pixel))
+        self._set_mosaic_view_controls_from_state()
         self._update_mosaic_view_label()
         self.schedule_mosaic_render(delay_ms=10)
 
     def _apply_mosaic_roll_drag_delta(self, dx: int) -> None:
-        self._mosaic_roll_deg += dx * 0.25
+        self._mosaic_roll_deg -= dx * 0.25
         while self._mosaic_roll_deg > 180.0:
             self._mosaic_roll_deg -= 360.0
         while self._mosaic_roll_deg < -180.0:
             self._mosaic_roll_deg += 360.0
+        self._set_mosaic_view_controls_from_state()
         self._update_mosaic_view_label()
         self.schedule_mosaic_render(delay_ms=10)
 
     def _apply_mosaic_fov_wheel(self, wheel_delta: int) -> None:
         if wheel_delta == 0:
             return
-        current = float(self.ui.doubleSpinBoxMosaicFov.value())
-        factor = 1.0 / MOSAIC_ZOOM_FACTOR if wheel_delta > 0 else MOSAIC_ZOOM_FACTOR
-        target = max(self.ui.doubleSpinBoxMosaicFov.minimum(), min(self.ui.doubleSpinBoxMosaicFov.maximum(), current * factor))
-        self.ui.doubleSpinBoxMosaicFov.setValue(target)
+        zoom_factor = MOSAIC_ZOOM_FACTOR if wheel_delta > 0 else 1.0 / MOSAIC_ZOOM_FACTOR
+        self._apply_mosaic_fov_zoom_factor(zoom_factor)
         self.render_mosaic_projection_now()
+
+    def _apply_mosaic_fov_zoom_factor(self, zoom_factor: float) -> None:
+        if not np.isfinite(zoom_factor) or zoom_factor <= 0.0 or abs(zoom_factor - 1.0) <= 1e-4:
+            return
+        current = float(self.ui.doubleSpinBoxMosaicFov.value())
+        target = current / zoom_factor
+        target = max(self.ui.doubleSpinBoxMosaicFov.minimum(), min(self.ui.doubleSpinBoxMosaicFov.maximum(), target))
+        self.ui.doubleSpinBoxMosaicFov.setValue(target)
+
+    def _mosaic_native_zoom_value(self, event) -> float:  # type: ignore[no-untyped-def]
+        zoom_gesture = getattr(Qt, "ZoomNativeGesture", None)
+        if zoom_gesture is None or event.gestureType() != zoom_gesture:
+            return 0.0
+        try:
+            value = float(event.value())
+        except (TypeError, ValueError):
+            return 0.0
+        if not np.isfinite(value) or abs(value) <= 1e-6:
+            return 0.0
+        return value
+
+    def _handle_mosaic_native_fov_zoom(self, event) -> bool:  # type: ignore[no-untyped-def]
+        value = self._mosaic_native_zoom_value(event)
+        if value == 0.0:
+            return False
+        zoom_factor = math.exp(value * TOUCHPAD_ZOOM_SENSITIVITY)
+        zoom_factor = max(TOUCHPAD_ZOOM_MIN_FACTOR, min(TOUCHPAD_ZOOM_MAX_FACTOR, zoom_factor))
+        self._apply_mosaic_fov_zoom_factor(zoom_factor)
+        self.render_mosaic_projection_now()
+        return True
 
     def _update_mosaic_model_labels(self) -> None:
         if not hasattr(self.ui, "labelMosaicModelPath"):

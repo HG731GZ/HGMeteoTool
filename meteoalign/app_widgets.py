@@ -21,9 +21,15 @@ class AppWidgetMixin:
         self.setFont(controls_font)
         self.ui.centralwidget.setFont(controls_font)
 
-        status_font = QFont(self.ui.statusbar.font())
+        statusbar = getattr(self.ui, "statusbar", None)
+        if statusbar is None:
+            statusbar = self.statusBar()
+            statusbar.setObjectName("statusbar")
+            self.ui.statusbar = statusbar
+
+        status_font = QFont(statusbar.font())
         status_font.setPointSize(ui_config.status_bar_font_size_pt)
-        self.ui.statusbar.setFont(status_font)
+        statusbar.setFont(status_font)
 
     def _set_plain_label_text(self, label: QLabel, text: str, tooltip: str | None = None) -> None:
         """设置标签纯文本，并同步设置 tooltip。"""
