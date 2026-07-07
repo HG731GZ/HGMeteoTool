@@ -12,7 +12,15 @@ from time import monotonic
 import numpy as np
 from PyQt5.QtCore import QDateTime, Qt, QThread, QTimer
 from PyQt5.QtGui import QBrush, QColor, QImage
-from PyQt5.QtWidgets import QApplication, QFileDialog, QHeaderView, QMessageBox, QProgressDialog, QTableWidgetItem
+from PyQt5.QtWidgets import (
+    QApplication,
+    QAbstractItemView,
+    QFileDialog,
+    QHeaderView,
+    QMessageBox,
+    QProgressDialog,
+    QTableWidgetItem,
+)
 
 from .alignment import (
     MIN_ALIGNMENT_PAIRS,
@@ -398,12 +406,17 @@ class SequenceBatchMixin:
         table.resizeColumnToContents(IMAGE_SEQUENCE_RMS_COLUMN)
         self._select_image_sequence_table_row()
 
-    def _select_image_sequence_table_row(self) -> None:
+    def _select_image_sequence_table_row(self, *, scroll_to_row: bool = False) -> None:
+        self._select_image_sequence_table_index(
+            int(getattr(self, "_image_sequence_current_index", -1)),
+            scroll_to_row=scroll_to_row,
+        )
+
+    def _select_image_sequence_table_index(self, sequence_index: int, *, scroll_to_row: bool = False) -> None:
         if not hasattr(self.ui, "tableWidgetImageSequence"):
             return
-        current_index = int(getattr(self, "_image_sequence_current_index", -1))
         table = self.ui.tableWidgetImageSequence
-        if current_index < 0:
+        if sequence_index < 0:
             table.clearSelection()
             return
         for row in range(table.rowCount()):
@@ -414,9 +427,19 @@ class SequenceBatchMixin:
                 row_sequence_index = int(item.data(IMAGE_SEQUENCE_INDEX_ROLE))
             except (TypeError, ValueError):
                 continue
-            if row_sequence_index == current_index:
+            if row_sequence_index == sequence_index:
                 table.selectRow(row)
+                if scroll_to_row:
+                    table.scrollToItem(item, QAbstractItemView.PositionAtCenter)
                 return
+
+    def _set_image_sequence_processing_index(self, index: int) -> None:
+        """处理序列时只联动左侧表格，不额外刷新右侧预览。"""
+        items = getattr(self, "_image_sequence_items", [])
+        if not items:
+            return
+        sequence_index = max(0, min(int(index), len(items) - 1))
+        self._select_image_sequence_table_index(sequence_index, scroll_to_row=True)
 
     def _reset_image_sequence_preview(self) -> None:
         if hasattr(self.ui, "labelImageSequencePreviewTitle"):
@@ -2021,12 +2044,27 @@ class SequenceBatchMixin:
 
         self._load_first_sequence_session_for_reference_page(raise_on_error=True)
 
+    def _ensure_first_sequence_output_jsons(self, first_item: ImageSequenceItem) -> list[Path]:
+        """确保第一帧有用户基准 JSON；已有文件绝不覆盖。"""
+        starpair_path = self._sequence_starpair_json_path(first_item.path)
+        model_path = self._sequence_model_json_path(first_item.path)
+        created_paths: list[Path] = []
+        if not starpair_path.exists():
+            starpair_payload = self._build_star_pair_session_payload(starpair_path)
+            starpair_path.write_text(json.dumps(starpair_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            created_paths.append(starpair_path)
+        if not model_path.exists():
+            model_payload = self._build_source_model_payload(model_path)
+            model_path.write_text(json.dumps(model_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            created_paths.append(model_path)
+        return created_paths
+
     def _confirm_overwrite_sequence_outputs(self) -> bool:
         items = getattr(self, "_image_sequence_items", [])
         if not items:
             return False
         existing_paths: list[Path] = []
-        for item in items:
+        for item in items[1:]:
             for output_path in (
                 self._sequence_starpair_json_path(item.path),
                 self._sequence_model_json_path(item.path),
@@ -2039,11 +2077,15 @@ class SequenceBatchMixin:
             if len(existing_paths) > 6:
                 sample_lines += f"\n... 另有 {len(existing_paths) - 6} 个文件"
             message = (
-                "开始处理后会覆盖序列中已有的配对 JSON 与模型 JSON。\n\n"
+                "开始处理后会覆盖第二帧及之后已有的配对 JSON 与模型 JSON。\n"
+                "第一帧已有 JSON 会保留，不参与覆盖。\n\n"
                 f"已发现 {len(existing_paths)} 个已有输出文件：\n{sample_lines}\n\n是否继续？"
             )
         else:
-            message = "开始处理后会为序列图像写入同名配对 JSON 与模型 JSON。是否继续？"
+            message = (
+                "开始处理后会为第二帧及之后写入同名配对 JSON 与模型 JSON。\n"
+                "第一帧只作为用户基准，已有 JSON 会保留，缺失 JSON 会先自动补齐。是否继续？"
+            )
         reply = QMessageBox.question(
             self,
             "确认处理图像序列",
@@ -2064,6 +2106,9 @@ class SequenceBatchMixin:
                 self.ui.statusbar.showMessage("已取消图像序列处理。")
                 return
             first_item = self._current_sequence_first_item()
+            first_output_paths = self._ensure_first_sequence_output_jsons(first_item)
+            if first_output_paths:
+                self._refresh_image_sequence_table()
             self._apply_sequence_observation_time(first_item, emit_signal=False)
             self.render_now()
             QApplication.processEvents()
@@ -2078,9 +2123,10 @@ class SequenceBatchMixin:
             return
 
         items = list(getattr(self, "_image_sequence_items", []))
+        process_items = items[1:]
         progress = QProgressDialog(self)
         progress.setWindowTitle("正在处理图像序列")
-        progress.setRange(0, len(items))
+        progress.setRange(0, len(process_items))
         progress.setWindowModality(Qt.WindowModal)
         progress.setMinimumDuration(0)
         progress.setAutoClose(False)
@@ -2095,11 +2141,13 @@ class SequenceBatchMixin:
         self._set_image_import_controls_enabled(False)
         self._update_image_sequence_controls()
         try:
-            for frame_index, item in enumerate(items, start=1):
+            for output_index, item in enumerate(process_items, start=1):
                 if progress.wasCanceled():
                     failures.append("用户取消了后续处理。")
                     break
-                progress.setValue(frame_index - 1)
+                frame_index = output_index + 1
+                self._set_image_sequence_processing_index(frame_index - 1)
+                progress.setValue(output_index - 1)
                 progress.setLabelText(
                     "正在处理 {index}/{count}\n{path}".format(
                         index=frame_index,
@@ -2110,48 +2158,54 @@ class SequenceBatchMixin:
                 QApplication.processEvents()
 
                 try:
-                    if frame_index == 1:
-                        assert self.current_image_preview is not None
-                        preview = self.current_image_preview
-                        pairs = self._first_frame_matched_pairs(templates)
-                        time_fit = self._sequence_time_fit_for_pairs(
-                            item,
-                            pairs,
-                            fixed_model,
-                            initial_delta_seconds=0.0,
-                            max_iterations=0,
-                        )
-                        pairs = self._apply_sequence_time_fit(
-                            pairs,
-                            time_fit,
-                            require_accepted=False,
-                        )
-                    else:
-                        preview = load_image_preview(item.path, max_long_side_px=None)
-                        if (preview.image.width(), preview.image.height()) != target_size:
-                            raise ValueError(
-                                "图像尺寸与第一张不一致：第一张 {base_w} x {base_h} px，当前 {w} x {h} px。".format(
-                                    base_w=target_size[0],
-                                    base_h=target_size[1],
-                                    w=preview.image.width(),
-                                    h=preview.image.height(),
-                                )
+                    preview = load_image_preview(item.path, max_long_side_px=None)
+                    if (preview.image.width(), preview.image.height()) != target_size:
+                        raise ValueError(
+                            "图像尺寸与第一张不一致：第一张 {base_w} x {base_h} px，当前 {w} x {h} px。".format(
+                                base_w=target_size[0],
+                                base_h=target_size[1],
+                                w=preview.image.width(),
+                                h=preview.image.height(),
                             )
-                        stats = {
-                            "failed_psf": 0,
-                            "skipped_mask": 0,
-                            "skipped_duplicate": 0,
-                            "skipped_outside": 0,
-                            "missing_target": 0,
-                            "supplemental_matched": 0,
-                        }
-                        pairs = self._sequence_frame_matched_pairs(
+                        )
+                    stats = {
+                        "failed_psf": 0,
+                        "skipped_mask": 0,
+                        "skipped_duplicate": 0,
+                        "skipped_outside": 0,
+                        "missing_target": 0,
+                        "supplemental_matched": 0,
+                    }
+                    pairs = self._sequence_frame_matched_pairs(
+                        item,
+                        preview,
+                        templates,
+                        fixed_model,
+                        target_size,
+                        previous_delta_seconds,
+                        desired_pair_count,
+                        stats,
+                    )
+                    time_fit = self._sequence_time_fit_for_pairs(
+                        item,
+                        pairs,
+                        fixed_model,
+                        initial_delta_seconds=previous_delta_seconds,
+                    )
+                    pairs = self._apply_sequence_time_fit(
+                        pairs,
+                        time_fit,
+                        require_accepted=True,
+                    )
+                    if len(pairs) < minimum_pair_count:
+                        stats["second_pass_fill"] = 1
+                        pairs = self._sequence_fill_frame_pairs_to_target(
                             item,
                             preview,
-                            templates,
+                            pairs,
                             fixed_model,
                             target_size,
-                            previous_delta_seconds,
+                            float(time_fit.delta_t_seconds),
                             desired_pair_count,
                             stats,
                         )
@@ -2159,44 +2213,21 @@ class SequenceBatchMixin:
                             item,
                             pairs,
                             fixed_model,
-                            initial_delta_seconds=previous_delta_seconds,
+                            initial_delta_seconds=float(time_fit.delta_t_seconds),
                         )
                         pairs = self._apply_sequence_time_fit(
                             pairs,
                             time_fit,
                             require_accepted=True,
                         )
-                        if len(pairs) < minimum_pair_count:
-                            stats["second_pass_fill"] = 1
-                            pairs = self._sequence_fill_frame_pairs_to_target(
-                                item,
-                                preview,
-                                pairs,
-                                fixed_model,
-                                target_size,
-                                float(time_fit.delta_t_seconds),
-                                desired_pair_count,
-                                stats,
+                    if len(pairs) < minimum_pair_count:
+                        raise ValueError(
+                            "补充匹配后有效配对 {count} 个，低于序列目标下限 {target} 个；"
+                            "请检查云层、遮挡、蒙版或增大自动匹配搜索半径。".format(
+                                count=len(pairs),
+                                target=minimum_pair_count,
                             )
-                            time_fit = self._sequence_time_fit_for_pairs(
-                                item,
-                                pairs,
-                                fixed_model,
-                                initial_delta_seconds=float(time_fit.delta_t_seconds),
-                            )
-                            pairs = self._apply_sequence_time_fit(
-                                pairs,
-                                time_fit,
-                                require_accepted=True,
-                            )
-                        if len(pairs) < minimum_pair_count:
-                            raise ValueError(
-                                "补充匹配后有效配对 {count} 个，低于序列目标下限 {target} 个；"
-                                "请检查云层、遮挡、蒙版或增大自动匹配搜索半径。".format(
-                                    count=len(pairs),
-                                    target=minimum_pair_count,
-                                )
-                            )
+                        )
                     output_paths = self._write_sequence_outputs(
                         item,
                         first_item,
@@ -2207,12 +2238,14 @@ class SequenceBatchMixin:
                     )
                     processed.append(output_paths)
                     self._refresh_image_sequence_table()
+                    self._set_image_sequence_processing_index(frame_index - 1)
                     previous_delta_seconds = float(time_fit.delta_t_seconds)
                 except Exception as exc:  # noqa: BLE001 - 单帧失败不影响后续帧。
                     failures.append(f"{item.path.name}: {exc}")
+                    self._set_image_sequence_processing_index(frame_index - 1)
                     continue
         finally:
-            progress.setValue(len(items))
+            progress.setValue(len(process_items))
             progress.close()
             self._sequence_processing_active = False
             self._set_image_import_controls_enabled(True)
@@ -2220,9 +2253,11 @@ class SequenceBatchMixin:
             self._update_image_sequence_controls()
 
         self.ui.statusbar.showMessage(
-            f"序列处理完成：成功 {len(processed)} 张，失败 {len(failures)} 张。"
+            f"序列处理完成：第一帧跳过，后续成功 {len(processed)} 张，失败 {len(failures)} 张。"
         )
-        message = f"成功处理 {len(processed)} 张，失败 {len(failures)} 张。"
+        message = f"第一帧使用用户基准数据，未参与批处理。\n后续成功处理 {len(processed)} 张，失败 {len(failures)} 张。"
+        if first_output_paths:
+            message += "\n\n已补齐第一帧基准 JSON：\n" + "\n".join(str(path) for path in first_output_paths)
         if processed:
             first_starpair, first_model = processed[0]
             message += f"\n\n示例输出：\n{first_starpair}\n{first_model}"

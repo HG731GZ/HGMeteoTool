@@ -1185,7 +1185,6 @@ class StarPairTableMixin:
         self,
         scene: QGraphicsScene,
         point: QPointF,
-        label: str,
     ) -> None:
         radius = STAR_PAIR_FOCUS_MARKER_RADIUS_PX
         ellipse_item = QGraphicsEllipseItem(
@@ -1212,17 +1211,7 @@ class StarPairTableMixin:
         shadow_item.setBrush(QBrush(Qt.NoBrush))
         shadow_item.setZValue(39.0)
 
-        label_item = QGraphicsSimpleTextItem(label)
-        label_font = QFont(self.font())
-        label_font.setPointSize(self.ui_config.star_name_font_size_pt)
-        label_font.setBold(True)
-        label_item.setFont(label_font)
-        label_item.setBrush(QBrush(QColor(80, 220, 255)))
-        label_item.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
-        label_item.setPos(point.x() + radius + 6.0, point.y() - radius)
-        label_item.setZValue(41.0)
-
-        for item in (shadow_item, ellipse_item, label_item):
+        for item in (shadow_item, ellipse_item):
             scene.addItem(item)
             self._focused_star_annotations.append(item)
 
@@ -1259,13 +1248,6 @@ class StarPairTableMixin:
         finally:
             self._syncing_reference_real_views = False
 
-    def _set_focus_base_annotations_hidden(self) -> None:
-        if not self.ui.checkBoxHideReferenceAnnotations.isChecked() and not self.ui.checkBoxHideRealImageAnnotations.isChecked():
-            self._clear_focused_star_annotations()
-            return
-        self.ui.checkBoxHideReferenceAnnotations.setChecked(False)
-        self.ui.checkBoxHideRealImageAnnotations.setChecked(False)
-
     def _set_reference_real_sync_checked(self) -> None:
         self._update_reference_alignment_controls()
         if self.ui.checkBoxSyncReferenceAndRealView.isEnabled() and not self.ui.checkBoxSyncReferenceAndRealView.isChecked():
@@ -1274,16 +1256,15 @@ class StarPairTableMixin:
     def _focus_star_pair_image_point(self, row: int, image_x: float, image_y: float) -> None:
         if self._active_star_pair_row is not None:
             self._leave_star_pick_mode()
+        self._clear_focused_star_annotations()
         self.ui.tabWidgetMain.setCurrentWidget(self.ui.tabReferenceImage)
         focus_point = QPointF(float(image_x), float(image_y))
-        focus_label = self._star_pair_label(row)
 
         self._set_reference_real_sync_checked()
-        self._set_focus_base_annotations_hidden()
         self._update_reference_alignment_display()
         self._focus_reference_real_views_on_point(focus_point)
-        self._create_focus_annotation_items(self.reference_scene, focus_point, focus_label)
-        self._create_focus_annotation_items(self.real_image_scene, focus_point, focus_label)
+        self._create_focus_annotation_items(self.reference_scene, focus_point)
+        self._create_focus_annotation_items(self.real_image_scene, focus_point)
         self.ui.tableWidgetStarPairs.selectRow(row)
 
     def _focus_star_pair_theoretical_position(self, row: int) -> None:
@@ -1320,10 +1301,9 @@ class StarPairTableMixin:
             self.ui.statusbar.showMessage(f"{self._star_pair_label(row)} 的理论位置在真实图像外。")
             return
 
-        focus_label = self._star_pair_label(row)
         self._focus_star_pair_image_point(row, predicted_x, predicted_y)
         self.ui.statusbar.showMessage(
-            f"已聚焦 {focus_label} 的理论位置: x={predicted_x:.2f}, y={predicted_y:.2f}。切换标注选项可重置标注显示。"
+            f"已聚焦理论位置: x={predicted_x:.2f}, y={predicted_y:.2f}。切换标注选项可重置蓝圈。"
         )
 
     def _selected_star_pair_rows(self) -> list[int]:
