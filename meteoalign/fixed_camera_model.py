@@ -42,6 +42,45 @@ def _as_float_list(values: np.ndarray) -> list[float]:
     return [float(value) for value in np.asarray(values, dtype=np.float64).ravel()]
 
 
+def _json_float(value: object, field_name: str, default: float | None = None) -> float:
+    if value is None:
+        if default is None:
+            raise ValueError(f"固定相机模型缺少字段：{field_name}")
+        return float(default)
+    result = float(value)
+    if not np.isfinite(result):
+        raise ValueError(f"固定相机模型字段 {field_name} 不是有效数值。")
+    return result
+
+
+def _json_int(value: object, field_name: str, default: int | None = None) -> int:
+    if value is None:
+        if default is None:
+            raise ValueError(f"固定相机模型缺少字段：{field_name}")
+        return int(default)
+    return int(value)
+
+
+def _json_float_array(
+    value: object,
+    field_name: str,
+    *,
+    shape: tuple[int, ...] | None = None,
+) -> np.ndarray:
+    array = np.asarray(value, dtype=np.float64)
+    if shape is not None and array.shape != shape:
+        raise ValueError(f"固定相机模型字段 {field_name} 形状应为 {shape}，实际为 {array.shape}。")
+    if array.size and not np.all(np.isfinite(array)):
+        raise ValueError(f"固定相机模型字段 {field_name} 包含无效数值。")
+    return array.astype(np.float64)
+
+
+def _json_mapping(value: object, field_name: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"固定相机模型字段 {field_name} 必须是对象。")
+    return value
+
+
 def _ensure_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
@@ -64,6 +103,117 @@ class FixedCameraModel:
     """固定三脚架序列共享的 ENU -> Pixel 静态模型。"""
 
     projection_transform: ProjectionSkyAlignmentTransform
+
+    @classmethod
+    def from_json_payload(cls, payload: dict[str, Any]) -> "FixedCameraModel":
+        """从导出的 JSON 字段恢复固定相机模型。"""
+        if not isinstance(payload, dict):
+            raise ValueError("固定相机模型 JSON 必须是对象。")
+        if payload.get("kind") != "fixed_camera_enu_model":
+            raise ValueError("JSON 中的 fixed_camera_model 不是固定相机 ENU 模型。")
+
+        intrinsics = _json_mapping(payload.get("camera_intrinsics"), "camera_intrinsics")
+        principal_point = _json_mapping(intrinsics.get("principal_point_px"), "camera_intrinsics.principal_point_px")
+        pose = _json_mapping(payload.get("fixed_camera_pose"), "fixed_camera_pose")
+        residual = _json_mapping(payload.get("static_residual_distortion"), "static_residual_distortion")
+        normalization = _json_mapping(
+            residual.get("normalization"),
+            "static_residual_distortion.normalization",
+        )
+        diagnostics = payload.get("diagnostics")
+        diagnostics_mapping = diagnostics if isinstance(diagnostics, dict) else {}
+
+        image_width = _json_int(payload.get("image_width_px"), "image_width_px")
+        image_height = _json_int(payload.get("image_height_px"), "image_height_px")
+        lens_model = str(intrinsics.get("base_projection", "")).strip()
+        if lens_model not in SKY_KNOWN_PROJECTION_MODELS:
+            projection_code = str(intrinsics.get("projection_code", "")).strip().upper()
+            code_to_model = {code: model for model, code in SKY_KNOWN_PROJECTION_CODES.items()}
+            lens_model = code_to_model.get(projection_code, lens_model)
+        if lens_model not in SKY_KNOWN_PROJECTION_MODELS:
+            raise ValueError(f"固定相机模型包含不支持的基础投影：{lens_model}")
+
+        fov_value = intrinsics.get("fov_deg")
+        fov_deg = None if fov_value is None else _json_float(fov_value, "camera_intrinsics.fov_deg")
+        transform = ProjectionSkyAlignmentTransform(
+            lens_model=lens_model,
+            pair_count=_json_int(
+                diagnostics_mapping.get("fit_pair_count", residual.get("anchor_count")),
+                "diagnostics.fit_pair_count",
+                default=0,
+            ),
+            image_width_px=image_width,
+            image_height_px=image_height,
+            fov_deg=fov_deg,
+            rotation_matrix=_json_float_array(
+                pose.get("rotation_matrix_enu_to_camera"),
+                "fixed_camera_pose.rotation_matrix_enu_to_camera",
+                shape=(3, 3),
+            ),
+            center_x_px=_json_float(principal_point.get("x"), "camera_intrinsics.principal_point_px.x"),
+            center_y_px=_json_float(principal_point.get("y"), "camera_intrinsics.principal_point_px.y"),
+            scale_px=_json_float(intrinsics.get("scale_px"), "camera_intrinsics.scale_px"),
+            residual_kind=str(residual.get("kind", "")),
+            residual_origin_x_px=_json_float(
+                normalization.get("origin_x_px"),
+                "static_residual_distortion.normalization.origin_x_px",
+            ),
+            residual_origin_y_px=_json_float(
+                normalization.get("origin_y_px"),
+                "static_residual_distortion.normalization.origin_y_px",
+            ),
+            residual_scale_x_px=_json_float(
+                normalization.get("scale_x_px"),
+                "static_residual_distortion.normalization.scale_x_px",
+            ),
+            residual_scale_y_px=_json_float(
+                normalization.get("scale_y_px"),
+                "static_residual_distortion.normalization.scale_y_px",
+            ),
+            residual_anchor_points=_json_float_array(
+                residual.get("anchor_points_normalized", []),
+                "static_residual_distortion.anchor_points_normalized",
+            ).reshape((-1, 2)),
+            residual_tps_weights_x=_json_float_array(
+                residual.get("tps_weights_dx_px", []),
+                "static_residual_distortion.tps_weights_dx_px",
+            ).reshape(-1),
+            residual_tps_weights_y=_json_float_array(
+                residual.get("tps_weights_dy_px", []),
+                "static_residual_distortion.tps_weights_dy_px",
+            ).reshape(-1),
+            residual_tps_affine_x=_json_float_array(
+                residual.get("tps_affine_dx_px", []),
+                "static_residual_distortion.tps_affine_dx_px",
+            ).reshape(-1),
+            residual_tps_affine_y=_json_float_array(
+                residual.get("tps_affine_dy_px", []),
+                "static_residual_distortion.tps_affine_dy_px",
+            ).reshape(-1),
+            residual_hard_anchor_count=_json_int(residual.get("hard_anchor_count"), "hard_anchor_count", default=0),
+            residual_soft_constraint_count=_json_int(
+                residual.get("soft_constraint_count"),
+                "soft_constraint_count",
+                default=0,
+            ),
+            residual_soft_weight_min=_json_float(
+                residual.get("soft_constraint_weight_min"),
+                "soft_constraint_weight_min",
+                default=1.0,
+            ),
+            residual_soft_weight_max=_json_float(
+                residual.get("soft_constraint_weight_max"),
+                "soft_constraint_weight_max",
+                default=1.0,
+            ),
+            projection_rms_px=_json_float(
+                diagnostics_mapping.get("projection_rms_px_before_residual"),
+                "diagnostics.projection_rms_px_before_residual",
+                default=float("nan"),
+            ),
+            rms_px=_json_float(diagnostics_mapping.get("rms_px"), "diagnostics.rms_px", default=float("nan")),
+        )
+        return cls(projection_transform=transform)
 
     @property
     def lens_model(self) -> str:

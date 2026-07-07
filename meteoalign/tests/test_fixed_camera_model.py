@@ -8,7 +8,7 @@ from astropy.coordinates import AltAz, EarthLocation, SkyCoord
 from astropy.time import Time
 
 from meteoalign.alignment import SKY_MATCHING_MODEL_RECTILINEAR, _project_unit_vectors_with_known_projection
-from meteoalign.fixed_camera_model import estimate_frame_time_correction, fit_fixed_camera_model
+from meteoalign.fixed_camera_model import FixedCameraModel, estimate_frame_time_correction, fit_fixed_camera_model
 from meteoalign.simulator import ObserverSettings, ViewSettings, camera_basis_from_view, local_vectors_from_altaz
 
 
@@ -129,3 +129,20 @@ def test_fixed_camera_payload_contains_static_model_sections() -> None:
     assert payload["camera_intrinsics"]["base_projection"] == SKY_MATCHING_MODEL_RECTILINEAR
     assert "rotation_matrix_enu_to_camera" in payload["fixed_camera_pose"]
     assert payload["static_residual_distortion"]["kind"] == "thin_plate_spline"
+
+
+def test_fixed_camera_model_restores_from_json_payload() -> None:
+    fixed_model, _observer, _radec, pixels = _synthetic_fixed_camera_fixture()
+    payload = fixed_model.to_json_payload()
+
+    restored = FixedCameraModel.from_json_payload(payload)
+    expected_alt_deg, expected_az_deg, expected_valid = fixed_model.pixel_to_altaz_points(pixels)
+    actual_alt_deg, actual_az_deg, actual_valid = restored.pixel_to_altaz_points(pixels)
+
+    assert restored.image_width_px == fixed_model.image_width_px
+    assert restored.image_height_px == fixed_model.image_height_px
+    assert restored.lens_model == fixed_model.lens_model
+    assert np.all(actual_valid == expected_valid)
+    expected_vectors = local_vectors_from_altaz(expected_alt_deg, expected_az_deg)
+    actual_vectors = local_vectors_from_altaz(actual_alt_deg, actual_az_deg)
+    assert np.max(np.linalg.norm(actual_vectors - expected_vectors, axis=1)) < 1e-8

@@ -98,6 +98,7 @@ from .app_sequence import SequenceBatchMixin
 from .app_auto_match import AutoMatchMixin
 from .app_rendering import RenderingMixin
 from .app_view_controls import ViewControlsMixin
+from .app_mosaic import MosaicProjectionMixin
 from .app_utils import (
     _session_image_candidate,
     _resolve_star_pair_session_real_image_path,
@@ -136,6 +137,7 @@ class MainWindow(
     SequenceBatchMixin,
     ImageMixin,
     AutoMatchMixin,
+    MosaicProjectionMixin,
     RenderingMixin,
     ViewControlsMixin,
 ):
@@ -199,6 +201,8 @@ class MainWindow(
             self.ui.imageSequenceView.setScene(self.image_sequence_scene)
             self.ui.imageSequenceView.installEventFilter(self)
             self.ui.imageSequenceView.viewport().installEventFilter(self)
+
+        self._init_mosaic_projection_page()
 
         self.render_timer = QTimer(self)
         self.render_timer.setSingleShot(True)
@@ -279,6 +283,7 @@ class MainWindow(
 
         self._init_defaults()
         self._connect_inputs()
+        self._connect_mosaic_projection_inputs()
         self._configure_star_pair_table_columns()
         if hasattr(self, "_configure_image_sequence_table_columns"):
             self._configure_image_sequence_table_columns()
@@ -382,6 +387,7 @@ class MainWindow(
         self.ui.actionImportSingleImage.triggered.connect(self.import_single_image)
         self.ui.actionImportImageSequence.triggered.connect(self.import_image_sequence)
         self.ui.tabWidgetMain.currentChanged.connect(self._handle_tab_changed)
+        self.ui.tabWidgetMain.currentChanged.connect(lambda _index: self.schedule_mosaic_render())
         self.ui.tableWidgetStarPairs.setContextMenuPolicy(Qt.CustomContextMenu)
         self.ui.tableWidgetStarPairs.customContextMenuRequested.connect(self._show_star_pair_context_menu)
         self.ui.tableWidgetStarPairs.itemChanged.connect(self._handle_star_pair_item_changed)
@@ -438,6 +444,8 @@ class MainWindow(
         ViewControlsMixin.resizeEvent(self, event)
 
     def eventFilter(self, watched, event) -> bool:  # type: ignore[no-untyped-def]
+        if self._handle_mosaic_event_filter(watched, event):
+            return True
         return ViewControlsMixin.eventFilter(self, watched, event)
 
     def keyPressEvent(self, event) -> None:  # type: ignore[no-untyped-def]

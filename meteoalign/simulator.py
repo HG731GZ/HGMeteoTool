@@ -41,11 +41,17 @@ iers.conf.iers_degraded_accuracy = "warn"
 RECTILINEAR_LENS_MODEL = "rectilinear"
 FISHEYE_EQUIDISTANT = "fisheye_equidistant"
 FISHEYE_EQUISOLID = "fisheye_equisolid"
+MERCATOR_LENS_MODEL = "mercator"
+CYLINDRICAL_EQUIDISTANT_LENS_MODEL = "cylindrical_equidistant"
 FISHEYE_LENS_MODELS = {
     FISHEYE_EQUIDISTANT,
     FISHEYE_EQUISOLID,
 }
-SUPPORTED_LENS_MODELS = {RECTILINEAR_LENS_MODEL, *FISHEYE_LENS_MODELS}
+CYLINDRICAL_LENS_MODELS = {
+    MERCATOR_LENS_MODEL,
+    CYLINDRICAL_EQUIDISTANT_LENS_MODEL,
+}
+SUPPORTED_LENS_MODELS = {RECTILINEAR_LENS_MODEL, *FISHEYE_LENS_MODELS, *CYLINDRICAL_LENS_MODELS}
 Point2D = tuple[float, float]
 
 
@@ -316,13 +322,13 @@ class ReferenceStar:
 
 
 def horizontal_fov_deg(camera: CameraSettings) -> float:
-    if camera.lens_model in FISHEYE_LENS_MODELS:
+    if camera.lens_model in FISHEYE_LENS_MODELS or camera.lens_model in CYLINDRICAL_LENS_MODELS:
         return float(camera.fisheye_fov_deg)
     return float(np.degrees(2.0 * np.arctan(camera.sensor_width_mm / (2.0 * camera.focal_length_mm))))
 
 
 def vertical_fov_deg(camera: CameraSettings) -> float:
-    if camera.lens_model in FISHEYE_LENS_MODELS:
+    if camera.lens_model in FISHEYE_LENS_MODELS or camera.lens_model in CYLINDRICAL_LENS_MODELS:
         aspect_scale = camera.image_height_px / max(float(camera.image_width_px), 1.0)
         return float(camera.fisheye_fov_deg * min(aspect_scale, 1.0))
     return float(np.degrees(2.0 * np.arctan(camera.sensor_height_mm / (2.0 * camera.focal_length_mm))))
@@ -628,6 +634,8 @@ def _project_altaz_points(
         return _project_altaz_points_rectilinear(alt_deg, az_deg, camera, basis)
     if camera.lens_model in FISHEYE_LENS_MODELS:
         return _project_altaz_points_fisheye(alt_deg, az_deg, camera, basis)
+    if camera.lens_model in CYLINDRICAL_LENS_MODELS:
+        return _project_altaz_points_cylindrical(alt_deg, az_deg, camera, basis)
     raise ValueError(f"Unsupported lens model: {camera.lens_model}")
 
 
@@ -721,6 +729,48 @@ def _project_altaz_points_fisheye(
     return x_px.astype(np.float64), y_px.astype(np.float64), valid
 
 
+def _projection_horizontal_scale_px(camera: CameraSettings) -> float:
+    fov_deg = max(1.0, min(360.0, float(camera.fisheye_fov_deg)))
+    fov_rad = max(np.deg2rad(fov_deg), 1e-6)
+    return float(camera.image_width_px) / fov_rad
+
+
+def _project_altaz_points_cylindrical(
+    alt_deg: np.ndarray,
+    az_deg: np.ndarray,
+    camera: CameraSettings,
+    basis: tuple[np.ndarray, np.ndarray, np.ndarray],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    vectors = _local_vectors_from_altaz(alt_deg, az_deg)
+    cam_x, cam_y, cam_z = _project_vectors_onto_camera_basis(vectors, basis)
+    norm = np.sqrt(cam_x * cam_x + cam_y * cam_y + cam_z * cam_z)
+    unit_y = np.divide(cam_y, norm, out=np.zeros_like(cam_y), where=norm > 1e-12)
+    longitude = np.arctan2(cam_x, cam_z)
+    latitude = np.arcsin(np.clip(unit_y, -1.0, 1.0))
+
+    scale_px = _projection_horizontal_scale_px(camera)
+    plane_y = latitude
+    valid = np.isfinite(longitude) & np.isfinite(latitude) & (norm > 1e-12)
+    if camera.lens_model == MERCATOR_LENS_MODEL:
+        # 墨卡托在两极发散，渲染时略微避开极点。
+        valid &= np.abs(latitude) < (np.pi * 0.5 - 1e-8)
+        plane_y = np.arctanh(np.clip(np.sin(latitude), -1.0 + 1e-12, 1.0 - 1e-12))
+
+    x_px = camera.image_width_px * 0.5 + scale_px * longitude
+    y_px = camera.image_height_px * 0.5 - scale_px * plane_y
+    margin_x = camera.image_width_px * 0.1
+    margin_y = camera.image_height_px * 0.1
+    valid &= (
+        np.isfinite(x_px)
+        & np.isfinite(y_px)
+        & (x_px >= -margin_x)
+        & (x_px <= camera.image_width_px + margin_x)
+        & (y_px >= -margin_y)
+        & (y_px <= camera.image_height_px + margin_y)
+    )
+    return x_px.astype(np.float64), y_px.astype(np.float64), valid.astype(bool)
+
+
 def _alt_from_image_points(
     x_px: np.ndarray,
     y_px: np.ndarray,
@@ -752,6 +802,22 @@ def _alt_from_image_points(
         cam_y = unit_y * plane_norm
         cam_z = np.cos(theta)
         valid = (rho <= 1.0 + 1e-9) & np.isfinite(cam_x) & np.isfinite(cam_y) & np.isfinite(cam_z)
+    elif camera.lens_model in CYLINDRICAL_LENS_MODELS:
+        center_x = camera.image_width_px * 0.5
+        center_y = camera.image_height_px * 0.5
+        scale_px = _projection_horizontal_scale_px(camera)
+        longitude = (x_px - center_x) / max(scale_px, 1e-12)
+        plane_y = (center_y - y_px) / max(scale_px, 1e-12)
+        if camera.lens_model == MERCATOR_LENS_MODEL:
+            latitude = np.arcsin(np.clip(np.tanh(plane_y), -1.0, 1.0))
+            valid = np.isfinite(longitude) & np.isfinite(latitude)
+        else:
+            latitude = plane_y
+            valid = np.isfinite(longitude) & np.isfinite(latitude) & (np.abs(latitude) <= np.pi * 0.5 + 1e-8)
+        cos_lat = np.cos(latitude)
+        cam_x = cos_lat * np.sin(longitude)
+        cam_y = np.sin(latitude)
+        cam_z = cos_lat * np.cos(longitude)
     else:
         raise ValueError(f"Unsupported lens model: {camera.lens_model}")
 
@@ -979,6 +1045,30 @@ def _build_horizontal_grid(
     return tuple(grid_lines), tuple(labels)
 
 
+def _camera_longitudes_from_altaz(
+    alt_deg: np.ndarray,
+    az_deg: np.ndarray,
+    basis: tuple[np.ndarray, np.ndarray, np.ndarray],
+) -> np.ndarray:
+    vectors = _local_vectors_from_altaz(alt_deg, az_deg)
+    cam_x, _cam_y, cam_z = _project_vectors_onto_camera_basis(vectors, basis)
+    return np.arctan2(cam_x, cam_z).astype(np.float64)
+
+
+def _cylindrical_ring_crosses_projection_seam(
+    ring: HorizontalMilkyWayRing,
+    basis: tuple[np.ndarray, np.ndarray, np.ndarray],
+) -> bool:
+    longitudes = _camera_longitudes_from_altaz(ring.alt_deg, ring.az_deg, basis)
+    if longitudes.size < 3 or not np.all(np.isfinite(longitudes)):
+        return True
+
+    # 圆柱类投影在相机经度 +/-pi 处有断点。银河环如果跨过该断点，
+    # 屏幕空间会出现一条贯穿画面的闭合边，QPainter 填充后就会变成大矩形面片。
+    closed_longitudes = np.concatenate((longitudes, longitudes[:1]))
+    return bool(np.any(np.abs(np.diff(closed_longitudes)) > np.pi))
+
+
 def _project_milky_way_polygons(
     horizontal_milky_way: HorizontalMilkyWayCatalog | None,
     camera: CameraSettings,
@@ -1003,6 +1093,8 @@ def _project_milky_way_polygons(
             if camera.lens_model in FISHEYE_LENS_MODELS:
                 projectable &= valid
             if not bool(np.all(projectable)):
+                continue
+            if camera.lens_model in CYLINDRICAL_LENS_MODELS and _cylindrical_ring_crosses_projection_seam(ring, basis):
                 continue
             points = tuple((float(x_value), float(y_value)) for x_value, y_value in zip(x_px, y_px))
             clipped_points = _clip_polygon_to_image_rect(points, camera.image_width_px, camera.image_height_px)
@@ -1086,6 +1178,8 @@ def project_horizontal_catalog(
         raise ValueError(f"Unsupported lens model: {camera.lens_model}")
     if camera.lens_model in FISHEYE_LENS_MODELS and not (1.0 <= camera.fisheye_fov_deg <= 300.0):
         raise ValueError("Fisheye FOV must be between 1 and 300 degrees")
+    if camera.lens_model in CYLINDRICAL_LENS_MODELS and not (1.0 <= camera.fisheye_fov_deg <= 360.0):
+        raise ValueError("Cylindrical projection FOV must be between 1 and 360 degrees")
 
     basis = _camera_basis(view)
 
