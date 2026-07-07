@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 from PyQt5.QtCore import QDateTime, QEvent, QObject, QPoint, QPointF, QRectF, QThread, QTimer, Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QBrush, QCursor, QFont, QImage, QPainter, QPen, QPixmap
+from PyQt5.QtGui import QColor, QBrush, QCursor, QFont, QIcon, QImage, QPainter, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -464,6 +464,10 @@ def main(argv: list[str] | None = None) -> int:
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(argv or sys.argv)
+
+    icon_path = Path(__file__).resolve().parent.parent / "icon256.png"
+    app.setWindowIcon(QIcon(str(icon_path)))
+
     if not ensure_catalogs_ready_or_handle():
         return 0
 
