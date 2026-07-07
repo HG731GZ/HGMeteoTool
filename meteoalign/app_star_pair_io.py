@@ -49,6 +49,8 @@ class StarPairIOMixin:
     _json_import_thread: QThread | None
     _json_import_worker: object | None
     _json_import_progress: QProgressDialog | None
+    _star_pair_session_import_switch_to_reference: bool
+    _star_pair_session_import_clear_input_name: str
     _alignment_model: object  # method
     _set_alignment_model: object  # method
     _auto_match_constraint_for_star_id: object  # method
@@ -148,7 +150,11 @@ class StarPairIOMixin:
         self._json_import_thread = None
         self._json_import_worker = None
         self._json_import_progress = None
+        self._star_pair_session_import_switch_to_reference = True
+        self._star_pair_session_import_clear_input_name = "新的配对 JSON"
         self._set_json_import_controls_enabled(True)
+        if hasattr(self, "_update_image_sequence_controls"):
+            self._update_image_sequence_controls()
 
     def _is_catalog_reference_star(self, star: ReferenceStar) -> bool:
         star_id = star.star_id.strip()
@@ -849,17 +855,30 @@ class StarPairIOMixin:
             return
         self.load_star_pair_session(file_path)
 
-    def load_star_pair_session(self, file_path: str | Path) -> None:
+    def load_star_pair_session(
+        self,
+        file_path: str | Path,
+        *,
+        switch_to_reference: bool = True,
+        show_progress: bool = True,
+        clear_input_name: str = "新的配对 JSON",
+    ) -> None:
         if self._json_import_thread is not None:
             QMessageBox.information(self, "正在导入 JSON", "当前已有 JSON 正在导入，请稍候。")
             return
         json_path = Path(file_path)
         self._set_json_import_controls_enabled(False)
-        self._json_import_progress = self._show_json_import_progress(
-            title="正在导入配对 JSON",
-            label_text=f"正在读取配对 JSON 并恢复真实图像...\n{json_path}",
-            status_text=f"正在导入星点配对 JSON: {json_path}",
-        )
+        self._star_pair_session_import_switch_to_reference = bool(switch_to_reference)
+        self._star_pair_session_import_clear_input_name = clear_input_name
+        if show_progress:
+            self._json_import_progress = self._show_json_import_progress(
+                title="正在导入配对 JSON",
+                label_text=f"正在读取配对 JSON 并恢复真实图像...\n{json_path}",
+                status_text=f"正在导入星点配对 JSON: {json_path}",
+            )
+        else:
+            self._json_import_progress = None
+            self.ui.statusbar.showMessage(f"正在后台导入星点配对 JSON: {json_path}")
 
         thread = QThread(self)
         worker = StarPairSessionImportWorker(json_path)
@@ -1150,8 +1169,13 @@ class StarPairIOMixin:
             source_path, payload, preview = result  # type: ignore[misc]
             if not isinstance(source_path, Path):
                 source_path = Path(source_path)
-            self._clear_star_pair_positions_for_new_input("新的配对 JSON")
-            self._apply_star_pair_session_payload(payload, source_path, preview=preview)
+            self._clear_star_pair_positions_for_new_input(self._star_pair_session_import_clear_input_name)
+            self._apply_star_pair_session_payload(
+                payload,
+                source_path,
+                preview=preview,
+                switch_to_reference=self._star_pair_session_import_switch_to_reference,
+            )
         except Exception as exc:  # noqa: BLE001 - 主线程恢复界面时也需要把错误反馈给用户。
             self.ui.statusbar.showMessage(f"导入星点配对 JSON 失败: {exc}")
             QMessageBox.critical(self, "导入星点配对 JSON 失败", str(exc))
@@ -1165,6 +1189,8 @@ class StarPairIOMixin:
         payload: object,
         source_path: Path,
         preview: ImagePreview | None = None,
+        *,
+        switch_to_reference: bool = True,
     ) -> None:
         if not isinstance(payload, dict):
             raise ValueError("JSON 根对象必须是字典。")
@@ -1189,11 +1215,14 @@ class StarPairIOMixin:
 
         image_path = self._session_real_image_path(payload, source_path)
         self._active_star_pair_row = None
+        current_tab = self.ui.tabWidgetMain.currentWidget() if not switch_to_reference else None
         previous_suspend_alignment = self._suspend_alignment_updates
         self._suspend_alignment_updates = True
         try:
             self._set_alignment_model(payload.get("sky_alignment_model"))
             self._apply_reference_payload(reference_payload, source_path)
+            if current_tab is not None:
+                self.ui.tabWidgetMain.setCurrentWidget(current_tab)
             self._merge_imported_reference_stars_from_pairs(pair_payloads)
             self._auto_match_reference_star_ids = auto_match_star_ids
             self._auto_match_constraint_by_star_id = {
@@ -1209,12 +1238,19 @@ class StarPairIOMixin:
             self._ensure_pair_record_stars_visible(pair_payloads)
             if preview is None:
                 preview = load_image_preview(image_path, max_long_side_px=None)
-            self._apply_loaded_image_preview(preview, clear_existing_pairs=False)
+            self._apply_loaded_image_preview(
+                preview,
+                clear_existing_pairs=False,
+                switch_to_reference=switch_to_reference,
+            )
             restored_count = self._restore_star_pair_records(pair_payloads, update_alignment=False)
         finally:
             self._suspend_alignment_updates = previous_suspend_alignment
         self._update_reference_alignment_transform()
-        self.ui.tabWidgetMain.setCurrentWidget(self.ui.tabReferenceImage)
+        if switch_to_reference:
+            self.ui.tabWidgetMain.setCurrentWidget(self.ui.tabReferenceImage)
+        elif current_tab is not None:
+            self.ui.tabWidgetMain.setCurrentWidget(current_tab)
         self.ui.statusbar.showMessage(
             f"已导入星点配对 JSON: {source_path}  真实图像: {image_path}  恢复配对: {restored_count}"
         )

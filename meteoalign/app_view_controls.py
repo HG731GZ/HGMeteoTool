@@ -30,6 +30,7 @@ class ViewControlsMixin:
     reference_star_map_item: object
     real_reference_overlay_item: object
     real_image_item: object
+    image_sequence_item: object
     _syncing_reference_preview_splitter: bool
     _syncing_reference_real_views: bool
     _active_star_pair_row: int | None
@@ -90,9 +91,21 @@ class ViewControlsMixin:
             self._cap_graphics_view_to_max_scale(self.ui.realImageView)
             self._update_live_star_map_zoom_scale(self.ui.realImageView)
 
+    def fit_image_sequence_preview(self) -> None:
+        if not hasattr(self.ui, "imageSequenceView"):
+            return
+        if self.image_sequence_item.isNull():
+            return
+        scene = self.ui.imageSequenceView.scene()
+        if scene is None or scene.sceneRect().isEmpty():
+            return
+        self.ui.imageSequenceView.fitInView(scene.sceneRect(), Qt.KeepAspectRatio)
+        self._cap_graphics_view_to_max_scale(self.ui.imageSequenceView)
+
     def fit_all_graphics_views(self) -> None:
         self._set_equal_reference_preview_sizes()
         self.fit_star_map()
+        self.fit_image_sequence_preview()
         if self._can_sync_reference_real_views():
             self.fit_real_image()
             self._sync_reference_real_view_from(self.ui.realImageView, force=True)
@@ -103,6 +116,10 @@ class ViewControlsMixin:
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         if self._image_import_thread is not None:
             QMessageBox.information(self, "正在导入图像", "图像预览仍在生成，请等待导入完成后再关闭窗口。")
+            event.ignore()
+            return
+        if getattr(self, "_sequence_import_thread", None) is not None:
+            QMessageBox.information(self, "正在导入序列", "图像序列仍在读取 EXIF，请等待导入完成后再关闭窗口。")
             event.ignore()
             return
         if self._json_import_thread is not None:
@@ -130,6 +147,9 @@ class ViewControlsMixin:
             self.ui.labelImportedImagePath,
             self.ui.labelSkyMaskStatus,
             self.ui.labelAlignmentTransformStatus,
+            getattr(self.ui, "labelImageSequenceStatus", None),
+            getattr(self.ui, "labelImageSequenceSummary", None),
+            getattr(self.ui, "labelImageSequencePreviewTitle", None),
         ):
             if event.type() in (QEvent.Resize, QEvent.Show):
                 QTimer.singleShot(0, lambda label=watched: self._refresh_elided_label(label))
@@ -141,6 +161,15 @@ class ViewControlsMixin:
                 return self._handle_star_pair_table_wheel(event)
         if watched is self.ui.tableWidgetStarPairs.viewport() and event.type() == QEvent.Wheel:
             return self._handle_star_pair_table_wheel(event)
+        if hasattr(self.ui, "tableWidgetImageSequence") and watched is self.ui.tableWidgetImageSequence:
+            if event.type() == QEvent.Wheel:
+                return self._handle_table_wheel(self.ui.tableWidgetImageSequence, event)
+        if (
+            hasattr(self.ui, "tableWidgetImageSequence")
+            and watched is self.ui.tableWidgetImageSequence.viewport()
+            and event.type() == QEvent.Wheel
+        ):
+            return self._handle_table_wheel(self.ui.tableWidgetImageSequence, event)
         if watched is self.ui.starMapView.viewport():
             if bool(getattr(self, "_simulator_controls_locked", False)):
                 if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
@@ -190,6 +219,12 @@ class ViewControlsMixin:
                     return True
                 if self._handle_graphics_view_native_zoom(self.ui.realImageView, event):
                     return True
+        if hasattr(self.ui, "imageSequenceView") and watched is self.ui.imageSequenceView:
+            if event.type() == QEvent.NativeGesture and self._handle_graphics_view_native_zoom(
+                self.ui.imageSequenceView,
+                event,
+            ):
+                return True
         if watched is self.ui.referenceImageView.viewport():
             if event.type() in (QEvent.Enter, QEvent.MouseMove, QEvent.KeyPress, QEvent.KeyRelease):
                 self._update_reference_map_cursor(self._event_ctrl_pressed(event))
@@ -258,6 +293,15 @@ class ViewControlsMixin:
                 return True
             if event.type() == QEvent.NativeGesture and self._handle_graphics_view_native_zoom(
                 self.ui.realImageView,
+                event,
+            ):
+                return True
+        if hasattr(self.ui, "imageSequenceView") and watched is self.ui.imageSequenceView.viewport():
+            if event.type() == QEvent.Wheel:
+                self._apply_graphics_view_zoom(self.ui.imageSequenceView, event.angleDelta().y())
+                return True
+            if event.type() == QEvent.NativeGesture and self._handle_graphics_view_native_zoom(
+                self.ui.imageSequenceView,
                 event,
             ):
                 return True
@@ -353,7 +397,10 @@ class ViewControlsMixin:
         return True
 
     def _handle_star_pair_table_wheel(self, event) -> bool:  # type: ignore[no-untyped-def]
-        table = self.ui.tableWidgetStarPairs
+        return self._handle_table_wheel(self.ui.tableWidgetStarPairs, event)
+
+    def _handle_table_wheel(self, table, event) -> bool:  # type: ignore[no-untyped-def]
+        """让表格自行消费滚轮，避免带动外层滚动区。"""
         pixel_delta = event.pixelDelta()
         angle_delta = event.angleDelta()
 
@@ -421,6 +468,8 @@ class ViewControlsMixin:
 
     def _graphics_view_max_scale(self, view: QGraphicsView) -> float | None:
         if view is self.ui.realImageView:
+            return self._real_image_zoom_max_scale
+        if hasattr(self.ui, "imageSequenceView") and view is self.ui.imageSequenceView:
             return self._real_image_zoom_max_scale
         if view is self.ui.referenceImageView and self._can_sync_reference_real_views():
             return self._real_image_zoom_max_scale

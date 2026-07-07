@@ -419,8 +419,13 @@ class AlignmentMixin:
         self.ui.doubleSpinBoxReferenceOverlayOpacity.setEnabled(True)
         self.ui.checkBoxSyncReferenceAndRealView.setEnabled(has_alignment)
         mask_controls_enabled = self._mask_import_thread is None
-        self.ui.pushButtonImportSkyMask.setEnabled(mask_controls_enabled and self.current_image_preview is not None)
-        self.ui.pushButtonClearSkyMask.setEnabled(mask_controls_enabled and self.current_sky_mask is not None)
+        sequence_mode = bool(hasattr(self, "_sequence_mode_active") and self._sequence_mode_active())
+        self.ui.pushButtonImportSkyMask.setEnabled(
+            mask_controls_enabled and not sequence_mode and self.current_image_preview is not None
+        )
+        self.ui.pushButtonClearSkyMask.setEnabled(
+            mask_controls_enabled and not sequence_mode and self.current_sky_mask is not None
+        )
         self.ui.checkBoxShowSkyMask.setEnabled(mask_controls_enabled and self.current_sky_mask is not None)
         if self.current_sky_mask is None and self.ui.checkBoxShowSkyMask.isChecked():
             was_blocked = self.ui.checkBoxShowSkyMask.blockSignals(True)

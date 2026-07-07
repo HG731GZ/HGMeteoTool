@@ -3,13 +3,16 @@ from .app_constants import *
 
 import json
 import math
+from collections import OrderedDict
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from time import monotonic
 
 import numpy as np
-from PyQt5.QtCore import QDateTime, Qt
-from PyQt5.QtWidgets import QApplication, QFileDialog, QMessageBox, QProgressDialog
+from PyQt5.QtCore import QDateTime, Qt, QThread, QTimer
+from PyQt5.QtGui import QBrush, QColor, QImage
+from PyQt5.QtWidgets import QApplication, QFileDialog, QHeaderView, QMessageBox, QProgressDialog, QTableWidgetItem
 
 from .alignment import (
     MIN_ALIGNMENT_PAIRS,
@@ -24,7 +27,8 @@ from .app_constants import (
     AUTO_MATCH_MIN_AMPLITUDE,
     AUTO_MATCH_SEARCH_MAG_LIMIT,
 )
-from .app_utils import _relative_image_path_for_session
+from .app_utils import _image_with_binary_mask, _relative_image_path_for_session
+from .app_workers import ImageSequenceCollectWorker
 from .fixed_camera_model import (
     FIXED_CAMERA_MODEL_FORMAT,
     FIXED_CAMERA_MODEL_VERSION,
@@ -37,7 +41,6 @@ from .image_preview import IMAGE_FILE_FILTER, ImagePreview, load_image_preview
 from .image_sequence import (
     ImageSequenceItem,
     RejectedSequenceImage,
-    collect_image_sequence,
     sequence_item_local_datetime,
     sequence_item_observation_time_utc,
     sequence_item_time_delta_seconds,
@@ -61,6 +64,21 @@ SEQUENCE_FILL_GRID_COLUMNS = 5
 SEQUENCE_FILL_GRID_ROWS = 4
 SEQUENCE_SUPPLEMENTAL_FIT_WEIGHT = 0.5
 SEQUENCE_SUPPLEMENTAL_PAIR_ORIGIN = "auto_match"
+IMAGE_SEQUENCE_INDEX_COLUMN = 0
+IMAGE_SEQUENCE_NAME_COLUMN = 1
+IMAGE_SEQUENCE_RMS_COLUMN = 2
+IMAGE_SEQUENCE_PATH_ROLE = Qt.UserRole + 20
+IMAGE_SEQUENCE_INDEX_ROLE = Qt.UserRole + 21
+IMAGE_SEQUENCE_RMS_ROLE = Qt.UserRole + 22
+IMAGE_SEQUENCE_SORT_KEY_INDEX = "index"
+IMAGE_SEQUENCE_SORT_KEY_RMS = "rms"
+IMAGE_SEQUENCE_SORTABLE_COLUMNS = {
+    IMAGE_SEQUENCE_INDEX_COLUMN: IMAGE_SEQUENCE_SORT_KEY_INDEX,
+    IMAGE_SEQUENCE_RMS_COLUMN: IMAGE_SEQUENCE_SORT_KEY_RMS,
+}
+IMAGE_SEQUENCE_PREVIEW_CACHE_LIMIT = 12
+IMAGE_SEQUENCE_MASK_CACHE_LIMIT = 24
+IMAGE_SEQUENCE_IMPORT_PROGRESS_MIN_VISIBLE_MS = 500
 
 
 @dataclass(frozen=True)
@@ -110,6 +128,9 @@ class SequenceBatchMixin:
 
     ui: object
     _image_sequence_items: list[ImageSequenceItem]
+    _image_sequence_current_index: int
+    _image_sequence_sort_key: str | None
+    _image_sequence_sort_descending: bool
     _sequence_processing_active: bool
     _preserve_sequence_on_next_image_load: bool
     _current_star_map: ProjectedStarMap | None
@@ -117,29 +138,467 @@ class SequenceBatchMixin:
     current_image_preview: ImagePreview | None
     current_sky_mask: np.ndarray | None
     current_sky_mask_path: Path | None
+    image_sequence_item: object
+    image_sequence_scene: object
+    _sequence_import_thread: QThread | None
+    _sequence_import_worker: ImageSequenceCollectWorker | None
+    _sequence_import_progress: QProgressDialog | None
+    _sequence_import_progress_shown_at: float | None
+    _image_sequence_preview_cache: OrderedDict[str, ImagePreview]
+    _image_sequence_scaled_mask_cache: OrderedDict[tuple[int, int, int], np.ndarray]
+    _image_sequence_masked_preview_cache: OrderedDict[tuple[str, int, int, int], QImage]
 
     def _reset_image_sequence_status(self) -> None:
         self._image_sequence_items = []
-        if hasattr(self.ui, "labelImageSequenceStatus"):
-            self._set_elided_label_text(self.ui.labelImageSequenceStatus, "未导入序列", "")
+        self._image_sequence_current_index = -1
+        self._clear_image_sequence_preview_cache()
+        self._set_sequence_status_label("未导入序列", "")
+        self._refresh_image_sequence_table()
+        self._reset_image_sequence_preview()
         self._update_image_sequence_controls()
 
+    def _bounded_sequence_cache_set(self, cache: OrderedDict, key: object, value: object, limit: int) -> None:
+        """写入小型 LRU 缓存，避免序列很长时占用过多内存。"""
+        if key in cache:
+            cache.move_to_end(key)
+        cache[key] = value
+        while len(cache) > limit:
+            cache.popitem(last=False)
+
+    def _clear_image_sequence_preview_cache(self) -> None:
+        cache = getattr(self, "_image_sequence_preview_cache", None)
+        if cache is not None:
+            cache.clear()
+        self._invalidate_image_sequence_mask_cache()
+
+    def _invalidate_image_sequence_mask_cache(self) -> None:
+        scaled_cache = getattr(self, "_image_sequence_scaled_mask_cache", None)
+        if scaled_cache is not None:
+            scaled_cache.clear()
+        masked_cache = getattr(self, "_image_sequence_masked_preview_cache", None)
+        if masked_cache is not None:
+            masked_cache.clear()
+
+    def _sequence_status_labels(self) -> list[object]:
+        labels = []
+        for label_name in ("labelImageSequenceStatus", "labelImageSequenceSummary"):
+            if hasattr(self.ui, label_name):
+                labels.append(getattr(self.ui, label_name))
+        return labels
+
+    def _is_sequence_image_path(self, image_path: str | Path) -> bool:
+        try:
+            resolved_path = Path(image_path).expanduser().resolve()
+        except OSError:
+            resolved_path = Path(image_path).expanduser()
+        for item in getattr(self, "_image_sequence_items", []):
+            try:
+                if item.path.expanduser().resolve() == resolved_path:
+                    return True
+            except OSError:
+                if item.path.expanduser() == resolved_path:
+                    return True
+        return False
+
+    def _sequence_mode_active(self) -> bool:
+        return bool(getattr(self, "_image_sequence_items", []))
+
     def _sequence_can_process(self) -> bool:
-        return bool(getattr(self, "_image_sequence_items", [])) and not bool(
-            getattr(self, "_sequence_processing_active", False)
-        ) and getattr(self, "_image_import_thread", None) is None and self.current_image_preview is not None
+        return (
+            bool(getattr(self, "_image_sequence_items", []))
+            and not bool(getattr(self, "_sequence_processing_active", False))
+            and getattr(self, "_image_import_thread", None) is None
+            and getattr(self, "_sequence_import_thread", None) is None
+            and getattr(self, "_json_import_thread", None) is None
+        )
 
     def _update_image_sequence_controls(self) -> None:
         if hasattr(self.ui, "pushButtonProcessImageSequence"):
             self.ui.pushButtonProcessImageSequence.setEnabled(self._sequence_can_process())
+        self._update_image_sequence_mask_controls()
+
+    def _update_image_sequence_mask_controls(self) -> None:
+        if not hasattr(self.ui, "pushButtonImportImageSequenceSkyMask"):
+            return
+        sequence_ready = self._sequence_mode_active()
+        controls_idle = (
+            getattr(self, "_mask_import_thread", None) is None
+            and getattr(self, "_image_import_thread", None) is None
+            and getattr(self, "_sequence_import_thread", None) is None
+            and getattr(self, "_json_import_thread", None) is None
+            and not bool(getattr(self, "_sequence_processing_active", False))
+        )
+        has_mask = self.current_sky_mask is not None
+        self.ui.pushButtonImportImageSequenceSkyMask.setEnabled(sequence_ready and controls_idle)
+        self.ui.pushButtonClearImageSequenceSkyMask.setEnabled(sequence_ready and controls_idle and has_mask)
+        self.ui.checkBoxShowImageSequenceMask.setEnabled(sequence_ready and has_mask)
+        if (not sequence_ready or not has_mask) and self.ui.checkBoxShowImageSequenceMask.isChecked():
+            was_blocked = self.ui.checkBoxShowImageSequenceMask.blockSignals(True)
+            self.ui.checkBoxShowImageSequenceMask.setChecked(False)
+            self.ui.checkBoxShowImageSequenceMask.blockSignals(was_blocked)
+
+    def _configure_image_sequence_table_columns(self) -> None:
+        if not hasattr(self.ui, "tableWidgetImageSequence"):
+            return
+        table = self.ui.tableWidgetImageSequence
+        header = table.horizontalHeader()
+        header.setSectionsClickable(True)
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(IMAGE_SEQUENCE_INDEX_COLUMN, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(IMAGE_SEQUENCE_NAME_COLUMN, QHeaderView.Stretch)
+        header.setSectionResizeMode(IMAGE_SEQUENCE_RMS_COLUMN, QHeaderView.ResizeToContents)
+        self._update_image_sequence_sort_indicator()
+
+    def _update_image_sequence_sort_indicator(self) -> None:
+        if not hasattr(self.ui, "tableWidgetImageSequence"):
+            return
+        header = self.ui.tableWidgetImageSequence.horizontalHeader()
+        column_by_sort_key = {
+            IMAGE_SEQUENCE_SORT_KEY_INDEX: IMAGE_SEQUENCE_INDEX_COLUMN,
+            IMAGE_SEQUENCE_SORT_KEY_RMS: IMAGE_SEQUENCE_RMS_COLUMN,
+        }
+        column = column_by_sort_key.get(self._image_sequence_sort_key or "")
+        if column is None:
+            header.setSortIndicatorShown(False)
+            return
+        sort_order = Qt.DescendingOrder if self._image_sequence_sort_descending else Qt.AscendingOrder
+        header.setSortIndicator(column, sort_order)
+        header.setSortIndicatorShown(True)
+
+    def _handle_image_sequence_header_clicked(self, column: int) -> None:
+        sort_key = IMAGE_SEQUENCE_SORTABLE_COLUMNS.get(column)
+        if sort_key is None:
+            return
+        if self._image_sequence_sort_key == sort_key:
+            self._image_sequence_sort_descending = not self._image_sequence_sort_descending
+        else:
+            self._image_sequence_sort_key = sort_key
+            self._image_sequence_sort_descending = sort_key == IMAGE_SEQUENCE_SORT_KEY_RMS
+        self._update_image_sequence_sort_indicator()
+        self._refresh_image_sequence_table()
+
+    def _handle_image_sequence_cell_clicked(self, row: int, _column: int) -> None:
+        if not hasattr(self.ui, "tableWidgetImageSequence"):
+            return
+        index_item = self.ui.tableWidgetImageSequence.item(row, IMAGE_SEQUENCE_INDEX_COLUMN)
+        if index_item is None:
+            return
+        try:
+            sequence_index = int(index_item.data(IMAGE_SEQUENCE_INDEX_ROLE))
+        except (TypeError, ValueError):
+            return
+        self._set_image_sequence_preview_index(sequence_index)
 
     def _format_sequence_time(self, item: ImageSequenceItem) -> str:
         local_dt = sequence_item_local_datetime(item, self.ui.doubleSpinBoxUtcOffset.value())
         return local_dt.strftime("%Y-%m-%d %H:%M:%S")
 
     def _set_sequence_status_label(self, text: str, tooltip: str = "") -> None:
-        if hasattr(self.ui, "labelImageSequenceStatus"):
-            self._set_elided_label_text(self.ui.labelImageSequenceStatus, text, tooltip)
+        for label in self._sequence_status_labels():
+            self._set_elided_label_text(label, text, tooltip)
+
+    def _read_only_sequence_table_item(self, text: str) -> QTableWidgetItem:
+        item = QTableWidgetItem(text)
+        item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+        return item
+
+    def _sequence_starpair_rms_from_json(self, json_path: Path) -> tuple[float | None, int, str, bool]:
+        if not json_path.exists():
+            return None, 0, "未找到同名配对 JSON。", False
+        try:
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001 - 这里只用于界面诊断，坏文件不阻断序列导入。
+            return None, 0, f"已有配对 JSON：{json_path}\n无法读取：{exc}", True
+        if not isinstance(payload, dict):
+            return None, 0, f"已有配对 JSON：{json_path}\n根对象不是字典。", True
+
+        pair_payloads = payload.get("pairs")
+        if not isinstance(pair_payloads, list):
+            return None, 0, f"已有配对 JSON：{json_path}\n没有 pairs 列表。", True
+        residuals: list[float] = []
+        for pair_payload in pair_payloads:
+            if not isinstance(pair_payload, dict):
+                continue
+            try:
+                residual = float(pair_payload["residual_px"])
+            except (KeyError, TypeError, ValueError):
+                try:
+                    dx = float(pair_payload["residual_dx_px"])
+                    dy = float(pair_payload["residual_dy_px"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                residual = float(np.hypot(dx, dy))
+            if math.isfinite(residual):
+                residuals.append(residual)
+        if not residuals:
+            return None, len(pair_payloads), f"已有配对 JSON：{json_path}\n但没有可用残差字段。", True
+        residual_array = np.asarray(residuals, dtype=np.float64)
+        rms = float(np.sqrt(np.mean(residual_array * residual_array)))
+        tooltip = "已有配对 JSON：{path}\n配对数：{count}\n残差 RMS：{rms:.2f} px".format(
+            path=json_path,
+            count=len(residuals),
+            rms=rms,
+        )
+        return rms, len(residuals), tooltip, True
+
+    def _image_sequence_table_entries(self) -> list[tuple[int, ImageSequenceItem, float | None, int, str, bool]]:
+        entries: list[tuple[int, ImageSequenceItem, float | None, int, str, bool]] = []
+        for sequence_index, item in enumerate(getattr(self, "_image_sequence_items", [])):
+            rms, pair_count, tooltip, has_json = self._sequence_starpair_rms_from_json(
+                self._sequence_starpair_json_path(item.path)
+            )
+            entries.append((sequence_index, item, rms, pair_count, tooltip, has_json))
+        if self._image_sequence_sort_key == IMAGE_SEQUENCE_SORT_KEY_RMS:
+            return sorted(
+                entries,
+                key=lambda entry: (
+                    entry[2] is None,
+                    0.0 if entry[2] is None else (-entry[2] if self._image_sequence_sort_descending else entry[2]),
+                    entry[0],
+                ),
+            )
+        if self._image_sequence_sort_key == IMAGE_SEQUENCE_SORT_KEY_INDEX and self._image_sequence_sort_descending:
+            return list(reversed(entries))
+        return entries
+
+    def _refresh_image_sequence_table(self) -> None:
+        if not hasattr(self.ui, "tableWidgetImageSequence"):
+            return
+        table = self.ui.tableWidgetImageSequence
+        entries = self._image_sequence_table_entries()
+        signals_were_blocked = table.blockSignals(True)
+        table.setRowCount(len(entries))
+        for row, (sequence_index, item, rms, _pair_count, tooltip, has_json) in enumerate(entries):
+            display_index = sequence_index + 1
+            index_item = self._read_only_sequence_table_item(str(display_index))
+            name_item = self._read_only_sequence_table_item(item.path.name)
+            rms_text = "—" if rms is None else f"{rms:.2f}"
+            rms_item = self._read_only_sequence_table_item(rms_text)
+
+            for table_item in (index_item, name_item, rms_item):
+                table_item.setData(IMAGE_SEQUENCE_PATH_ROLE, str(item.path))
+                table_item.setData(IMAGE_SEQUENCE_INDEX_ROLE, sequence_index)
+                table_item.setData(IMAGE_SEQUENCE_RMS_ROLE, rms)
+                table_item.setToolTip(tooltip)
+
+            if rms is not None and rms >= RESIDUAL_WARNING_MIN_PX:
+                background = QBrush(QColor(255, 210, 210))
+                for table_item in (index_item, name_item, rms_item):
+                    table_item.setBackground(background)
+            elif has_json:
+                background = QBrush(QColor(210, 244, 214))
+                for table_item in (index_item, name_item, rms_item):
+                    table_item.setBackground(background)
+
+            table.setItem(row, IMAGE_SEQUENCE_INDEX_COLUMN, index_item)
+            table.setItem(row, IMAGE_SEQUENCE_NAME_COLUMN, name_item)
+            table.setItem(row, IMAGE_SEQUENCE_RMS_COLUMN, rms_item)
+        table.blockSignals(signals_were_blocked)
+        table.resizeColumnToContents(IMAGE_SEQUENCE_INDEX_COLUMN)
+        table.resizeColumnToContents(IMAGE_SEQUENCE_RMS_COLUMN)
+        self._select_image_sequence_table_row()
+
+    def _select_image_sequence_table_row(self) -> None:
+        if not hasattr(self.ui, "tableWidgetImageSequence"):
+            return
+        current_index = int(getattr(self, "_image_sequence_current_index", -1))
+        table = self.ui.tableWidgetImageSequence
+        if current_index < 0:
+            table.clearSelection()
+            return
+        for row in range(table.rowCount()):
+            item = table.item(row, IMAGE_SEQUENCE_INDEX_COLUMN)
+            if item is None:
+                continue
+            try:
+                row_sequence_index = int(item.data(IMAGE_SEQUENCE_INDEX_ROLE))
+            except (TypeError, ValueError):
+                continue
+            if row_sequence_index == current_index:
+                table.selectRow(row)
+                return
+
+    def _reset_image_sequence_preview(self) -> None:
+        if hasattr(self.ui, "labelImageSequencePreviewTitle"):
+            self._set_elided_label_text(self.ui.labelImageSequencePreviewTitle, "未导入序列", "")
+        if hasattr(self.ui, "labelImageSequenceExifInfo"):
+            self.ui.labelImageSequenceExifInfo.setText("未导入序列")
+            self.ui.labelImageSequenceExifInfo.setToolTip("")
+        if hasattr(self.ui, "toolButtonImageSequencePrevious"):
+            self.ui.toolButtonImageSequencePrevious.setEnabled(False)
+        if hasattr(self.ui, "toolButtonImageSequenceNext"):
+            self.ui.toolButtonImageSequenceNext.setEnabled(False)
+        if hasattr(self, "image_sequence_item"):
+            self.image_sequence_item.set_image(QImage())
+            if hasattr(self, "image_sequence_scene"):
+                self.image_sequence_scene.setSceneRect(self.image_sequence_item.boundingRect())
+
+    def _sequence_exif_text(self, item: ImageSequenceItem, preview: ImagePreview | None) -> str:
+        local_dt = sequence_item_local_datetime(item, self.ui.doubleSpinBoxUtcOffset.value())
+        utc_dt = sequence_item_observation_time_utc(item, self.ui.doubleSpinBoxUtcOffset.value())
+        offset_value = self.ui.doubleSpinBoxUtcOffset.value()
+        offset_text = f"UTC{offset_value:+.1f}h"
+        lines = [
+            f"拍摄时间：{local_dt.strftime('%Y-%m-%d %H:%M:%S')} ({offset_text})",
+            f"UTC时间：{utc_dt.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"EXIF来源：{item.capture_time_source}",
+        ]
+        if preview is not None:
+            lines.append(f"原始尺寸：{preview.original_width} x {preview.original_height} px")
+        return "  |  ".join(lines)
+
+    def _set_image_sequence_preview_index(self, index: int) -> None:
+        items = getattr(self, "_image_sequence_items", [])
+        if not items:
+            self._image_sequence_current_index = -1
+            self._reset_image_sequence_preview()
+            return
+        self._image_sequence_current_index = max(0, min(int(index), len(items) - 1))
+        self._update_image_sequence_preview()
+        self._select_image_sequence_table_row()
+
+    def show_previous_image_sequence_frame(self) -> None:
+        self._set_image_sequence_preview_index(int(getattr(self, "_image_sequence_current_index", 0)) - 1)
+
+    def show_next_image_sequence_frame(self) -> None:
+        self._set_image_sequence_preview_index(int(getattr(self, "_image_sequence_current_index", -1)) + 1)
+
+    def _sequence_preview_mask_visible(self) -> bool:
+        return (
+            self.current_sky_mask is not None
+            and hasattr(self.ui, "checkBoxShowImageSequenceMask")
+            and self.ui.checkBoxShowImageSequenceMask.isChecked()
+        )
+
+    def _sequence_preview_cache_key(self, item: ImageSequenceItem) -> str:
+        try:
+            return str(item.path.expanduser().resolve())
+        except OSError:
+            return str(item.path.expanduser())
+
+    def _image_for_sequence_preview(self, item: ImageSequenceItem) -> ImagePreview:
+        cache_key = self._sequence_preview_cache_key(item)
+        cache = self._image_sequence_preview_cache
+        cached_preview = cache.get(cache_key)
+        if cached_preview is not None:
+            cache.move_to_end(cache_key)
+            return cached_preview
+        preview = load_image_preview(item.path)
+        self._bounded_sequence_cache_set(
+            cache,
+            cache_key,
+            preview,
+            IMAGE_SEQUENCE_PREVIEW_CACHE_LIMIT,
+        )
+        return preview
+
+    def _scaled_sequence_mask_for_preview(self, width: int, height: int) -> np.ndarray:
+        mask = self.current_sky_mask
+        if mask is None:
+            raise ValueError("当前没有可用蒙版。")
+        mask_array = np.asarray(mask, dtype=bool)
+        if mask_array.shape == (height, width):
+            return mask_array
+
+        cache_key = (id(mask), int(width), int(height))
+        cached_mask = self._image_sequence_scaled_mask_cache.get(cache_key)
+        if cached_mask is not None:
+            self._image_sequence_scaled_mask_cache.move_to_end(cache_key)
+            return cached_mask
+
+        mask_height, mask_width = mask_array.shape
+        if mask_height <= 0 or mask_width <= 0 or width <= 0 or height <= 0:
+            raise ValueError("蒙版或预览图像尺寸无效。")
+        y_indices = np.minimum(
+            (np.arange(height, dtype=np.float64) * mask_height / float(height)).astype(np.int64),
+            mask_height - 1,
+        )
+        x_indices = np.minimum(
+            (np.arange(width, dtype=np.float64) * mask_width / float(width)).astype(np.int64),
+            mask_width - 1,
+        )
+        scaled_mask = np.asarray(mask_array[np.ix_(y_indices, x_indices)], dtype=bool)
+        self._bounded_sequence_cache_set(
+            self._image_sequence_scaled_mask_cache,
+            cache_key,
+            scaled_mask,
+            IMAGE_SEQUENCE_MASK_CACHE_LIMIT,
+        )
+        return scaled_mask
+
+    def _sequence_preview_display_image(self, item: ImageSequenceItem, preview: ImagePreview) -> QImage:
+        image = preview.image
+        if not self._sequence_preview_mask_visible():
+            return image
+        cache_key = (
+            self._sequence_preview_cache_key(item),
+            id(self.current_sky_mask),
+            int(image.width()),
+            int(image.height()),
+        )
+        cached_image = self._image_sequence_masked_preview_cache.get(cache_key)
+        if cached_image is not None:
+            self._image_sequence_masked_preview_cache.move_to_end(cache_key)
+            return cached_image
+        try:
+            display_image = _image_with_binary_mask(
+                image,
+                self._scaled_sequence_mask_for_preview(image.width(), image.height()),
+            )
+        except ValueError as exc:
+            self.ui.statusbar.showMessage(f"序列蒙版尺寸与当前预览图像不一致，暂不显示蒙版: {exc}")
+            return image
+        self._bounded_sequence_cache_set(
+            self._image_sequence_masked_preview_cache,
+            cache_key,
+            display_image,
+            IMAGE_SEQUENCE_MASK_CACHE_LIMIT,
+        )
+        return display_image
+
+    def _handle_image_sequence_mask_toggled(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        self._update_image_sequence_preview()
+
+    def _update_image_sequence_preview(self) -> None:
+        items = getattr(self, "_image_sequence_items", [])
+        if not items:
+            self._reset_image_sequence_preview()
+            return
+
+        current_index = max(0, min(int(getattr(self, "_image_sequence_current_index", 0)), len(items) - 1))
+        self._image_sequence_current_index = current_index
+        item = items[current_index]
+        title_text = f"{current_index + 1}/{len(items)}  {item.path.name}"
+        if hasattr(self.ui, "labelImageSequencePreviewTitle"):
+            self._set_elided_label_text(self.ui.labelImageSequencePreviewTitle, title_text, str(item.path))
+        if hasattr(self.ui, "toolButtonImageSequencePrevious"):
+            self.ui.toolButtonImageSequencePrevious.setEnabled(current_index > 0)
+        if hasattr(self.ui, "toolButtonImageSequenceNext"):
+            self.ui.toolButtonImageSequenceNext.setEnabled(current_index < len(items) - 1)
+
+        preview: ImagePreview | None = None
+        try:
+            preview = self._image_for_sequence_preview(item)
+            if hasattr(self, "image_sequence_item"):
+                self.image_sequence_item.set_image(self._sequence_preview_display_image(item, preview))
+                self.image_sequence_scene.setSceneRect(self.image_sequence_item.boundingRect())
+                QTimer.singleShot(0, self.fit_image_sequence_preview)
+        except Exception as exc:  # noqa: BLE001 - 序列页预览失败只影响当前缩略图。
+            if hasattr(self, "image_sequence_item"):
+                self.image_sequence_item.set_image(QImage())
+                self.image_sequence_scene.setSceneRect(self.image_sequence_item.boundingRect())
+            self.ui.statusbar.showMessage(f"序列预览读取失败: {item.path.name}: {exc}")
+
+        if hasattr(self.ui, "labelImageSequenceExifInfo"):
+            exif_text = self._sequence_exif_text(item, preview)
+            self.ui.labelImageSequenceExifInfo.setText(exif_text)
+            self.ui.labelImageSequenceExifInfo.setToolTip(str(item.path))
+
+    def _handle_image_sequence_time_context_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        if not getattr(self, "_image_sequence_items", []):
+            return
+        self._update_imported_sequence_status()
+        self._update_image_sequence_preview()
 
     def _update_imported_sequence_status(self, rejected: list[RejectedSequenceImage] | None = None) -> None:
         items = getattr(self, "_image_sequence_items", [])
@@ -189,6 +648,9 @@ class SequenceBatchMixin:
         if getattr(self, "_sequence_processing_active", False):
             QMessageBox.information(self, "正在处理序列", "图像序列仍在处理，请等待完成后再导入新序列。")
             return
+        if getattr(self, "_sequence_import_thread", None) is not None:
+            QMessageBox.information(self, "正在导入序列", "当前已有图像序列正在导入，请稍候。")
+            return
         if self._image_import_thread is not None:
             QMessageBox.information(self, "正在导入图像", "当前已有图像正在导入，请稍候。")
             return
@@ -203,7 +665,131 @@ class SequenceBatchMixin:
         if not file_paths:
             return
 
-        items, rejected = collect_image_sequence(file_paths)
+        self.start_image_sequence_import(file_paths)
+
+    def start_image_sequence_import(self, file_paths: list[str] | tuple[str, ...]) -> None:
+        """后台读取序列图像 EXIF 时间，并显示导入进度弹窗。"""
+        if getattr(self, "_sequence_import_thread", None) is not None:
+            QMessageBox.information(self, "正在导入序列", "当前已有图像序列正在导入，请稍候。")
+            return
+
+        self._set_image_import_controls_enabled(False)
+        self.ui.statusbar.showMessage(f"正在导入序列图像并读取 EXIF: {len(file_paths)} 张")
+
+        progress = QProgressDialog(self)
+        progress.setWindowTitle("正在导入序列图像")
+        progress.setLabelText(
+            "正在读取序列图像 EXIF 拍摄时间...\n已选择 {count} 张图像".format(count=len(file_paths))
+        )
+        progress.setRange(0, 0)
+        progress.setCancelButton(None)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.show()
+        progress.setValue(0)
+        force_show = getattr(progress, "forceShow", None)
+        if callable(force_show):
+            force_show()
+        if QApplication.platformName().lower() != "offscreen":
+            progress.raise_()
+            progress.activateWindow()
+        progress.repaint()
+        QApplication.processEvents()
+
+        thread = QThread(self)
+        worker = ImageSequenceCollectWorker(file_paths)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._queue_image_sequence_import_finished)
+        worker.failed.connect(self._queue_image_sequence_import_failed)
+        worker.finished.connect(worker.deleteLater)
+        worker.failed.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._cleanup_image_sequence_import)
+
+        self._sequence_import_thread = thread
+        self._sequence_import_worker = worker
+        self._sequence_import_progress = progress
+        self._sequence_import_progress_shown_at = monotonic()
+        QTimer.singleShot(50, thread.start)
+
+    def _remaining_sequence_import_dialog_delay_ms(self) -> int:
+        shown_at = getattr(self, "_sequence_import_progress_shown_at", None)
+        if shown_at is None:
+            return 0
+        elapsed_ms = int((monotonic() - shown_at) * 1000)
+        return max(0, IMAGE_SEQUENCE_IMPORT_PROGRESS_MIN_VISIBLE_MS - elapsed_ms)
+
+    def _queue_image_sequence_import_finished(self, result: object) -> None:
+        delay_ms = self._remaining_sequence_import_dialog_delay_ms()
+        if delay_ms > 0:
+            QTimer.singleShot(delay_ms, lambda result=result: self._handle_image_sequence_import_finished(result))
+            return
+        self._handle_image_sequence_import_finished(result)
+
+    def _queue_image_sequence_import_failed(self, error_message: str) -> None:
+        delay_ms = self._remaining_sequence_import_dialog_delay_ms()
+        if delay_ms > 0:
+            QTimer.singleShot(
+                delay_ms,
+                lambda error_message=error_message: self._handle_image_sequence_import_failed(error_message),
+            )
+            return
+        self._handle_image_sequence_import_failed(error_message)
+
+    def _quit_image_sequence_import_thread(self) -> None:
+        thread = getattr(self, "_sequence_import_thread", None)
+        if thread is not None and thread.isRunning():
+            thread.quit()
+
+    def _set_sequence_import_progress_label(self, text: str) -> None:
+        progress = getattr(self, "_sequence_import_progress", None)
+        if progress is None:
+            return
+        progress.setLabelText(text)
+        progress.repaint()
+        QApplication.processEvents()
+
+    def _handle_image_sequence_import_finished(self, result: object) -> None:
+        try:
+            items, rejected = result  # type: ignore[misc]
+            if not isinstance(items, list) or not isinstance(rejected, list):
+                raise ValueError("序列导入结果格式无效。")
+            self._apply_collected_image_sequence(items, rejected)
+        except Exception as exc:  # noqa: BLE001 - 主线程恢复序列状态时要把错误反馈给用户。
+            self.ui.statusbar.showMessage(f"序列导入失败: {exc}")
+            QMessageBox.critical(self, "序列导入失败", str(exc))
+        finally:
+            if self._sequence_import_progress is not None:
+                self._sequence_import_progress.close()
+            self._quit_image_sequence_import_thread()
+
+    def _handle_image_sequence_import_failed(self, error_message: str) -> None:
+        try:
+            if self._sequence_import_progress is not None:
+                self._sequence_import_progress.close()
+            self.ui.statusbar.showMessage(f"序列导入失败: {error_message}")
+            QMessageBox.critical(self, "序列导入失败", error_message)
+        finally:
+            self._quit_image_sequence_import_thread()
+
+    def _cleanup_image_sequence_import(self) -> None:
+        if self._sequence_import_progress is not None:
+            self._sequence_import_progress.close()
+        self._sequence_import_thread = None
+        self._sequence_import_worker = None
+        self._sequence_import_progress = None
+        self._sequence_import_progress_shown_at = None
+        self._set_image_import_controls_enabled(getattr(self, "_image_import_thread", None) is None)
+        self._update_image_sequence_controls()
+
+    def _apply_collected_image_sequence(
+        self,
+        items: list[ImageSequenceItem],
+        rejected: list[RejectedSequenceImage],
+    ) -> None:
         if not items:
             self._reset_image_sequence_status()
             message = "所选图像都没有读到 EXIF 拍摄时间，已全部跳过。"
@@ -213,8 +799,16 @@ class SequenceBatchMixin:
             self.ui.statusbar.showMessage("序列导入失败：全部图像缺少可用 EXIF 拍摄时间。")
             return
 
+        self._set_sequence_import_progress_label("正在整理序列表并生成第一帧预览...")
+        self._clear_image_sequence_preview_cache()
         self._image_sequence_items = items
+        self._image_sequence_current_index = 0
         self._update_imported_sequence_status(rejected)
+        self._refresh_image_sequence_table()
+        self._set_image_sequence_preview_index(0)
+        if hasattr(self.ui, "tabImageSequence"):
+            self.ui.tabWidgetMain.setCurrentWidget(self.ui.tabImageSequence)
+        QApplication.processEvents()
         if rejected:
             QMessageBox.warning(
                 self,
@@ -234,10 +828,31 @@ class SequenceBatchMixin:
             )
 
         self._apply_sequence_observation_time(items[0], emit_signal=True)
+        first_starpair_path = self._sequence_starpair_json_path(items[0].path)
+        if first_starpair_path.exists():
+            self._start_first_sequence_session_import(first_starpair_path, len(items))
+            self.ui.statusbar.showMessage(
+                f"已导入序列 {len(items)} 张，正在后台载入第一张配对 JSON: {first_starpair_path}"
+            )
+            return
+
         self.ui.statusbar.showMessage(
-            f"已导入序列 {len(items)} 张，第一张将作为匹配基准: {items[0].path}"
+            f"已导入序列 {len(items)} 张，第一张没有配对 JSON，正在载入点选基准: {items[0].path}"
         )
         self.start_single_image_import(items[0].path, preserve_sequence_status=True)
+
+    def _start_first_sequence_session_import(self, json_path: Path, sequence_count: int) -> None:
+        if getattr(self, "_json_import_thread", None) is not None:
+            self.ui.statusbar.showMessage(
+                f"已导入序列 {sequence_count} 张；JSON 导入器正忙，暂未载入第一张配对 JSON: {json_path}"
+            )
+            return
+        self.load_star_pair_session(
+            json_path,
+            switch_to_reference=False,
+            show_progress=False,
+            clear_input_name="第一帧配对 JSON",
+        )
 
     def _rejected_sequence_summary(self, rejected: list[RejectedSequenceImage], limit: int = 10) -> str:
         lines = [f"{item.path.name}: {item.reason}" for item in rejected[:limit]]
@@ -1301,12 +1916,153 @@ class SequenceBatchMixin:
         model_path.write_text(json.dumps(source_payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return starpair_path, model_path
 
+    def _current_preview_is_sequence_first_item(self, first_item: ImageSequenceItem) -> bool:
+        if self.current_image_preview is None:
+            return False
+        try:
+            return Path(self.current_image_preview.path).expanduser().resolve() == first_item.path.expanduser().resolve()
+        except OSError:
+            return False
+
+    def _load_first_sequence_image_without_tab_switch(self, first_item: ImageSequenceItem) -> None:
+        preview = load_image_preview(first_item.path, max_long_side_px=None)
+        self._preserve_sequence_on_next_image_load = True
+        self._apply_loaded_image_preview(
+            preview,
+            clear_existing_pairs=True,
+            switch_to_reference=False,
+        )
+
+    def _ensure_first_sequence_image_ready_for_mask(self) -> ImageSequenceItem:
+        first_item = self._current_sequence_first_item()
+        if self._current_preview_is_sequence_first_item(first_item):
+            return first_item
+        if self._sequence_starpair_json_path(first_item.path).exists():
+            self._load_first_sequence_session_for_reference_page(raise_on_error=True)
+        else:
+            current_tab = self.ui.tabWidgetMain.currentWidget()
+            self._load_first_sequence_image_without_tab_switch(first_item)
+            if current_tab is not None:
+                self.ui.tabWidgetMain.setCurrentWidget(current_tab)
+        if not self._current_preview_is_sequence_first_item(first_item):
+            raise ValueError("序列第一帧图像尚未载入，无法导入序列蒙版。")
+        return first_item
+
+    def import_image_sequence_sky_mask(self) -> None:
+        if not self._sequence_mode_active():
+            QMessageBox.information(self, "尚未导入序列", "请先导入图像序列，再导入序列蒙版。")
+            return
+        if getattr(self, "_mask_import_thread", None) is not None:
+            QMessageBox.information(self, "正在导入蒙版", "当前已有蒙版正在导入，请稍候。")
+            return
+        if getattr(self, "_image_import_thread", None) is not None:
+            QMessageBox.information(self, "正在导入图像", "当前已有图像正在导入，请稍候。")
+            return
+        try:
+            first_item = self._ensure_first_sequence_image_ready_for_mask()
+        except Exception as exc:  # noqa: BLE001 - 蒙版入口需要把基准图未就绪原因直接反馈给用户。
+            QMessageBox.warning(self, "无法导入序列蒙版", str(exc))
+            return
+
+        file_path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "导入序列蒙版",
+            str(first_item.path.parent),
+            IMAGE_FILE_FILTER,
+        )
+        if not file_path:
+            return
+        self.start_sky_mask_import(file_path)
+
+    def clear_image_sequence_sky_mask(self) -> None:
+        if not self._sequence_mode_active():
+            self.ui.statusbar.showMessage("当前没有正在处理的图像序列。")
+            return
+        self.clear_sky_mask()
+        self._update_image_sequence_controls()
+        self._update_image_sequence_preview()
+        self.ui.statusbar.showMessage("已清除序列蒙版，后续序列自动匹配将使用整张图像。")
+
+    def _load_first_sequence_session_for_reference_page(self, *, raise_on_error: bool) -> bool:
+        first_item = self._current_sequence_first_item()
+        json_path = self._sequence_starpair_json_path(first_item.path)
+        if not json_path.exists():
+            return False
+        try:
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            preview = load_image_preview(first_item.path, max_long_side_px=None)
+            current_tab = self.ui.tabWidgetMain.currentWidget()
+            self._clear_star_pair_positions_for_new_input("第一帧配对 JSON")
+            self._apply_star_pair_session_payload(
+                payload,
+                json_path,
+                preview=preview,
+                switch_to_reference=False,
+            )
+            if current_tab is not None:
+                self.ui.tabWidgetMain.setCurrentWidget(current_tab)
+            return True
+        except Exception as exc:  # noqa: BLE001 - 序列导入时尽量保留序列页，错误转为界面提示。
+            message = f"无法自动载入第一帧配对 JSON：{json_path}\n{exc}"
+            if raise_on_error:
+                raise ValueError(message) from exc
+            try:
+                self._load_first_sequence_image_without_tab_switch(first_item)
+            except Exception as image_exc:  # noqa: BLE001 - 兜底载图失败同样反馈给用户。
+                message += f"\n\n第一帧图像也无法载入：{image_exc}"
+            QMessageBox.warning(self, "第一帧配对 JSON 载入失败", message)
+            self.ui.statusbar.showMessage(f"第一帧配对 JSON 载入失败: {json_path}")
+            return False
+
+    def _ensure_first_sequence_session_loaded_for_processing(self) -> None:
+        first_item = self._current_sequence_first_item()
+        if self._current_preview_is_sequence_first_item(first_item) and self._star_pair_position_count() >= MIN_ALIGNMENT_PAIRS:
+            return
+
+        self._load_first_sequence_session_for_reference_page(raise_on_error=True)
+
+    def _confirm_overwrite_sequence_outputs(self) -> bool:
+        items = getattr(self, "_image_sequence_items", [])
+        if not items:
+            return False
+        existing_paths: list[Path] = []
+        for item in items:
+            for output_path in (
+                self._sequence_starpair_json_path(item.path),
+                self._sequence_model_json_path(item.path),
+            ):
+                if output_path.exists():
+                    existing_paths.append(output_path)
+
+        if existing_paths:
+            sample_lines = "\n".join(str(path) for path in existing_paths[:6])
+            if len(existing_paths) > 6:
+                sample_lines += f"\n... 另有 {len(existing_paths) - 6} 个文件"
+            message = (
+                "开始处理后会覆盖序列中已有的配对 JSON 与模型 JSON。\n\n"
+                f"已发现 {len(existing_paths)} 个已有输出文件：\n{sample_lines}\n\n是否继续？"
+            )
+        else:
+            message = "开始处理后会为序列图像写入同名配对 JSON 与模型 JSON。是否继续？"
+        reply = QMessageBox.question(
+            self,
+            "确认处理图像序列",
+            message,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        return reply == QMessageBox.Yes
+
     def process_image_sequence(self) -> None:
         if getattr(self, "_sequence_processing_active", False):
             QMessageBox.information(self, "正在处理序列", "图像序列仍在处理，请稍候。")
             return
         try:
+            self._ensure_first_sequence_session_loaded_for_processing()
             self._ensure_sequence_ready_for_processing()
+            if not self._confirm_overwrite_sequence_outputs():
+                self.ui.statusbar.showMessage("已取消图像序列处理。")
+                return
             first_item = self._current_sequence_first_item()
             self._apply_sequence_observation_time(first_item, emit_signal=False)
             self.render_now()
@@ -1450,6 +2206,7 @@ class SequenceBatchMixin:
                         time_fit,
                     )
                     processed.append(output_paths)
+                    self._refresh_image_sequence_table()
                     previous_delta_seconds = float(time_fit.delta_t_seconds)
                 except Exception as exc:  # noqa: BLE001 - 单帧失败不影响后续帧。
                     failures.append(f"{item.path.name}: {exc}")
@@ -1459,6 +2216,7 @@ class SequenceBatchMixin:
             progress.close()
             self._sequence_processing_active = False
             self._set_image_import_controls_enabled(True)
+            self._refresh_image_sequence_table()
             self._update_image_sequence_controls()
 
         self.ui.statusbar.showMessage(

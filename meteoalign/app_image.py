@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 from PyQt5.QtCore import QThread, Qt
 from PyQt5.QtGui import QImage
-from PyQt5.QtWidgets import QFileDialog, QMessageBox, QProgressDialog
+from PyQt5.QtWidgets import QApplication, QFileDialog, QMenu, QMessageBox, QProgressDialog
 
 from .image_preview import IMAGE_FILE_FILTER
 from .app_utils import _image_with_binary_mask
@@ -43,19 +43,50 @@ class ImageMixin:
     real_image_scene: object
 
     def _reset_imported_image_labels(self) -> None:
+        self.ui.labelImportedImagePath.setProperty("fullPath", "")
         self._set_elided_label_text(self.ui.labelImportedImagePath, "未导入", "")
         self.ui.labelImportedImageSize.setText("-")
 
     def _update_imported_image_labels(self, preview: ImagePreview) -> None:
-        image_path = str(Path(preview.path).expanduser().resolve())
-        self._set_elided_label_text(self.ui.labelImportedImagePath, image_path, image_path)
+        image_path = Path(preview.path).expanduser().resolve()
+        image_path_text = str(image_path)
+        self.ui.labelImportedImagePath.setProperty("fullPath", image_path_text)
+        is_sequence_image = False
+        if hasattr(self, "_is_sequence_image_path"):
+            is_sequence_image = bool(self._is_sequence_image_path(image_path))
+        if is_sequence_image:
+            self._set_elided_label_text_with_html_suffix(
+                self.ui.labelImportedImagePath,
+                image_path.name,
+                "(序列)",
+                '<span style="color:#d32f2f;">(序列)</span>',
+                image_path_text,
+            )
+        else:
+            self._set_elided_label_text(self.ui.labelImportedImagePath, image_path.name, image_path_text)
         self.ui.labelImportedImageSize.setText(f"{preview.original_width} x {preview.original_height} px")
+
+    def _show_imported_image_path_context_menu(self, position) -> None:  # type: ignore[no-untyped-def]
+        """显示真实图像文件名右键菜单，用于复制完整路径。"""
+        image_path_text = str(self.ui.labelImportedImagePath.property("fullPath") or "").strip()
+        if not image_path_text:
+            return
+        menu = QMenu(self.ui.labelImportedImagePath)
+        copy_action = menu.addAction("复制完整文件路径")
+        selected_action = menu.exec_(self.ui.labelImportedImagePath.mapToGlobal(position))
+        if selected_action is copy_action:
+            QApplication.clipboard().setText(image_path_text)
+            self.ui.statusbar.showMessage(f"已复制真实图像完整路径: {image_path_text}")
 
     def _reset_sky_mask_status(self) -> None:
         self.current_sky_mask_path = None
         self.current_sky_mask = None
         self.current_sky_masked_image = None
+        if hasattr(self, "_invalidate_image_sequence_mask_cache"):
+            self._invalidate_image_sequence_mask_cache()
         self._set_elided_label_text(self.ui.labelSkyMaskStatus, "未使用蒙版", "")
+        if hasattr(self, "_update_image_sequence_controls"):
+            self._update_image_sequence_controls()
 
     def _update_sky_mask_status(self) -> None:
         if self.current_sky_mask is None:
@@ -69,6 +100,10 @@ class ImageMixin:
             f"蒙版有效区域 {valid_fraction * 100.0:.1f}%",
             path_text,
         )
+        if hasattr(self, "_invalidate_image_sequence_mask_cache"):
+            self._invalidate_image_sequence_mask_cache()
+        if hasattr(self, "_update_image_sequence_controls"):
+            self._update_image_sequence_controls()
 
     def _sky_mask_allows_point(self, x_px: float, y_px: float) -> bool:
         if self.current_sky_mask is None:
@@ -109,9 +144,14 @@ class ImageMixin:
         self.real_image_item.set_image(self._real_image_for_current_mask_preview())
 
     def _set_mask_import_controls_enabled(self, enabled: bool) -> None:
-        self.ui.pushButtonImportSkyMask.setEnabled(enabled and self.current_image_preview is not None)
-        self.ui.pushButtonClearSkyMask.setEnabled(enabled and self.current_sky_mask is not None)
+        sequence_mode = bool(hasattr(self, "_sequence_mode_active") and self._sequence_mode_active())
+        self.ui.pushButtonImportSkyMask.setEnabled(
+            enabled and not sequence_mode and self.current_image_preview is not None
+        )
+        self.ui.pushButtonClearSkyMask.setEnabled(enabled and not sequence_mode and self.current_sky_mask is not None)
         self.ui.checkBoxShowSkyMask.setEnabled(enabled and self.current_sky_mask is not None)
+        if hasattr(self, "_update_image_sequence_controls"):
+            self._update_image_sequence_controls()
 
     def import_single_image(self) -> None:
         if self._image_import_thread is not None:
@@ -166,6 +206,8 @@ class ImageMixin:
         self._image_import_thread = thread
         self._image_import_worker = worker
         self._image_import_progress = progress
+        if hasattr(self, "_update_image_sequence_controls"):
+            self._update_image_sequence_controls()
         thread.start()
 
     def load_single_image(self, file_path: str | Path) -> None:
@@ -207,7 +249,13 @@ class ImageMixin:
         self.ui.pushButtonExportStarPairs.setEnabled(enabled)
         self.ui.pushButtonClearStarPairs.setEnabled(enabled)
 
-    def _apply_loaded_image_preview(self, preview: ImagePreview, clear_existing_pairs: bool = True) -> None:
+    def _apply_loaded_image_preview(
+        self,
+        preview: ImagePreview,
+        clear_existing_pairs: bool = True,
+        *,
+        switch_to_reference: bool = True,
+    ) -> None:
         preserve_sequence_status = bool(getattr(self, "_preserve_sequence_on_next_image_load", False))
         self._preserve_sequence_on_next_image_load = False
         if clear_existing_pairs:
@@ -217,7 +265,8 @@ class ImageMixin:
         if not clear_existing_pairs:
             self._clear_sky_mask_if_size_mismatch(preview.image.width(), preview.image.height())
         self._display_real_image_preview(preview)
-        self.ui.tabWidgetMain.setCurrentWidget(self.ui.tabReferenceImage)
+        if switch_to_reference:
+            self.ui.tabWidgetMain.setCurrentWidget(self.ui.tabReferenceImage)
         self._update_imported_image_labels(preview)
         self.ui.statusbar.showMessage(
             "已导入图像: {path}  原始: {width} x {height} px。右键配对表行选择“点选位置”。".format(
@@ -349,6 +398,8 @@ class ImageMixin:
             self._update_sky_mask_status()
             self._update_reference_alignment_controls()
             self._refresh_real_image_display_for_mask()
+            if hasattr(self, "_update_image_sequence_preview"):
+                self._update_image_sequence_preview()
             self.ui.statusbar.showMessage(f"已导入蒙版并缓存显示图: {mask_path}")
         except Exception as exc:  # noqa: BLE001 - 主线程应用蒙版时需要把状态错误直接反馈给用户。
             self.ui.statusbar.showMessage(f"导入蒙版失败: {exc}")
@@ -367,6 +418,8 @@ class ImageMixin:
         self._mask_import_worker = None
         self._mask_import_progress = None
         self._update_reference_alignment_controls()
+        if hasattr(self, "_update_image_sequence_controls"):
+            self._update_image_sequence_controls()
 
     def clear_sky_mask(self) -> None:
         if self.current_sky_mask is None:
@@ -375,6 +428,8 @@ class ImageMixin:
         self._reset_sky_mask_status()
         self._update_reference_alignment_controls()
         self._refresh_real_image_display_for_mask()
+        if hasattr(self, "_update_image_sequence_preview"):
+            self._update_image_sequence_preview()
         self.ui.statusbar.showMessage("已清除蒙版，后续自动匹配将使用整张图像。")
 
     def _next_reference_output_dir(self) -> Path:

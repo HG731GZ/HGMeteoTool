@@ -4,6 +4,7 @@ import json
 import math
 import os
 import sys
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -83,6 +84,7 @@ from .app_constants import *  # noqa: F401, F403, E402
 from .app_graphics_items import GraphicsImageItem, LiveStarMapGraphicsItem
 from .app_workers import (
     ImagePreviewLoadWorker,
+    ImageSequenceCollectWorker,
     SkyMaskLoadWorker,
     ReferenceJsonImportWorker,
     StarPairSessionImportWorker,
@@ -190,6 +192,14 @@ class MainWindow(
         self.ui.realImageView.installEventFilter(self)
         self.ui.realImageView.viewport().installEventFilter(self)
 
+        self.image_sequence_scene = QGraphicsScene(self)
+        self.image_sequence_item = GraphicsImageItem()
+        self.image_sequence_scene.addItem(self.image_sequence_item)
+        if hasattr(self.ui, "imageSequenceView"):
+            self.ui.imageSequenceView.setScene(self.image_sequence_scene)
+            self.ui.imageSequenceView.installEventFilter(self)
+            self.ui.imageSequenceView.viewport().installEventFilter(self)
+
         self.render_timer = QTimer(self)
         self.render_timer.setSingleShot(True)
         self.render_timer.timeout.connect(self.render_now)
@@ -207,9 +217,15 @@ class MainWindow(
         self._image_import_thread: QThread | None = None
         self._image_import_worker: ImagePreviewLoadWorker | None = None
         self._image_import_progress: QProgressDialog | None = None
+        self._sequence_import_thread: QThread | None = None
+        self._sequence_import_worker: ImageSequenceCollectWorker | None = None
+        self._sequence_import_progress: QProgressDialog | None = None
+        self._sequence_import_progress_shown_at: float | None = None
         self._json_import_thread: QThread | None = None
         self._json_import_worker: QObject | None = None
         self._json_import_progress: QProgressDialog | None = None
+        self._star_pair_session_import_switch_to_reference = True
+        self._star_pair_session_import_clear_input_name = "新的配对 JSON"
         self._mask_import_thread: QThread | None = None
         self._mask_import_worker: QObject | None = None
         self._mask_import_progress: QProgressDialog | None = None
@@ -252,12 +268,20 @@ class MainWindow(
         self.current_sky_mask: np.ndarray | None = None
         self.current_sky_masked_image: QImage | None = None
         self._image_sequence_items = []
+        self._image_sequence_current_index = -1
+        self._image_sequence_sort_key = "index"
+        self._image_sequence_sort_descending = False
+        self._image_sequence_preview_cache = OrderedDict()
+        self._image_sequence_scaled_mask_cache = OrderedDict()
+        self._image_sequence_masked_preview_cache = OrderedDict()
         self._sequence_processing_active = False
         self._preserve_sequence_on_next_image_load = False
 
         self._init_defaults()
         self._connect_inputs()
         self._configure_star_pair_table_columns()
+        if hasattr(self, "_configure_image_sequence_table_columns"):
+            self._configure_image_sequence_table_columns()
         self._configure_reference_preview_splitter()
         self.schedule_render(delay_ms=0)
 
@@ -326,6 +350,7 @@ class MainWindow(
                 widget.dateTimeChanged.connect(self.schedule_render)
         self.ui.doubleSpinBoxSensorWidth.valueChanged.connect(self._handle_sensor_size_changed)
         self.ui.doubleSpinBoxSensorHeight.valueChanged.connect(self._handle_sensor_size_changed)
+        self.ui.doubleSpinBoxUtcOffset.valueChanged.connect(self._handle_image_sequence_time_context_changed)
         self.ui.spinBoxImageWidth.valueChanged.connect(self._handle_image_width_changed)
         self.ui.spinBoxImageHeight.valueChanged.connect(self._handle_image_height_changed)
         self.ui.comboBoxLensModel.currentIndexChanged.connect(self._handle_lens_model_changed)
@@ -337,6 +362,12 @@ class MainWindow(
         self.ui.pushButtonImportSingleImage.clicked.connect(self.import_single_image)
         self.ui.pushButtonImportImageSequence.clicked.connect(self.import_image_sequence)
         self.ui.pushButtonProcessImageSequence.clicked.connect(self.process_image_sequence)
+        if hasattr(self.ui, "pushButtonImportImageSequenceSkyMask"):
+            self.ui.pushButtonImportImageSequenceSkyMask.clicked.connect(self.import_image_sequence_sky_mask)
+        if hasattr(self.ui, "pushButtonClearImageSequenceSkyMask"):
+            self.ui.pushButtonClearImageSequenceSkyMask.clicked.connect(self.clear_image_sequence_sky_mask)
+        if hasattr(self.ui, "checkBoxShowImageSequenceMask"):
+            self.ui.checkBoxShowImageSequenceMask.toggled.connect(self._handle_image_sequence_mask_toggled)
         self.ui.pushButtonExportStarPairs.clicked.connect(self.export_star_pair_session)
         self.ui.pushButtonImportStarPairs.clicked.connect(self.import_star_pair_session)
         self.ui.pushButtonClearStarPairs.clicked.connect(self.clear_all_star_pair_positions)
@@ -359,9 +390,28 @@ class MainWindow(
         self.ui.tableWidgetStarPairs.horizontalHeader().sectionClicked.connect(self._handle_star_pair_header_clicked)
         self.ui.tableWidgetStarPairs.installEventFilter(self)
         self.ui.tableWidgetStarPairs.viewport().installEventFilter(self)
+        if hasattr(self.ui, "tableWidgetImageSequence"):
+            self.ui.tableWidgetImageSequence.cellClicked.connect(self._handle_image_sequence_cell_clicked)
+            self.ui.tableWidgetImageSequence.horizontalHeader().sectionClicked.connect(
+                self._handle_image_sequence_header_clicked
+            )
+            self.ui.tableWidgetImageSequence.installEventFilter(self)
+            self.ui.tableWidgetImageSequence.viewport().installEventFilter(self)
+        if hasattr(self.ui, "toolButtonImageSequencePrevious"):
+            self.ui.toolButtonImageSequencePrevious.clicked.connect(self.show_previous_image_sequence_frame)
+        if hasattr(self.ui, "toolButtonImageSequenceNext"):
+            self.ui.toolButtonImageSequenceNext.clicked.connect(self.show_next_image_sequence_frame)
+        self.ui.labelImportedImagePath.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.ui.labelImportedImagePath.customContextMenuRequested.connect(self._show_imported_image_path_context_menu)
         self.ui.labelImportedImagePath.installEventFilter(self)
         self.ui.labelSkyMaskStatus.installEventFilter(self)
         self.ui.labelAlignmentTransformStatus.installEventFilter(self)
+        if hasattr(self.ui, "labelImageSequenceStatus"):
+            self.ui.labelImageSequenceStatus.installEventFilter(self)
+        if hasattr(self.ui, "labelImageSequenceSummary"):
+            self.ui.labelImageSequenceSummary.installEventFilter(self)
+        if hasattr(self.ui, "labelImageSequencePreviewTitle"):
+            self.ui.labelImageSequencePreviewTitle.installEventFilter(self)
         self.ui.pushButtonImportReferenceJson.clicked.connect(self.import_reference_json)
         self.ui.checkBoxOverlayReferenceMap.toggled.connect(self._update_reference_alignment_display)
         self.ui.doubleSpinBoxReferenceOverlayOpacity.valueChanged.connect(self._handle_reference_overlay_opacity_changed)

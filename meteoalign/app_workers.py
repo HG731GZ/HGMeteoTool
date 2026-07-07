@@ -12,6 +12,7 @@ from .app_utils import (
     _resolve_star_pair_session_real_image_path,
 )
 from .image_preview import ImagePreview, load_image_preview
+from .image_sequence import collect_image_sequence
 
 
 class ImagePreviewLoadWorker(QObject):
@@ -74,6 +75,23 @@ class SkyMaskLoadWorker(QObject):
             masked_image = _image_with_binary_mask(self.source_image, mask)
             self.finished.emit((preview.path, self.source_path, mask, masked_image))
         except Exception as exc:  # noqa: BLE001 - 后台线程需要把所有蒙版读取错误传回界面层。
+            self.failed.emit(str(exc))
+
+
+class ImageSequenceCollectWorker(QObject):
+    """后台线程 Worker：读取序列图像 EXIF 拍摄时间。"""
+
+    finished = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, file_paths: list[str] | tuple[str, ...]) -> None:
+        super().__init__()
+        self.file_paths = tuple(str(path) for path in file_paths)
+
+    def run(self) -> None:
+        try:
+            self.finished.emit(collect_image_sequence(self.file_paths))
+        except Exception as exc:  # noqa: BLE001 - 后台线程需要把所有序列读取错误传回界面层。
             self.failed.emit(str(exc))
 
 
