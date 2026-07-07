@@ -15,5 +15,7 @@
   "default_elevation_m": 200.0,
   "auto_match_default_new_count": 200,
   "auto_match_default_constraint_mode": "soft",
-  "auto_match_default_soft_weight": 0.3
+  "auto_match_default_soft_weight": 0.3,
+  "wheel_zoom_enabled": true,
+  "touchpad_pinch_zoom_enabled": true
 }

@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import QDialog, QGraphicsScene, QMessageBox, QProgressDialo
 
 from .app_constants import TOUCHPAD_ZOOM_MAX_FACTOR, TOUCHPAD_ZOOM_MIN_FACTOR, TOUCHPAD_ZOOM_SENSITIVITY
 from .app_graphics_items import GraphicsImageItem
+from .config import StarMapUiConfig
 from .fixed_camera_model import FixedCameraModel
 from .renderer import StarMapRenderer
 from .simulator import (
@@ -194,6 +195,7 @@ class MappingValidationDialog(QDialog):
         horizontal_catalog: HorizontalStarCatalog,
         horizontal_milky_way: HorizontalMilkyWayCatalog,
         horizontal_solar_system: HorizontalSolarSystemCatalog,
+        ui_config: StarMapUiConfig | None = None,
     ) -> None:
         super().__init__(parent)
         self.ui = Ui_MappingValidationDialog()
@@ -207,6 +209,7 @@ class MappingValidationDialog(QDialog):
         self.horizontal_catalog = horizontal_catalog
         self.horizontal_milky_way = horizontal_milky_way
         self.horizontal_solar_system = horizontal_solar_system
+        self.ui_config = ui_config or StarMapUiConfig()
         self.center_az_deg = float(initial_view.center_az_deg) % 360.0
         self.center_alt_deg = max(-90.0, min(90.0, float(initial_view.center_alt_deg)))
         self.fixed_roll_deg = float(initial_view.roll_deg)
@@ -276,6 +279,8 @@ class MappingValidationDialog(QDialog):
                 self.render_now()
                 return True
             if event.type() == QEvent.Wheel:
+                if not self._wheel_zoom_enabled():
+                    return False
                 self._apply_fov_wheel(event.angleDelta().y())
                 return True
         return super().eventFilter(watched, event)
@@ -374,7 +379,15 @@ class MappingValidationDialog(QDialog):
             self.focal_length_mm = max(0.2, min(5000.0, self.focal_length_mm * zoom_factor))
         self.render_now()
 
+    def _wheel_zoom_enabled(self) -> bool:
+        return bool(getattr(self.ui_config, "wheel_zoom_enabled", True))
+
+    def _touchpad_pinch_zoom_enabled(self) -> bool:
+        return bool(getattr(self.ui_config, "touchpad_pinch_zoom_enabled", True))
+
     def _native_gesture_zoom_value(self, event) -> float:  # type: ignore[no-untyped-def]
+        if not self._touchpad_pinch_zoom_enabled():
+            return 0.0
         zoom_gesture = getattr(Qt, "ZoomNativeGesture", None)
         if zoom_gesture is None or event.gestureType() != zoom_gesture:
             return 0.0

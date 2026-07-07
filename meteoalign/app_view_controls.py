@@ -31,6 +31,7 @@ class ViewControlsMixin:
     real_reference_overlay_item: object
     real_image_item: object
     image_sequence_item: object
+    ui_config: object
     _syncing_reference_preview_splitter: bool
     _syncing_reference_real_views: bool
     _active_star_pair_row: int | None
@@ -248,8 +249,7 @@ class ViewControlsMixin:
                         self._handle_reference_map_click(event.pos())
                     return True
             if event.type() == QEvent.Wheel:
-                self._apply_graphics_view_zoom(self.ui.referenceImageView, event.angleDelta().y())
-                return True
+                return self._handle_graphics_view_wheel_zoom(self.ui.referenceImageView, event)
             if event.type() == QEvent.NativeGesture and self._handle_graphics_view_native_zoom(
                 self.ui.referenceImageView,
                 event,
@@ -272,6 +272,8 @@ class ViewControlsMixin:
                     self.ui.statusbar.showMessage("已取消当前星点位置点选。")
                     return True
                 if event.type() == QEvent.Wheel and event.modifiers() & Qt.ControlModifier:
+                    if not self._wheel_zoom_enabled():
+                        return False
                     wheel_delta = event.angleDelta().y()
                     if wheel_delta == 0:
                         return True
@@ -289,8 +291,7 @@ class ViewControlsMixin:
                 if event.type() == QEvent.KeyPress and self._handle_star_pick_key_press(event):
                     return True
             if event.type() == QEvent.Wheel:
-                self._apply_graphics_view_zoom(self.ui.realImageView, event.angleDelta().y())
-                return True
+                return self._handle_graphics_view_wheel_zoom(self.ui.realImageView, event)
             if event.type() == QEvent.NativeGesture and self._handle_graphics_view_native_zoom(
                 self.ui.realImageView,
                 event,
@@ -298,8 +299,7 @@ class ViewControlsMixin:
                 return True
         if hasattr(self.ui, "imageSequenceView") and watched is self.ui.imageSequenceView.viewport():
             if event.type() == QEvent.Wheel:
-                self._apply_graphics_view_zoom(self.ui.imageSequenceView, event.angleDelta().y())
-                return True
+                return self._handle_graphics_view_wheel_zoom(self.ui.imageSequenceView, event)
             if event.type() == QEvent.NativeGesture and self._handle_graphics_view_native_zoom(
                 self.ui.imageSequenceView,
                 event,
@@ -324,13 +324,51 @@ class ViewControlsMixin:
             return True
         return False
 
+    def _wheel_zoom_enabled(self) -> bool:
+        return bool(getattr(self.ui_config, "wheel_zoom_enabled", True))
+
+    def _touchpad_pinch_zoom_enabled(self) -> bool:
+        return bool(getattr(self.ui_config, "touchpad_pinch_zoom_enabled", True))
+
+    def _handle_graphics_view_wheel_zoom(self, view: QGraphicsView, event) -> bool:  # type: ignore[no-untyped-def]
+        if not self._wheel_zoom_enabled():
+            return False
+        self._apply_graphics_view_zoom(view, event.angleDelta().y())
+        return True
+
     def _apply_graphics_view_zoom(self, view: QGraphicsView, wheel_delta: int) -> None:
         if wheel_delta == 0:
             return
         factor = IMAGE_VIEW_ZOOM_IN_FACTOR if wheel_delta > 0 else IMAGE_VIEW_ZOOM_OUT_FACTOR
         self._apply_graphics_view_zoom_factor(view, factor)
 
-    def _apply_graphics_view_zoom_factor(self, view: QGraphicsView, factor: float) -> None:
+    def _scale_graphics_view(
+        self,
+        view: QGraphicsView,
+        factor: float,
+        *,
+        center_on_viewport: bool = False,
+    ) -> None:
+        if not center_on_viewport:
+            view.scale(factor, factor)
+            return
+
+        center = view.mapToScene(view.viewport().rect().center())
+        previous_anchor = view.transformationAnchor()
+        view.setTransformationAnchor(QGraphicsView.AnchorViewCenter)
+        try:
+            view.scale(factor, factor)
+        finally:
+            view.setTransformationAnchor(previous_anchor)
+        view.centerOn(center)
+
+    def _apply_graphics_view_zoom_factor(
+        self,
+        view: QGraphicsView,
+        factor: float,
+        *,
+        center_on_viewport: bool = False,
+    ) -> None:
         if factor <= 0.0 or not math.isfinite(factor) or abs(factor - 1.0) <= 1e-4:
             return
         if factor < 1.0:
@@ -348,11 +386,13 @@ class ViewControlsMixin:
                 self._update_live_star_map_zoom_scale(view)
                 self._sync_reference_real_view_from(view)
                 return
-        view.scale(factor, factor)
+        self._scale_graphics_view(view, factor, center_on_viewport=center_on_viewport)
         self._update_live_star_map_zoom_scale(view)
         self._sync_reference_real_view_from(view)
 
     def _native_gesture_zoom_value(self, event) -> float:  # type: ignore[no-untyped-def]
+        if not self._touchpad_pinch_zoom_enabled():
+            return 0.0
         if event.type() != QEvent.NativeGesture:
             return 0.0
 
@@ -381,7 +421,7 @@ class ViewControlsMixin:
         factor = self._native_gesture_zoom_factor(event)
         if abs(factor - 1.0) <= 1e-4:
             return False
-        self._apply_graphics_view_zoom_factor(view, factor)
+        self._apply_graphics_view_zoom_factor(view, factor, center_on_viewport=True)
         return True
 
     def _handle_star_pick_native_zoom(self, event) -> bool:  # type: ignore[no-untyped-def]

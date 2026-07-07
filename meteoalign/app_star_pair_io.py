@@ -831,6 +831,7 @@ class StarPairIOMixin:
             horizontal_catalog=self._get_horizontal_catalog(observer, visible_mag_limit),
             horizontal_milky_way=self._get_horizontal_milky_way(observer),
             horizontal_solar_system=self._get_horizontal_solar_system(observer),
+            ui_config=self.ui_config,
         )
         dialog.setAttribute(Qt.WA_DeleteOnClose, True)
         dialog.destroyed.connect(lambda _obj=None: setattr(self, "_mapping_validation_dialog", None))

@@ -954,6 +954,8 @@ class MosaicProjectionMixin:
             self.render_mosaic_projection_now()
             return True
         if event.type() == QEvent.Wheel:
+            if not self._mosaic_wheel_zoom_enabled():
+                return False
             self._apply_mosaic_fov_wheel(event.angleDelta().y())
             return True
         return False
@@ -994,7 +996,15 @@ class MosaicProjectionMixin:
         target = max(self.ui.doubleSpinBoxMosaicFov.minimum(), min(self.ui.doubleSpinBoxMosaicFov.maximum(), target))
         self.ui.doubleSpinBoxMosaicFov.setValue(target)
 
+    def _mosaic_wheel_zoom_enabled(self) -> bool:
+        return bool(getattr(self.ui_config, "wheel_zoom_enabled", True))
+
+    def _mosaic_touchpad_pinch_zoom_enabled(self) -> bool:
+        return bool(getattr(self.ui_config, "touchpad_pinch_zoom_enabled", True))
+
     def _mosaic_native_zoom_value(self, event) -> float:  # type: ignore[no-untyped-def]
+        if not self._mosaic_touchpad_pinch_zoom_enabled():
+            return 0.0
         zoom_gesture = getattr(Qt, "ZoomNativeGesture", None)
         if zoom_gesture is None or event.gestureType() != zoom_gesture:
             return 0.0

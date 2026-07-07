@@ -24,6 +24,8 @@ class StarMapUiConfig:
     auto_match_default_new_count: int = 200
     auto_match_default_constraint_mode: str = "soft"
     auto_match_default_soft_weight: float = 0.3
+    wheel_zoom_enabled: bool = True
+    touchpad_pinch_zoom_enabled: bool = True
 
 
 def default_config_path() -> Path:
@@ -53,6 +55,21 @@ def _read_choice(config: dict[str, object], key: str, default_value: str, choice
     value_text = str(value).strip()
     if value_text in choices:
         return value_text
+    return default_value
+
+
+def _read_bool(config: dict[str, object], key: str, default_value: bool) -> bool:
+    value = config.get(key, default_value)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        value_text = value.strip().lower()
+        if value_text in {"1", "true", "yes", "on"}:
+            return True
+        if value_text in {"0", "false", "no", "off"}:
+            return False
+    if isinstance(value, (int, float)):
+        return bool(value)
     return default_value
 
 
@@ -101,4 +118,6 @@ def load_star_map_ui_config(path: Path | None = None) -> StarMapUiConfig:
             ("anchor", "soft"),
         ),
         auto_match_default_soft_weight=_read_float(raw_config, "auto_match_default_soft_weight", 0.3, 0.01, 1.0),
+        wheel_zoom_enabled=_read_bool(raw_config, "wheel_zoom_enabled", True),
+        touchpad_pinch_zoom_enabled=_read_bool(raw_config, "touchpad_pinch_zoom_enabled", True),
     )
