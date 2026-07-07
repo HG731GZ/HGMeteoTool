@@ -70,6 +70,7 @@ def build_reference_payload(
         "stars": [
             {
                 "index": star.index,
+                "index_label": star.index_label,
                 "star_id": star.star_id,
                 "name": star.name,
                 "display_name": star.display_name,

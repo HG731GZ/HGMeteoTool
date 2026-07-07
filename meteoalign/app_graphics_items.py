@@ -15,6 +15,10 @@ STAR_RADIUS_ZOOM_EXPONENT = 0.32
 STAR_RADIUS_MIN_ZOOM_SCALE = 0.48
 
 
+def _reference_star_index_text(reference_star: ReferenceStar) -> str:
+    return str(getattr(reference_star, "index_label", "") or reference_star.index)
+
+
 class GraphicsImageItem(QGraphicsItem):
     """用于在 QGraphicsScene 中显示 QImage 的自定义图形项。"""
 
@@ -246,7 +250,7 @@ class LiveStarMapGraphicsItem(QGraphicsItem):
             painter.setPen(QPen(QColor(255, 230, 80, 255), 2.4 * label_scale))
             painter.drawEllipse(marker_rect)
 
-            label_text = f"{reference_star.index}. {reference_star.name}"
+            label_text = f"{_reference_star_index_text(reference_star)}. {reference_star.name}"
             max_label_width = max(40.0 * label_scale, rect.width() - edge_padding_px * 2.0)
             visible_label_text = metrics.elidedText(label_text, Qt.ElideRight, int(max_label_width - label_padding_x_px))
             label_width = min(metrics.horizontalAdvance(visible_label_text) + label_padding_x_px, max_label_width)

@@ -1091,9 +1091,6 @@ class StarPairTableMixin:
 
             star_id = self._star_pair_star_id(row)
             reference_star = star_lookup.get(star_id)
-            if reference_star is not None:
-                renumbered_stars.append(self._reference_star_with_index(reference_star, len(renumbered_stars) + 1))
-
             index_item = table.item(row, STAR_PAIR_INDEX_COLUMN)
             if index_item is None:
                 index_item = self._read_only_table_item("")
@@ -1101,11 +1098,17 @@ class StarPairTableMixin:
             if self._is_auto_match_row(row):
                 group_id = self._row_auto_match_group_id(row) or self._auto_match_group_by_star_id.get(star_id, "A")
                 auto_index = auto_index_by_group.get(group_id, 1)
-                index_item.setText(f"{group_id}{auto_index}")
+                index_text = f"{group_id}{auto_index}"
+                index_item.setText(index_text)
                 auto_index_by_group[group_id] = auto_index + 1
             else:
-                index_item.setText(str(regular_index))
+                index_text = str(regular_index)
+                index_item.setText(index_text)
                 regular_index += 1
+            if reference_star is not None:
+                renumbered_stars.append(
+                    self._reference_star_with_index(reference_star, len(renumbered_stars) + 1, index_text)
+                )
         table.blockSignals(signals_were_blocked)
 
         self._current_reference_stars = tuple(renumbered_stars)

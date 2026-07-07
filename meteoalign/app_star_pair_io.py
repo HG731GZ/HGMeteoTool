@@ -308,6 +308,7 @@ class StarPairIOMixin:
             alt_deg=alt_deg,
             az_deg=az_deg,
             object_type="star",
+            index_label=str(record.get("index_label") or ""),
         )
 
     def _reference_star_lookup_from_records(

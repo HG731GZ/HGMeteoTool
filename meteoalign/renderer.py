@@ -7,6 +7,10 @@ from .config import StarMapUiConfig
 from .simulator import ProjectedStarMap, ReferenceStar
 
 
+def _reference_star_index_text(reference_star: ReferenceStar) -> str:
+    return str(getattr(reference_star, "index_label", "") or reference_star.index)
+
+
 class StarMapRenderer:
     def __init__(self, ui_config: StarMapUiConfig | None = None) -> None:
         self.ui_config = ui_config or StarMapUiConfig()
@@ -339,7 +343,7 @@ class StarMapRenderer:
 
             painter.setFont(number_font)
             metrics = painter.fontMetrics()
-            label_text = f"{reference_star.index}. {reference_star.name}"
+            label_text = f"{_reference_star_index_text(reference_star)}. {reference_star.name}"
             max_label_width = max(40.0 * element_scale, star_map.width - edge_padding_px * 2.0)
             visible_label_text = metrics.elidedText(label_text, Qt.ElideRight, int(max_label_width - label_padding_x_px))
             label_width = min(metrics.horizontalAdvance(visible_label_text) + label_padding_x_px, max_label_width)

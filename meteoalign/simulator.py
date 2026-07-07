@@ -312,6 +312,7 @@ class ReferenceStar:
     alt_deg: float
     az_deg: float
     object_type: str = "star"
+    index_label: str = ""
 
 
 def horizontal_fov_deg(camera: CameraSettings) -> float:

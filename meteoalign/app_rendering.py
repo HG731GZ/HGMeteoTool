@@ -127,7 +127,12 @@ class RenderingMixin:
             az_deg=float(star_map.az_deg[star_index]),
         )
 
-    def _reference_star_with_index(self, star: ReferenceStar, index: int) -> ReferenceStar:
+    def _reference_star_with_index(
+        self,
+        star: ReferenceStar,
+        index: int,
+        index_label: str | None = None,
+    ) -> ReferenceStar:
         return ReferenceStar(
             index=index,
             star_id=star.star_id,
@@ -142,7 +147,26 @@ class RenderingMixin:
             alt_deg=star.alt_deg,
             az_deg=star.az_deg,
             object_type=star.object_type,
+            index_label=str(index_label if index_label is not None else (star.index_label or index)),
         )
+
+    def _reference_stars_with_display_labels(self, stars: list[ReferenceStar]) -> tuple[ReferenceStar, ...]:
+        labeled_stars: list[ReferenceStar] = []
+        regular_index = 1
+        auto_index_by_group: dict[str, int] = {}
+        auto_match_star_ids = set(self._auto_match_reference_star_ids)
+        for star in stars:
+            star_id = star.star_id.strip()
+            if star_id in auto_match_star_ids:
+                group_id = self._auto_match_group_by_star_id.get(star_id, "A")
+                auto_index = auto_index_by_group.get(group_id, 1)
+                index_label = f"{group_id}{auto_index}"
+                auto_index_by_group[group_id] = auto_index + 1
+            else:
+                index_label = str(regular_index)
+                regular_index += 1
+            labeled_stars.append(self._reference_star_with_index(star, len(labeled_stars) + 1, index_label))
+        return tuple(labeled_stars)
 
     def _projected_reference_star_lookup(self, star_map: ProjectedStarMap) -> dict[str, ReferenceStar]:
         lookup: dict[str, ReferenceStar] = {}
@@ -225,7 +249,7 @@ class RenderingMixin:
         for star_id in self._auto_match_reference_star_ids:
             append_lookup_star(star_id, keep_if_auto=True)
 
-        return tuple(self._reference_star_with_index(star, index) for index, star in enumerate(ordered_stars, start=1))
+        return self._reference_stars_with_display_labels(ordered_stars)
 
     def _reference_selection_star_map(self) -> ProjectedStarMap | None:
         return self._current_reference_star_map or self._current_star_map
