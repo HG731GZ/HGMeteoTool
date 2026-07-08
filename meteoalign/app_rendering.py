@@ -157,7 +157,7 @@ class RenderingMixin:
         for star in stars:
             star_id = star.star_id.strip()
             if star_id in auto_match_star_ids:
-                group_id = self._auto_match_group_by_star_id.get(star_id, "A")
+                group_id = self._auto_match_group_id_for_star_id(star_id) or "A"
                 auto_index = auto_index_by_group.get(group_id, 1)
                 index_label = f"{group_id}{auto_index}"
                 auto_index_by_group[group_id] = auto_index + 1
@@ -178,12 +178,14 @@ class RenderingMixin:
 
     def _matched_reference_star_ids_from_table(self) -> list[str]:
         matched_star_ids: list[str] = []
-        for row in range(self.ui.tableWidgetStarPairs.rowCount()):
-            star_id = self._star_pair_star_id(row)
+        store = getattr(self, "_star_pair_store", None)
+        if store is None:
+            return matched_star_ids
+        for record in store.snapshot():
+            star_id = record.star_id
             if not star_id or star_id in matched_star_ids:
                 continue
-            if self._parse_star_pair_position_text(row) is not None:
-                matched_star_ids.append(star_id)
+            matched_star_ids.append(star_id)
         return matched_star_ids
 
     def _select_current_reference_stars(self, star_map: ProjectedStarMap) -> tuple[ReferenceStar, ...]:

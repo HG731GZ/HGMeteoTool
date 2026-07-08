@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from PyQt5.QtCore import QDateTime, QThread, QTimer, Qt
-from PyQt5.QtWidgets import QFileDialog, QMessageBox, QProgressDialog
+from PyQt5.QtCore import QDateTime
+from PyQt5.QtWidgets import QFileDialog, QMessageBox
 
 from .app_constants import (
     LENS_MODELS,
@@ -14,6 +14,7 @@ from .app_constants import (
 )
 from .app_workers import ReferenceJsonImportWorker
 from .catalog import project_root
+from .qt_tasks import start_qt_worker_task
 
 class ReferenceJsonIOMixin:
     """参考 JSON 导入和应用。"""
@@ -44,21 +45,20 @@ class ReferenceJsonIOMixin:
             status_text=f"正在导入预览 JSON: {json_path}",
         )
 
-        thread = QThread(self)
         worker = ReferenceJsonImportWorker(json_path)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.finished.connect(self._handle_reference_json_import_finished)
-        worker.failed.connect(self._handle_reference_json_import_failed)
-        worker.finished.connect(thread.quit)
-        worker.failed.connect(thread.quit)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._cleanup_json_import)
+        task = start_qt_worker_task(
+            parent=self,
+            worker=worker,
+            finished_signal=worker.finished,
+            failed_signal=worker.failed,
+            on_finished=self._handle_reference_json_import_finished,
+            on_failed=self._handle_reference_json_import_failed,
+            on_cleanup=self._cleanup_json_import,
+            progress_dialog=self._json_import_progress,
+        )
 
-        self._json_import_thread = thread
-        self._json_import_worker = worker
-        thread.start()
+        self._json_import_thread = task.thread
+        self._json_import_worker = task.worker
 
     def _handle_reference_json_import_finished(self, result: object) -> None:
         try:
@@ -212,7 +212,6 @@ class ReferenceJsonIOMixin:
             observer=self._observer_settings(),
         )
         self._auto_match_reference_star_ids = []
-        self._auto_match_constraint_by_star_id = {}
         self._auto_match_group_order = []
         self._auto_match_group_by_star_id = {}
         self._auto_match_group_expanded_by_id = {}

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from typing import Iterator
 
-import numpy as np
 from PyQt5.QtCore import QObject, pyqtSignal
 
 from .simulator import ObserverSettings
@@ -91,6 +91,25 @@ class StarPairStore(QObject):
     # 字段级更新
     # ------------------------------------------------------------------
 
+    def _replace_record(
+        self,
+        star_id: str,
+        *,
+        emit_records_changed: bool = True,
+        **changes: object,
+    ) -> StarPairRecord | None:
+        """用 dataclass replace 统一更新单条记录并发出信号。"""
+
+        record = self._records.get(star_id)
+        if record is None:
+            return None
+        new_record = replace(record, **changes)
+        self._records[star_id] = new_record
+        if emit_records_changed:
+            self.records_changed.emit()
+        self.record_updated.emit(star_id)
+        return new_record
+
     def update_position(
         self,
         star_id: str,
@@ -102,34 +121,16 @@ class StarPairStore(QObject):
 
         返回更新后的记录；若 star_id 不存在则返回 None。
         """
-        record = self._records.get(star_id)
-        if record is None:
-            return None
-        from dataclasses import replace
-
-        new_record = replace(
-            record,
+        return self._replace_record(
+            star_id,
             image_x_px=float(image_x),
             image_y_px=float(image_y),
             psf=psf,
         )
-        self._records[star_id] = new_record
-        self.records_changed.emit()
-        self.record_updated.emit(star_id)
-        return new_record
 
     def update_psf(self, star_id: str, psf: PsfFit) -> StarPairRecord | None:
         """仅更新 PSF 拟合结果。"""
-        record = self._records.get(star_id)
-        if record is None:
-            return None
-        from dataclasses import replace
-
-        new_record = replace(record, psf=psf)
-        self._records[star_id] = new_record
-        self.records_changed.emit()
-        self.record_updated.emit(star_id)
-        return new_record
+        return self._replace_record(star_id, psf=psf)
 
     def set_constraint(
         self,
@@ -138,26 +139,17 @@ class StarPairStore(QObject):
         weight: float = 1.0,
     ) -> StarPairRecord | None:
         """设置拟合约束模式和权重。"""
-        record = self._records.get(star_id)
-        if record is None:
-            return None
         if mode not in (CONSTRAINT_ANCHOR, CONSTRAINT_SOFT):
             mode = CONSTRAINT_ANCHOR
         if mode == CONSTRAINT_SOFT:
             weight = max(0.01, min(1.0, float(weight)))
         else:
             weight = 1.0
-        from dataclasses import replace
-
-        new_record = replace(
-            record,
+        return self._replace_record(
+            star_id,
             fit_constraint_mode=mode,
             fit_weight=float(weight),
         )
-        self._records[star_id] = new_record
-        self.records_changed.emit()
-        self.record_updated.emit(star_id)
-        return new_record
 
     def set_group(
         self,
@@ -166,33 +158,15 @@ class StarPairStore(QObject):
         group_name: str | None = None,
     ) -> StarPairRecord | None:
         """设置自动匹配分组。"""
-        record = self._records.get(star_id)
-        if record is None:
-            return None
-        from dataclasses import replace
-
-        new_record = replace(
-            record,
+        return self._replace_record(
+            star_id,
             group_id=group_id,
             group_name=group_name,
         )
-        self._records[star_id] = new_record
-        self.records_changed.emit()
-        self.record_updated.emit(star_id)
-        return new_record
 
     def set_enabled(self, star_id: str, enabled: bool) -> StarPairRecord | None:
         """启用或禁用某条记录。"""
-        record = self._records.get(star_id)
-        if record is None:
-            return None
-        from dataclasses import replace
-
-        new_record = replace(record, enabled=bool(enabled))
-        self._records[star_id] = new_record
-        self.records_changed.emit()
-        self.record_updated.emit(star_id)
-        return new_record
+        return self._replace_record(star_id, enabled=bool(enabled))
 
     def set_residual(
         self,
@@ -202,36 +176,19 @@ class StarPairStore(QObject):
         distance: float | None,
     ) -> StarPairRecord | None:
         """设置残差信息。"""
-        record = self._records.get(star_id)
-        if record is None:
-            return None
-        from dataclasses import replace
-
-        new_record = replace(
-            record,
+        return self._replace_record(
+            star_id,
+            emit_records_changed=False,
             residual_dx_px=dx,
             residual_dy_px=dy,
             residual_px=distance,
         )
-        self._records[star_id] = new_record
-        # 残差更新不触发 records_changed，避免重绘循环
-        self.record_updated.emit(star_id)
-        return new_record
 
     def set_pair_origin(self, star_id: str, origin: str) -> StarPairRecord | None:
         """设置配对来源（手动/自动匹配）。"""
-        record = self._records.get(star_id)
-        if record is None:
-            return None
         if origin not in (PAIR_ORIGIN_MANUAL, PAIR_ORIGIN_AUTO_MATCH):
             origin = PAIR_ORIGIN_MANUAL
-        from dataclasses import replace
-
-        new_record = replace(record, pair_origin=origin)
-        self._records[star_id] = new_record
-        self.records_changed.emit()
-        self.record_updated.emit(star_id)
-        return new_record
+        return self._replace_record(star_id, pair_origin=origin)
 
     # ------------------------------------------------------------------
     # 批量操作
@@ -314,32 +271,5 @@ class StarPairStore(QObject):
             for r in self._records.values()
             if all(math.isfinite(v) for v in (r.image_x_px, r.image_y_px))
         )
-
-    # ------------------------------------------------------------------
-    # 与旧表格数据结构的互操作（过渡期）
-    # ------------------------------------------------------------------
-
-    def collect_states(self) -> dict[str, dict[str, object]]:
-        """收集所有记录的完整状态，格式兼容旧的 _collect_star_pair_states()。
-
-        用于过渡期：表格刷新时仍可从此方法获取持久化的状态。
-        """
-        states: dict[str, dict[str, object]] = {}
-        for star_id, record in self._records.items():
-            states[star_id] = {
-                "position": record.position,
-                "fit_payload": record.psf.to_table_payload() if record.psf is not None else None,
-                "fit_constraint_mode": record.fit_constraint_mode,
-                "fit_weight": record.fit_weight,
-                "pair_origin": record.pair_origin,
-                "group_id": record.group_id,
-                "group_name": record.group_name,
-            }
-        return states
-
-    def collect_positions(self) -> dict[str, tuple[float, float]]:
-        """收集所有已配对的位置，格式兼容旧的 _collect_star_pair_positions()。"""
-        return self.positions()
-
 
 __all__ = ["StarPairStore"]

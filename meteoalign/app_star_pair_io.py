@@ -7,9 +7,6 @@ from .app_star_pair_reference_payload import StarPairReferencePayloadMixin
 from .app_star_pair_session import StarPairSessionMixin
 from .star_pair_store import StarPairStore
 
-# 从 app_constants 重新导出公共常量（向后兼容）
-from .app_constants import *  # noqa: F401, F403
-
 
 class StarPairIOMixin(
     StarPairJsonTaskMixin,
@@ -23,7 +20,7 @@ class StarPairIOMixin(
 
     ui: object
     _star_pair_store: StarPairStore
-    _json_import_thread: QThread | None
+    _json_import_thread: object | None
     _json_import_worker: object | None
     _json_import_progress: QProgressDialog | None
     _star_pair_session_import_switch_to_reference: bool
@@ -64,7 +61,6 @@ class StarPairIOMixin(
     _sequence_pair_fit_arrays: object  # 方法
     _apply_sequence_time_fit: object  # 方法
     _sequence_pair_records: object  # 方法
-    _collect_star_pair_states: object  # 方法
     _clear_star_pair_positions: object  # 方法
     _clear_star_pair_annotations: object  # 方法
     _refresh_star_pair_table_styles: object  # 方法
@@ -74,7 +70,6 @@ class StarPairIOMixin(
     _set_json_import_controls_enabled: object  # 方法
     _row_auto_match_group_id: object  # 方法
     _auto_match_reference_star_ids: list
-    _auto_match_constraint_by_star_id: dict
     _auto_match_group_order: list
     _auto_match_group_by_star_id: dict
     _auto_match_group_expanded_by_id: dict
@@ -94,4 +89,4 @@ class StarPairIOMixin(
     current_sky_mask_path: Path | None
 
 
-__all__ = [name for name in globals() if not name.startswith("__")]
+__all__ = ["StarPairIOMixin"]

@@ -12,14 +12,10 @@ from .app_constants import (
     AUTO_MATCH_CONSTRAINT_MODES,
     AUTO_MATCH_CONSTRAINT_SOFT,
     STAR_PAIR_AUTO_GROUP_ROLE,
-    STAR_PAIR_CONSTRAINT_MODE_ROLE,
-    STAR_PAIR_FIT_ROLE,
-    STAR_PAIR_FIT_WEIGHT_ROLE,
     STAR_PAIR_INDEX_COLUMN,
     STAR_PAIR_MANUAL_GROUP_LABEL,
     STAR_PAIR_NAME_COLUMN,
     STAR_PAIR_POSITION_COLUMN,
-    STAR_PAIR_POSITION_ROLE,
     STAR_PAIR_RESIDUAL_COLUMN,
     STAR_PAIR_RESIDUAL_WIDTH_SAMPLE,
     STAR_PAIR_ROW_TYPE_AUTO_GROUP,
@@ -161,7 +157,7 @@ class StarPairTableGroupsMixin:
         return [
             star_id
             for star_id in self._auto_match_reference_star_ids
-            if self._auto_match_group_by_star_id.get(star_id) == group_id
+            if self._auto_match_group_id_for_star_id(star_id) == group_id
         ]
 
     def _normalize_auto_match_groups(self) -> None:
@@ -174,10 +170,13 @@ class StarPairTableGroupsMixin:
 
         group_order: list[str] = []
         for star_id in self._auto_match_reference_star_ids:
-            group_id = self._auto_match_group_by_star_id.get(star_id, "").strip()
+            group_id = self._auto_match_group_id_for_star_id(star_id)
             if not group_id:
                 group_id = "A"
-                self._auto_match_group_by_star_id[star_id] = group_id
+                if self._star_pair_record_for_star_id(star_id) is None:
+                    self._auto_match_group_by_star_id[star_id] = group_id
+            elif self._star_pair_record_for_star_id(star_id) is not None:
+                self._auto_match_group_by_star_id.pop(star_id, None)
             if group_id not in group_order:
                 group_order.append(group_id)
 
@@ -198,11 +197,31 @@ class StarPairTableGroupsMixin:
 
     # ---- 约束管理 ----
 
+    def _star_pair_record_for_star_id(self, star_id: str):
+        store = getattr(self, "_star_pair_store", None)
+        if store is None or not star_id:
+            return None
+        return store.get(star_id)
+
+    def _star_pair_record_for_row(self, row: int):
+        return self._star_pair_record_for_star_id(self._star_pair_star_id(row))
+
+    def _auto_match_group_id_for_star_id(self, star_id: str) -> str:
+        record = self._star_pair_record_for_star_id(star_id)
+        if record is not None and record.group_id:
+            return str(record.group_id).strip()
+        return str(self._auto_match_group_by_star_id.get(star_id, "")).strip()
+
     def _auto_match_constraint_for_star_id(self, star_id: str) -> tuple[str, float]:
-        mode, weight = self._auto_match_constraint_by_star_id.get(
-            star_id,
-            (AUTO_MATCH_CONSTRAINT_ANCHOR, 1.0),
-        )
+        record = self._star_pair_record_for_star_id(star_id)
+        if record is not None:
+            mode = record.fit_constraint_mode
+            weight = record.fit_weight
+        elif hasattr(self, "_auto_match_constraint_mode") and hasattr(self, "_auto_match_soft_weight"):
+            mode = self._auto_match_constraint_mode()
+            weight = self._auto_match_soft_weight()
+        else:
+            mode, weight = AUTO_MATCH_CONSTRAINT_ANCHOR, 1.0
         if mode not in AUTO_MATCH_CONSTRAINT_MODES:
             mode = AUTO_MATCH_CONSTRAINT_ANCHOR
         try:
@@ -216,16 +235,11 @@ class StarPairTableGroupsMixin:
         return mode, fit_weight
 
     def _star_pair_fit_constraint(self, row: int) -> tuple[str, float]:
-        star_id = self._star_pair_star_id(row)
-        if star_id and self._is_auto_match_row(row):
-            return self._auto_match_constraint_for_star_id(star_id)
-
-        item = self.ui.tableWidgetStarPairs.item(row, STAR_PAIR_INDEX_COLUMN)
-        mode = str(item.data(STAR_PAIR_CONSTRAINT_MODE_ROLE) or AUTO_MATCH_CONSTRAINT_ANCHOR) if item is not None else ""
-        try:
-            weight = float(item.data(STAR_PAIR_FIT_WEIGHT_ROLE)) if item is not None else 1.0
-        except (TypeError, ValueError):
-            weight = 1.0
+        record = self._star_pair_record_for_row(row)
+        if record is None:
+            return AUTO_MATCH_CONSTRAINT_ANCHOR, 1.0
+        mode = str(record.fit_constraint_mode or AUTO_MATCH_CONSTRAINT_ANCHOR)
+        weight = float(record.fit_weight)
         if mode not in AUTO_MATCH_CONSTRAINT_MODES:
             mode = AUTO_MATCH_CONSTRAINT_ANCHOR
         return (mode, max(0.01, min(1.0, weight))) if mode == AUTO_MATCH_CONSTRAINT_SOFT else (mode, 1.0)
@@ -263,10 +277,7 @@ class StarPairTableGroupsMixin:
         normalized_mode, normalized_weight = self._normalized_auto_match_constraint(mode, fit_weight)
         table = self.ui.tableWidgetStarPairs
         star_id = self._star_pair_star_id(row)
-        if self._is_auto_match_row(row) and star_id:
-            self._auto_match_constraint_by_star_id[star_id] = (normalized_mode, normalized_weight)
 
-        # 同步写入 StarPairStore
         store = getattr(self, "_star_pair_store", None)
         if store is not None and star_id:
             store.set_constraint(star_id, normalized_mode, normalized_weight)
@@ -280,8 +291,6 @@ class StarPairTableGroupsMixin:
             item = table.item(row, column)
             if item is None:
                 continue
-            item.setData(STAR_PAIR_CONSTRAINT_MODE_ROLE, normalized_mode)
-            item.setData(STAR_PAIR_FIT_WEIGHT_ROLE, normalized_weight)
             item.setToolTip(tooltip)
         self._refresh_star_pair_mode_cell(row)
 
@@ -314,12 +323,10 @@ class StarPairTableGroupsMixin:
     # ---- 拟合有效载荷 ----
 
     def _star_pair_fit_payload(self, row: int) -> dict[str, float] | None:
-        position_item = self.ui.tableWidgetStarPairs.item(row, STAR_PAIR_POSITION_COLUMN)
-        if position_item is None:
+        record = self._star_pair_record_for_row(row)
+        if record is None or record.psf is None:
             return None
-        payload = position_item.data(STAR_PAIR_FIT_ROLE)
-        if not isinstance(payload, dict):
-            return None
+        payload = record.psf.to_table_payload()
 
         fit_payload: dict[str, float] = {}
         for key in ("x", "y", "amplitude", "background", "sigma_x", "sigma_y"):
@@ -342,51 +349,43 @@ class StarPairTableGroupsMixin:
         }
 
     def _fitted_position_for_row(self, row: int) -> FittedStarPosition | None:
-        position = self._parse_star_pair_position_text(row)
-        if position is None:
+        record = self._star_pair_record_for_row(row)
+        if record is None:
             return None
+        return record.fitted_position
 
-        fit_payload = self._star_pair_fit_payload(row) or {}
-        image_x, image_y = position
-        return FittedStarPosition(
-            x=image_x,
-            y=image_y,
-            amplitude=float(fit_payload.get("amplitude", 0.0)),
-            background=float(fit_payload.get("background", 0.0)),
-            sigma_x=float(fit_payload.get("sigma_x", 0.0)),
-            sigma_y=float(fit_payload.get("sigma_y", 0.0)),
-        )
-
-    def _collect_star_pair_states(self) -> dict[str, dict[str, object]]:
+    def _star_pair_store_states(self) -> dict[str, dict[str, object]]:
         states: dict[str, dict[str, object]] = {}
-        table = self.ui.tableWidgetStarPairs
-        for row in range(table.rowCount()):
-            name_item = table.item(row, STAR_PAIR_NAME_COLUMN)
-            position_item = table.item(row, STAR_PAIR_POSITION_COLUMN)
-            if name_item is None or position_item is None:
+        store = getattr(self, "_star_pair_store", None)
+        if store is None:
+            return states
+        for record in store.snapshot():
+            star_id = record.star_id
+            if not star_id:
                 continue
-            star_id = str(name_item.data(Qt.UserRole) or "")
-            position = self._parse_star_pair_position_text(row)
-            if star_id and position is not None:
-                mode, fit_weight = self._star_pair_fit_constraint(row)
-                states[star_id] = {
-                    "position": position,
-                    "fit_payload": self._star_pair_fit_payload(row),
-                    "fit_constraint_mode": mode,
-                    "fit_weight": fit_weight,
-                }
+            states[star_id] = {
+                "position": record.position,
+                "fit_payload": None if record.psf is None else record.psf.to_table_payload(),
+                "fit_constraint_mode": record.fit_constraint_mode,
+                "fit_weight": record.fit_weight,
+                "pair_origin": record.pair_origin,
+                "group_id": record.group_id,
+                "group_name": record.group_name,
+                "residual_px": record.residual_px,
+            }
         return states
 
-    def _collect_star_pair_positions(self) -> dict[str, str]:
+    def _star_pair_position_texts_from_store(self) -> dict[str, str]:
         positions: dict[str, str] = {}
-        for star_id, state in self._collect_star_pair_states().items():
-            position = state.get("position")
-            if isinstance(position, (tuple, list)) and len(position) == 2:
-                positions[star_id] = f"{float(position[0]):.2f}, {float(position[1]):.2f}"
+        store = getattr(self, "_star_pair_store", None)
+        if store is None:
+            return positions
+        for star_id, position in store.positions().items():
+            positions[star_id] = f"{float(position[0]):.2f}, {float(position[1]):.2f}"
         return positions
 
     def _star_pair_position_count(self) -> int:
-        return len(self._collect_star_pair_positions())
+        return len(self._star_pair_position_texts_from_store())
 
     # ---- 表格填充 ----
 
@@ -565,9 +564,6 @@ class StarPairTableGroupsMixin:
         index_item = self._make_star_pair_table_item(index_text, row_type, star_id)
         name_item = self._make_star_pair_table_item(star_name, row_type, star_id)
         position_item = self._make_star_pair_table_item("", row_type, star_id)
-        fit_payload = saved_state.get("fit_payload")
-        position_item.setData(STAR_PAIR_FIT_ROLE, fit_payload if isinstance(fit_payload, dict) else None)
-        position_item.setData(STAR_PAIR_POSITION_ROLE, position)
         residual_item = self._make_star_pair_table_item("", row_type, star_id)
         if saved_state:
             mode, fit_weight = self._normalized_auto_match_constraint(
@@ -578,16 +574,12 @@ class StarPairTableGroupsMixin:
             mode, fit_weight = self._auto_match_constraint_for_star_id(star_id)
         else:
             mode, fit_weight = AUTO_MATCH_CONSTRAINT_ANCHOR, 1.0
-        if row_type == STAR_PAIR_ROW_TYPE_AUTO_MATCH and star_id:
-            self._auto_match_constraint_by_star_id[star_id] = (mode, fit_weight)
         constraint_tip = (
             f"投影拟合：软约束，权重 {fit_weight:.2f}。"
             if mode == AUTO_MATCH_CONSTRAINT_SOFT
             else "投影拟合：硬锚点。"
         )
         for item in (index_item, name_item, position_item, residual_item):
-            item.setData(STAR_PAIR_CONSTRAINT_MODE_ROLE, mode)
-            item.setData(STAR_PAIR_FIT_WEIGHT_ROLE, fit_weight)
             if group_id:
                 item.setData(STAR_PAIR_AUTO_GROUP_ROLE, group_id)
             item.setToolTip(constraint_tip)
@@ -684,7 +676,7 @@ class StarPairTableGroupsMixin:
     def _update_star_pair_table(self, reference_stars: tuple[ReferenceStar, ...]) -> None:
         self._current_reference_stars = tuple(reference_stars)
         table = self.ui.tableWidgetStarPairs
-        saved_states = self._collect_star_pair_states()
+        saved_states = self._star_pair_store_states()
         self._normalize_auto_match_groups()
         auto_match_star_ids = set(self._auto_match_reference_star_ids)
         regular_stars = [star for star in reference_stars if star.star_id.strip() not in auto_match_star_ids]
@@ -700,7 +692,7 @@ class StarPairTableGroupsMixin:
             star_id = star.star_id.strip()
             if star_id not in auto_match_star_ids:
                 continue
-            group_id = self._auto_match_group_by_star_id.get(star_id, "A")
+            group_id = self._auto_match_group_id_for_star_id(star_id) or "A"
             auto_match_stars_by_group.setdefault(group_id, []).append(star)
 
         visible_groups = [
@@ -761,13 +753,6 @@ class StarPairTableGroupsMixin:
             return
         if self._is_star_pair_group_row(item.row()):
             return
-        signals_were_blocked = self.ui.tableWidgetStarPairs.blockSignals(True)
-        item.setData(STAR_PAIR_POSITION_ROLE, None)
-        item.setData(STAR_PAIR_FIT_ROLE, None)
-        self.ui.tableWidgetStarPairs.blockSignals(signals_were_blocked)
-        star_id = self._star_pair_star_id(item.row())
-        if star_id and not item.text().strip():
-            self._remove_star_pair_annotation(star_id)
         self._refresh_star_pair_row_style(item.row())
         self._update_reference_alignment_transform()
 
@@ -786,39 +771,13 @@ class StarPairTableGroupsMixin:
         return f"{position[0]:.2f}, {position[1]:.2f}"
 
     def _parse_star_pair_position_text(self, row: int) -> tuple[float, float] | None:
-        position_item = self.ui.tableWidgetStarPairs.item(row, STAR_PAIR_POSITION_COLUMN)
-        if position_item is None:
+        record = self._star_pair_record_for_row(row)
+        if record is None:
             return None
-
-        position_payload = position_item.data(STAR_PAIR_POSITION_ROLE)
-        if isinstance(position_payload, (tuple, list)) and len(position_payload) == 2:
-            try:
-                image_x = float(position_payload[0])
-                image_y = float(position_payload[1])
-            except (TypeError, ValueError):
-                image_x = float("nan")
-                image_y = float("nan")
-            if math.isfinite(image_x) and math.isfinite(image_y):
-                return image_x, image_y
-
-        fit_payload = self._star_pair_fit_payload(row)
-        if fit_payload is not None and "x" in fit_payload and "y" in fit_payload:
-            image_x = float(fit_payload["x"])
-            image_y = float(fit_payload["y"])
-            if math.isfinite(image_x) and math.isfinite(image_y):
-                return image_x, image_y
-
-        position_text = position_item.text().strip()
-        if not position_text:
+        image_x, image_y = record.position
+        if not (math.isfinite(image_x) and math.isfinite(image_y)):
             return None
-        normalized_text = position_text.replace("，", ",")
-        parts = [part.strip() for part in normalized_text.split(",")]
-        if len(parts) != 2:
-            return None
-        try:
-            return float(parts[0]), float(parts[1])
-        except ValueError:
-            return None
+        return image_x, image_y
 
     def _star_pair_label(self, row: int) -> str:
         if self._is_manual_match_group_row(row):

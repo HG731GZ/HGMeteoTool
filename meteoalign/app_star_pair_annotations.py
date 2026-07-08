@@ -186,7 +186,7 @@ class StarPairAnnotationsMixin:
                 index_item = self._read_only_table_item("")
                 table.setItem(row, STAR_PAIR_INDEX_COLUMN, index_item)
             if self._is_auto_match_row(row):
-                group_id = self._row_auto_match_group_id(row) or self._auto_match_group_by_star_id.get(star_id, "A")
+                group_id = self._row_auto_match_group_id(row) or self._auto_match_group_id_for_star_id(star_id) or "A"
                 auto_index = auto_index_by_group.get(group_id, 1)
                 index_text = f"{group_id}{auto_index}"
                 index_item.setText(index_text)

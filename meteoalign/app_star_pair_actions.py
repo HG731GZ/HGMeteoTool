@@ -6,10 +6,8 @@ from PyQt5.QtWidgets import QApplication, QInputDialog, QMenu, QMessageBox, QTab
 from .app_constants import (
     AUTO_MATCH_CONSTRAINT_ANCHOR,
     AUTO_MATCH_CONSTRAINT_SOFT,
-    STAR_PAIR_FIT_ROLE,
     STAR_PAIR_NAME_COLUMN,
     STAR_PAIR_POSITION_COLUMN,
-    STAR_PAIR_POSITION_ROLE,
     STAR_PAIR_ROW_TYPE_MANUAL,
 )
 from .star_fitting import FittedStarPosition
@@ -236,49 +234,55 @@ class StarPairActionsMixin:
         if row < 0 or row >= table.rowCount():
             return
 
+        star_id = self._star_pair_star_id(row)
+        if not star_id:
+            return
+
+        store = getattr(self, "_star_pair_store", None)
+        if store is None:
+            return
+
+        psf = PsfFit.from_fitted_position(fitted_position)
+        if star_id in store:
+            store.update_position(star_id, fitted_position.x, fitted_position.y, psf=psf)
+        else:
+            reference_star = self._reference_star_for_row(row)
+            if reference_star is None:
+                return
+            pair_origin = PAIR_ORIGIN_AUTO_MATCH if self._is_auto_match_row(row) else PAIR_ORIGIN_MANUAL
+            constraint_mode, fit_weight = (
+                self._auto_match_constraint_for_star_id(star_id)
+                if self._is_auto_match_row(row)
+                else (AUTO_MATCH_CONSTRAINT_ANCHOR, 1.0)
+            )
+            group_id = self._row_auto_match_group_id(row) if self._is_auto_match_row(row) else None
+            group_name = self._auto_match_group_label(group_id) if group_id else None
+            record = StarPairRecord(
+                reference_star=reference_star,
+                image_x_px=float(fitted_position.x),
+                image_y_px=float(fitted_position.y),
+                psf=psf,
+                pair_origin=pair_origin,
+                group_id=group_id or None,
+                group_name=group_name,
+                fit_constraint_mode=constraint_mode,
+                fit_weight=float(fit_weight),
+            )
+            store.add(record)
+
+        if self._is_auto_match_row(row):
+            self._auto_match_group_by_star_id.pop(star_id, None)
+
         position_item = table.item(row, STAR_PAIR_POSITION_COLUMN)
         if position_item is None:
             position_item = QTableWidgetItem()
             table.setItem(row, STAR_PAIR_POSITION_COLUMN, position_item)
-        name_item = table.item(row, STAR_PAIR_NAME_COLUMN)
-        if name_item is not None:
-            position_item.setData(Qt.UserRole, name_item.data(Qt.UserRole))
         signals_were_blocked = table.blockSignals(True)
-        position_item.setData(STAR_PAIR_POSITION_ROLE, (float(fitted_position.x), float(fitted_position.y)))
-        position_item.setData(STAR_PAIR_FIT_ROLE, self._fit_payload_from_position(fitted_position))
         position_item.setText(self._star_pair_mode_display_text(row))
         table.blockSignals(signals_were_blocked)
         table.selectRow(row)
         self._refresh_star_pair_row_style(row)
         self._update_auto_match_group_row_text()
-
-        # 同步写入 StarPairStore（若尚无记录则从表格数据创建）
-        store = getattr(self, "_star_pair_store", None)
-        if store is not None:
-            star_id = self._star_pair_star_id(row)
-            if star_id:
-                psf = PsfFit.from_fitted_position(fitted_position)
-                if star_id in store:
-                    store.update_position(star_id, fitted_position.x, fitted_position.y, psf=psf)
-                else:
-                    reference_star = self._reference_star_for_row(row)
-                    if reference_star is not None:
-                        pair_origin = PAIR_ORIGIN_AUTO_MATCH if self._is_auto_match_row(row) else PAIR_ORIGIN_MANUAL
-                        constraint_mode, fit_weight = self._star_pair_fit_constraint(row)
-                        group_id = self._row_auto_match_group_id(row) if self._is_auto_match_row(row) else None
-                        group_name = self._auto_match_group_label(group_id) if group_id else None
-                        record = StarPairRecord(
-                            reference_star=reference_star,
-                            image_x_px=float(fitted_position.x),
-                            image_y_px=float(fitted_position.y),
-                            psf=psf,
-                            pair_origin=pair_origin,
-                            group_id=group_id or None,
-                            group_name=group_name,
-                            fit_constraint_mode=constraint_mode,
-                            fit_weight=float(fit_weight),
-                        )
-                        store.add(record)
 
         if update_alignment:
             self._update_reference_alignment_transform()
@@ -289,11 +293,15 @@ class StarPairActionsMixin:
             return ""
         star_id = self._star_pair_star_id(row)
         position_item = table.item(row, STAR_PAIR_POSITION_COLUMN)
+        if star_id and self._is_auto_match_row(row):
+            group_id = self._row_auto_match_group_id(row) or self._auto_match_group_id_for_star_id(star_id) or "A"
+            self._auto_match_group_by_star_id[star_id] = group_id
+        store = getattr(self, "_star_pair_store", None)
+        if store is not None and star_id:
+            store.remove(star_id)
         if position_item is not None:
             signals_were_blocked = table.blockSignals(True)
             position_item.setText("")
-            position_item.setData(STAR_PAIR_POSITION_ROLE, None)
-            position_item.setData(STAR_PAIR_FIT_ROLE, None)
             table.blockSignals(signals_were_blocked)
         if star_id:
             self._remove_star_pair_annotation(star_id)
@@ -309,11 +317,13 @@ class StarPairActionsMixin:
             position_item = table.item(row, STAR_PAIR_POSITION_COLUMN)
             if position_item is not None:
                 position_item.setText("")
-                position_item.setData(STAR_PAIR_POSITION_ROLE, None)
-                position_item.setData(STAR_PAIR_FIT_ROLE, None)
+            if self._is_auto_match_row(row):
+                star_id = self._star_pair_star_id(row)
+                group_id = self._row_auto_match_group_id(row) or self._auto_match_group_id_for_star_id(star_id) or "A"
+                if star_id:
+                    self._auto_match_group_by_star_id[star_id] = group_id
         table.blockSignals(False)
 
-        # 同步清空 StarPairStore
         store = getattr(self, "_star_pair_store", None)
         if store is not None:
             store.clear()
@@ -458,12 +468,14 @@ class StarPairActionsMixin:
             star_id for star_id in self._auto_match_reference_star_ids if star_id not in auto_star_ids_to_delete
         ]
         for star_id in auto_star_ids_to_delete:
-            self._auto_match_constraint_by_star_id.pop(star_id, None)
             self._auto_match_group_by_star_id.pop(star_id, None)
 
         self._manual_reference_star_ids = [
             star_id for star_id in self._manual_reference_star_ids if star_id not in manual_star_ids_to_delete
         ]
+        store = getattr(self, "_star_pair_store", None)
+        if store is not None:
+            store.remove_records(deleted_star_ids)
 
         # 先从当前表格中移除旧行，再重建参考星列表。否则刷新逻辑会把带匹配坐标的已删行当作
         # “需要保留的已匹配星”重新加入，自动匹配行也会因为失去自动分组而落回手动匹配表。

@@ -1,31 +1,26 @@
 from __future__ import annotations
-from .app_constants import *
 
 import json
 import math
 from pathlib import Path
 import numpy as np
-from PyQt5.QtCore import QPointF, QRectF, Qt
-from PyQt5.QtGui import QColor
+from PyQt5.QtCore import QRectF, Qt
 from PyQt5.QtWidgets import QFileDialog, QTableWidgetItem, QGraphicsView, QMessageBox
 
-from .alignment.constants import MIN_ALIGNMENT_PAIRS, SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION, SKY_MATCHING_MODELS
+from .alignment.constants import MIN_ALIGNMENT_PAIRS, SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION
 from .alignment.fitting import fit_sky_alignment
 from .alignment.models import SkyAlignmentTransform
 from .camera_calibration import CameraCalibrationProfile
 from .coordinates import radec_to_unit_vectors
 from .frame_astrometry import FrameAstrometricModel
 from .simulator import (
-    ReferenceStar, camera_basis_from_view, local_vectors_from_altaz, ViewSettings,
+    ReferenceStar, camera_basis_from_view, local_vectors_from_altaz,
 )
 
 from .app_constants import (
-    STAR_PAIR_INDEX_COLUMN, STAR_PAIR_NAME_COLUMN, STAR_PAIR_POSITION_COLUMN,
-    STAR_PAIR_RESIDUAL_COLUMN, STAR_PAIR_FIT_ROLE, STAR_PAIR_POSITION_ROLE,
-    STAR_PAIR_CONSTRAINT_MODE_ROLE, STAR_PAIR_FIT_WEIGHT_ROLE,
-    STAR_PAIR_ROW_TYPE_AUTO_MATCH, RESIDUAL_WARNING_MIN_PX,
+    STAR_PAIR_RESIDUAL_COLUMN, RESIDUAL_WARNING_MIN_PX,
     RESIDUAL_SEVERE_MIN_PX, RESIDUAL_SEVERE_RMS_SCALE,
-    ALIGNMENT_STATUS_MAX_CHARS, SKY_ALIGNMENT_MODELS,
+    SKY_ALIGNMENT_MODELS,
     SKY_ALIGNMENT_MODEL_ALIASES, SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION as _ANCHOR,
     AUTO_MATCH_CONSTRAINT_SOFT, AUTO_MATCH_CONSTRAINT_MODES,
     SOURCE_MODEL_JSON_FILTER,
@@ -273,15 +268,8 @@ class AlignmentMixin:
         return sky_points, target_points
 
     def _matched_sky_alignment_data(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """收集用于天球配准的配对数据，优先从 StarPairStore 读取。"""
-        store = getattr(self, "_star_pair_store", None)
-        if store is not None and len(store) > 0:
-            records = store.valid_fit_records()
-        else:
-            records = [
-                record for record in self._star_pair_record_snapshot()
-                if record.is_valid_for_fit()
-            ]
+        """收集用于天球配准的配对数据，只从 StarPairStore 读取。"""
+        records = self._star_pair_store.valid_fit_records()
 
         sky_points: list[tuple[float, float]] = []
         target_points: list[tuple[float, float]] = []
@@ -396,16 +384,19 @@ class AlignmentMixin:
             residual_item = self._ensure_star_pair_residual_item(row, STAR_PAIR_RESIDUAL_COLUMN)
 
             residual = self._star_pair_alignment_residual(row)
+            star_id = self._star_pair_star_id(row)
             if residual is None:
                 residual_item.setText("")
-                residual_item.setData(Qt.UserRole, None)
                 residual_item.setToolTip("")
+                if star_id:
+                    self._star_pair_store.set_residual(star_id, None, None, None)
                 continue
 
-            _dx, _dy, distance = residual
+            dx, dy, distance = residual
             residual_item.setText(f"{distance:.2f}")
-            residual_item.setData(Qt.UserRole, distance)
             residual_item.setToolTip("残差为天球 RA/Dec 模型预测位置与真实图像记录位置之间的像素距离。")
+            if star_id:
+                self._star_pair_store.set_residual(star_id, dx, dy, distance)
         table.blockSignals(signals_were_blocked)
 
         self._apply_star_pair_table_column_widths()

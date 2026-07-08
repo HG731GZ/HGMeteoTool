@@ -1,5 +1,4 @@
 from __future__ import annotations
-from .app_constants import *
 
 import numpy as np
 from PyQt5.QtCore import QPointF, QRectF, Qt

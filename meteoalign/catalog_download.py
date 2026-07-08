@@ -3,10 +3,11 @@ from __future__ import annotations
 import urllib.error
 from pathlib import Path
 
-from PyQt5.QtCore import QObject, QThread, QTimer, Qt, pyqtSignal
+from PyQt5.QtCore import QObject, QTimer, Qt, pyqtSignal
 from PyQt5.QtWidgets import QDialog, QMessageBox
 
 from .catalog_sources import default_catalog_dir, download_file, incomplete_catalog_files
+from .qt_tasks import WorkerTaskHandle, start_qt_worker_task
 
 from .ui.ui_catalog_download_dialog import Ui_CatalogDownloadDialog
 
@@ -21,7 +22,8 @@ def catalog_is_complete(catalog_dir: Path | None = None) -> bool:
 
 class CatalogDownloadWorker(QObject):
     progress_changed = pyqtSignal(object)
-    finished = pyqtSignal(bool, str)
+    finished = pyqtSignal(str)
+    failed = pyqtSignal(str)
 
     def __init__(self, catalog_dir: Path | None = None) -> None:
         super().__init__()
@@ -32,7 +34,7 @@ class CatalogDownloadWorker(QObject):
             self.catalog_dir.mkdir(parents=True, exist_ok=True)
             items = incomplete_catalog_files(self.catalog_dir)
             if not items:
-                self.finished.emit(True, "星表已经完整。")
+                self.finished.emit("星表已经完整。")
                 return
 
             total_estimated_bytes = sum(self._estimated_download_size(item) for item in items)
@@ -109,10 +111,10 @@ class CatalogDownloadWorker(QObject):
                     )
                 )
         except (OSError, RuntimeError, urllib.error.URLError) as exc:
-            self.finished.emit(False, f"星表下载失败：{exc}")
+            self.failed.emit(f"星表下载失败：{exc}")
             return
 
-        self.finished.emit(True, "星表下载完成，正在启动主窗口。")
+        self.finished.emit("星表下载完成，正在启动主窗口。")
 
     def _estimated_download_size(self, item) -> int:  # type: ignore[no-untyped-def]
         # 没有精确大小的网页星表用最低完整大小作为初始估计，下载时会按响应头修正。
@@ -153,19 +155,28 @@ class CatalogDownloadDialog(QDialog):
         self.setWindowFlag(Qt.WindowCloseButtonHint, False)
         self.ui.pushButtonClose.clicked.connect(self.reject)
         self.download_succeeded = False
-
-        self.worker = CatalogDownloadWorker(catalog_dir)
-        self.thread = QThread(self)
-        self.worker.moveToThread(self.thread)
-        self.thread.started.connect(self.worker.run)
-        self.worker.progress_changed.connect(self._on_progress_changed)
-        self.worker.finished.connect(self._on_finished)
-        self.worker.finished.connect(self.thread.quit)
-        self.thread.finished.connect(self.worker.deleteLater)
+        self.catalog_dir = catalog_dir
+        self.worker: CatalogDownloadWorker | None = None
+        self._task: WorkerTaskHandle | None = None
 
     def start(self) -> int:
-        self.thread.start()
+        self.worker = CatalogDownloadWorker(self.catalog_dir)
+        self._task = start_qt_worker_task(
+            parent=self,
+            worker=self.worker,
+            finished_signal=self.worker.finished,
+            failed_signal=self.worker.failed,
+            on_finished=lambda message: self._on_finished(True, message),
+            on_failed=lambda message: self._on_finished(False, message),
+            progress_signal=self.worker.progress_changed,
+            on_progress=self._on_progress_changed,
+            on_cleanup=self._cleanup_download_task,
+        )
         return int(self.exec_())
+
+    def _cleanup_download_task(self) -> None:
+        self.worker = None
+        self._task = None
 
     def reject(self) -> None:
         if self.ui.pushButtonClose.isEnabled():

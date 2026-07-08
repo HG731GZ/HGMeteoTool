@@ -1,22 +1,20 @@
 from __future__ import annotations
 
 import json
-import math
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, QThread, QTimer
+from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import (
-    QFileDialog, QInputDialog, QMessageBox, QProgressDialog, QTableWidgetItem,
+    QFileDialog, QMessageBox, QTableWidgetItem,
 )
 
 from .app_constants import (
     AUTO_MATCH_CONSTRAINT_ANCHOR,
     AUTO_MATCH_CONSTRAINT_MODES,
     AUTO_MATCH_CONSTRAINT_SOFT,
-    STAR_PAIR_FIT_ROLE,
     STAR_PAIR_POSITION_COLUMN,
-    STAR_PAIR_POSITION_ROLE,
     STAR_PAIR_SESSION_FORMAT,
     STAR_PAIR_SESSION_JSON_FILTER,
     STAR_PAIR_SESSION_VERSION,
@@ -25,10 +23,8 @@ from .app_utils import _relative_image_path_for_session, _resolve_star_pair_sess
 from .app_workers import StarPairSessionImportWorker
 from .catalog import project_root
 from .image_preview import load_image_preview, ImagePreview
+from .qt_tasks import start_qt_worker_task
 from .star_pair_model import (
-    PAIR_ORIGIN_AUTO_MATCH,
-    PAIR_ORIGIN_MANUAL,
-    PsfFit,
     StarPairRecord,
     star_pair_records_from_payloads,
 )
@@ -36,75 +32,16 @@ from .star_pair_model import (
 class StarPairSessionMixin:
     """星对会话导入导出、记录快照和恢复。"""
 
-    def _star_pair_record_snapshot(self) -> list[StarPairRecord]:
-        """返回星点配对记录快照，优先从 StarPairStore 读取。
-
-        若 Store 中有数据则直接返回 Store 快照；
-        否则回退到从表格反向解析（向后兼容过渡期）。
-        """
-        store = getattr(self, "_star_pair_store", None)
-        if store is not None and len(store) > 0:
-            return store.snapshot()
-
-        # 过渡期：从表格反向解析
-        records: list[StarPairRecord] = []
-        for row in range(self.ui.tableWidgetStarPairs.rowCount()):
-            reference_star = self._reference_star_for_row(row)
-            target_position = self._parse_star_pair_position_text(row)
-            if reference_star is None or target_position is None:
-                continue
-            if not self._is_catalog_reference_star(reference_star):
-                continue
-
-            image_x, image_y = target_position
-            if not all(math.isfinite(value) for value in (image_x, image_y, reference_star.ra_deg, reference_star.dec_deg)):
-                continue
-
-            pair_origin = PAIR_ORIGIN_AUTO_MATCH if self._is_auto_match_row(row) else PAIR_ORIGIN_MANUAL
-            group_id = None
-            group_name = None
-            if self._is_auto_match_row(row):
-                group_id = self._row_auto_match_group_id(row) or self._auto_match_group_by_star_id.get(reference_star.star_id, "")
-                if group_id:
-                    group_name = self._auto_match_group_label(group_id)
-            constraint_mode, fit_weight = self._star_pair_fit_constraint(row)
-            psf = None
-            fit_payload = self._star_pair_fit_payload(row)
-            if fit_payload is not None:
-                fitted_position = self._fitted_position_for_row(row)
-                if fitted_position is not None:
-                    psf = PsfFit.from_fitted_position(fitted_position)
-            residual = self._star_pair_alignment_residual(row)
-            residual_dx = None
-            residual_dy = None
-            residual_px = None
-            if residual is not None:
-                residual_dx, residual_dy, residual_px = residual
-            records.append(
-                StarPairRecord(
-                    reference_star=reference_star,
-                    image_x_px=float(image_x),
-                    image_y_px=float(image_y),
-                    psf=psf,
-                    pair_origin=pair_origin,
-                    group_id=group_id or None,
-                    group_name=group_name,
-                    fit_constraint_mode=constraint_mode,
-                    fit_weight=float(fit_weight),
-                    residual_dx_px=residual_dx,
-                    residual_dy_px=residual_dy,
-                    residual_px=residual_px,
-                )
-            )
-        return records
-
     def _star_pair_records(self) -> list[dict[str, object]]:
-        return [record.to_json_payload() for record in self._star_pair_record_snapshot()]
+        return self._star_pair_store.records_to_json_payloads()
 
     def _auto_match_constraints_payload(self) -> dict[str, dict[str, object]]:
         payload: dict[str, dict[str, object]] = {}
         for star_id in self._auto_match_reference_star_ids:
-            mode, fit_weight = self._auto_match_constraint_for_star_id(star_id)
+            record = self._star_pair_store.get(star_id)
+            if record is None:
+                continue
+            mode, fit_weight = record.fit_constraint_mode, record.fit_weight
             payload[star_id] = {
                 "fit_constraint_mode": mode,
                 "fit_weight": fit_weight,
@@ -302,21 +239,20 @@ class StarPairSessionMixin:
             self._json_import_progress = None
             self.ui.statusbar.showMessage(f"正在后台导入星点配对 JSON: {json_path}")
 
-        thread = QThread(self)
         worker = StarPairSessionImportWorker(json_path)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.finished.connect(self._handle_star_pair_session_import_finished)
-        worker.failed.connect(self._handle_star_pair_session_import_failed)
-        worker.finished.connect(thread.quit)
-        worker.failed.connect(thread.quit)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._cleanup_json_import)
+        task = start_qt_worker_task(
+            parent=self,
+            worker=worker,
+            finished_signal=worker.finished,
+            failed_signal=worker.failed,
+            on_finished=self._handle_star_pair_session_import_finished,
+            on_failed=self._handle_star_pair_session_import_failed,
+            on_cleanup=self._cleanup_json_import,
+            progress_dialog=self._json_import_progress,
+        )
 
-        self._json_import_thread = thread
-        self._json_import_worker = worker
-        thread.start()
+        self._json_import_thread = task.thread
+        self._json_import_worker = task.worker
 
     def _session_pair_star_id(self, pair_payload: object) -> str:
         if not isinstance(pair_payload, dict):
@@ -487,14 +423,13 @@ class StarPairSessionMixin:
             if record.is_auto_match:
                 group_id = (
                     record.group_id
-                    or self._auto_match_group_by_star_id.get(star_id, "")
+                    or self._auto_match_group_id_for_star_id(star_id)
                     or "A"
                 )
                 self._ensure_auto_match_group(group_id, expanded=True)
                 self._auto_match_reference_star_ids.append(star_id)
                 self._auto_match_group_by_star_id[star_id] = group_id
                 auto_match_star_ids.add(star_id)
-                self._auto_match_constraint_by_star_id[star_id] = (record.fit_constraint_mode, record.fit_weight)
             else:
                 self._manual_reference_star_ids.append(star_id)
             visible_star_ids.add(star_id)
@@ -503,21 +438,10 @@ class StarPairSessionMixin:
             self._refresh_reference_stars_from_current_map()
 
     def _restore_star_pair_records(self, pair_records: list[StarPairRecord], update_alignment: bool = True) -> int:
-        # 将记录写入 StarPairStore
         store = getattr(self, "_star_pair_store", None)
         if store is not None:
             store.add_records(pair_records)
-
-        recorded_positions: dict[str, tuple[float, float]] = {}
-        recorded_fit_payloads: dict[str, dict[str, float] | None] = {}
-        recorded_constraints: dict[str, tuple[str, float]] = {}
-        for record in pair_records:
-            star_id = record.star_id
-            if not star_id:
-                continue
-            recorded_positions[star_id] = record.position
-            recorded_fit_payloads[star_id] = None if record.psf is None else record.psf.to_table_payload()
-            recorded_constraints[star_id] = (record.fit_constraint_mode, record.fit_weight)
+        self._normalize_auto_match_groups()
 
         table = self.ui.tableWidgetStarPairs
         signals_were_blocked = table.blockSignals(True)
@@ -529,18 +453,11 @@ class StarPairSessionMixin:
             if position_item is None:
                 position_item = QTableWidgetItem()
                 table.setItem(row, STAR_PAIR_POSITION_COLUMN, position_item)
-            position_item.setData(Qt.UserRole, star_id)
-            position = recorded_positions.get(star_id)
-            if position is None:
+            record = self._star_pair_store.get(star_id)
+            if record is None:
                 position_item.setText("")
-                position_item.setData(STAR_PAIR_POSITION_ROLE, None)
-                position_item.setData(STAR_PAIR_FIT_ROLE, None)
                 continue
-            image_x, image_y = position
-            position_item.setData(STAR_PAIR_POSITION_ROLE, (float(image_x), float(image_y)))
-            position_item.setData(STAR_PAIR_FIT_ROLE, recorded_fit_payloads.get(star_id))
-            mode, fit_weight = recorded_constraints.get(star_id, self._star_pair_fit_constraint(row))
-            self._set_star_pair_constraint(row, mode, fit_weight)
+            position_item.setText(self._star_pair_mode_display_text(row))
             restored_count += 1
         table.blockSignals(signals_were_blocked)
 
@@ -614,12 +531,28 @@ class StarPairSessionMixin:
             if current_tab is not None:
                 self.ui.tabWidgetMain.setCurrentWidget(current_tab)
             pair_records = star_pair_records_from_payloads(pair_payloads, observer=self._observer_settings())
+            pair_records = [
+                replace(
+                    record,
+                    fit_constraint_mode=auto_match_constraints.get(
+                        record.star_id,
+                        (record.fit_constraint_mode, record.fit_weight),
+                    )[0],
+                    fit_weight=auto_match_constraints.get(
+                        record.star_id,
+                        (record.fit_constraint_mode, record.fit_weight),
+                    )[1],
+                    group_id=auto_match_group_by_star_id.get(record.star_id, record.group_id),
+                    group_name=(
+                        self._auto_match_group_label(auto_match_group_by_star_id[record.star_id])
+                        if record.star_id in auto_match_group_by_star_id
+                        else record.group_name
+                    ),
+                )
+                for record in pair_records
+            ]
             self._merge_imported_reference_stars_from_pairs(pair_records)
             self._auto_match_reference_star_ids = auto_match_star_ids
-            self._auto_match_constraint_by_star_id = {
-                star_id: auto_match_constraints.get(star_id, (AUTO_MATCH_CONSTRAINT_ANCHOR, 1.0))
-                for star_id in auto_match_star_ids
-            }
             self._auto_match_group_order = auto_match_group_order
             self._auto_match_group_by_star_id = auto_match_group_by_star_id
             self._auto_match_group_expanded_by_id = auto_match_group_expanded_by_id

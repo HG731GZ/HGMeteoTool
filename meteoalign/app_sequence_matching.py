@@ -56,7 +56,7 @@ class SequenceMatchingMixin:
 
     def _sequence_base_templates(self) -> list[_SequencePairTemplate]:
         templates: list[_SequencePairTemplate] = []
-        for record in self._star_pair_record_snapshot():
+        for record in self._star_pair_store.snapshot():
             if not record.is_valid_for_fit():
                 continue
             reference_star = record.reference_star

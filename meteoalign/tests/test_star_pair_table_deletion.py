@@ -13,12 +13,12 @@ from meteoalign.app_constants import (
     AUTO_MATCH_CONSTRAINT_MODES,
     AUTO_MATCH_CONSTRAINT_SOFT,
     STAR_PAIR_NAME_COLUMN,
-    STAR_PAIR_POSITION_COLUMN,
-    STAR_PAIR_POSITION_ROLE,
     STAR_PAIR_ROW_TYPE_MANUAL,
 )
 from meteoalign.app_star_pair_table import StarPairTableMixin
 from meteoalign.simulator import ReferenceStar
+from meteoalign.star_pair_model import StarPairRecord
+from meteoalign.star_pair_store import StarPairStore
 
 
 _QT_APP: QApplication | None = None
@@ -67,7 +67,6 @@ class _StarPairTableHarness(StarPairTableMixin):
         self._focused_star_annotations = []
         self._manual_match_group_expanded = True
         self._auto_match_reference_star_ids: list[str] = []
-        self._auto_match_constraint_by_star_id: dict[str, tuple[str, float]] = {}
         self._auto_match_group_order: list[str] = []
         self._auto_match_group_by_star_id: dict[str, str] = {}
         self._auto_match_group_expanded_by_id: dict[str, bool] = {}
@@ -79,6 +78,7 @@ class _StarPairTableHarness(StarPairTableMixin):
         self._manual_reference_star_ids: list[str] = []
         self._excluded_reference_star_ids: list[str] = []
         self.current_image_preview = None
+        self._star_pair_store = StarPairStore()
 
     def _normalized_auto_match_constraint(self, raw_mode: object, raw_weight: object) -> tuple[str, float]:
         mode = str(raw_mode or AUTO_MATCH_CONSTRAINT_ANCHOR).strip()
@@ -96,6 +96,12 @@ class _StarPairTableHarness(StarPairTableMixin):
 
     def _reference_star_lookup(self) -> dict[str, ReferenceStar]:
         return {star.star_id: star for star in self._current_reference_stars}
+
+    def _reference_star_for_row(self, row: int) -> ReferenceStar | None:
+        star_id = self._star_pair_star_id(row)
+        if not star_id:
+            return None
+        return self._reference_star_lookup().get(star_id)
 
     def _reference_star_with_index(self, star: ReferenceStar, index: int) -> ReferenceStar:
         return replace(star, index=index)
@@ -155,9 +161,17 @@ def _visible_star_ids(harness: _StarPairTableHarness) -> list[str]:
 
 def _set_matched_position(harness: _StarPairTableHarness, star_id: str) -> None:
     row = _row_for_star_id(harness, star_id)
-    position_item = harness.ui.tableWidgetStarPairs.item(row, STAR_PAIR_POSITION_COLUMN)
-    assert position_item is not None
-    position_item.setData(STAR_PAIR_POSITION_ROLE, (123.0, 456.0))
+    reference_star = harness._reference_star_for_row(row)
+    assert reference_star is not None
+    group_id = harness._row_auto_match_group_id(row) if harness._is_auto_match_row(row) else None
+    harness._star_pair_store.add(
+        StarPairRecord(
+            reference_star=reference_star,
+            image_x_px=123.0,
+            image_y_px=456.0,
+            group_id=group_id,
+        )
+    )
 
 
 def test_deleting_auto_match_group_does_not_move_children_to_manual_group() -> None:

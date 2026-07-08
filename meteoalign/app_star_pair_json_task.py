@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication, QProgressDialog
+
+from .qt_tasks import create_progress_dialog
 
 class StarPairJsonTaskMixin:
     """JSON 导入后台任务与进度对话框生命周期。"""
@@ -20,16 +21,13 @@ class StarPairJsonTaskMixin:
         label_text: str,
         status_text: str,
     ) -> QProgressDialog:
-        dialog = QProgressDialog(self)
-        dialog.setWindowTitle(title)
-        dialog.setLabelText(label_text)
-        dialog.setRange(0, 0)
-        dialog.setCancelButton(None)
-        dialog.setWindowModality(Qt.WindowModal)
-        dialog.setMinimumDuration(0)
-        dialog.setAutoClose(False)
-        dialog.setAutoReset(False)
-        dialog.show()
+        dialog = create_progress_dialog(
+            self,
+            title=title,
+            label_text=label_text,
+            minimum=0,
+            maximum=0,
+        )
         self.ui.statusbar.showMessage(status_text)
         QApplication.processEvents()
         return dialog
@@ -45,4 +43,3 @@ class StarPairJsonTaskMixin:
         self._set_json_import_controls_enabled(True)
         if hasattr(self, "_update_image_sequence_controls"):
             self._update_image_sequence_controls()
-

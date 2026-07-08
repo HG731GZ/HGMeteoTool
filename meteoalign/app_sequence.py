@@ -4,7 +4,6 @@ from collections import OrderedDict
 from pathlib import Path
 
 import numpy as np
-from PyQt5.QtCore import QThread
 from PyQt5.QtGui import QImage
 from PyQt5.QtWidgets import QProgressDialog
 
@@ -50,7 +49,7 @@ class SequenceBatchMixin(
     current_sky_mask_path: Path | None
     image_sequence_item: object
     image_sequence_scene: object
-    _sequence_import_thread: QThread | None
+    _sequence_import_thread: object | None
     _sequence_import_worker: ImageSequenceCollectWorker | None
     _sequence_import_progress: QProgressDialog | None
     _image_sequence_preview_cache: OrderedDict[str, ImagePreview]

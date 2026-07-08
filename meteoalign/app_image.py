@@ -1,12 +1,11 @@
 from __future__ import annotations
-from .app_constants import *
 
 import math
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-from PyQt5.QtCore import QDateTime, QThread, Qt
+from PyQt5.QtCore import QDateTime
 from PyQt5.QtGui import QImage
 from PyQt5.QtWidgets import QApplication, QFileDialog, QMenu, QMessageBox, QProgressDialog
 
@@ -16,6 +15,7 @@ from .app_workers import ImagePreviewLoadWorker, SkyMaskLoadWorker
 from .catalog import project_root
 from .image_sequence import read_image_capture_time, sequence_item_local_datetime
 from .image_preview import ImagePreview, load_image_preview
+from .qt_tasks import create_progress_dialog, start_qt_worker_task
 from .reference import build_reference_payload, save_reference_outputs
 
 
@@ -23,10 +23,10 @@ class ImageMixin:
     """图像导入与蒙版管理 Mixin。"""
 
     ui: object
-    _image_import_thread: QThread | None
+    _image_import_thread: object | None
     _image_import_worker: object | None
     _image_import_progress: QProgressDialog | None
-    _mask_import_thread: QThread | None
+    _mask_import_thread: object | None
     _mask_import_worker: object | None
     _mask_import_progress: QProgressDialog | None
     current_image_preview: ImagePreview | None
@@ -198,35 +198,30 @@ class ImageMixin:
         self._set_image_import_controls_enabled(False)
         self.ui.statusbar.showMessage(f"正在读取整张图像并量化为 8-bit: {image_path}")
 
-        progress = QProgressDialog(self)
-        progress.setWindowTitle("正在导入图像")
-        progress.setLabelText(f"正在读取整张图像并量化为 8-bit 显示图...\n{image_path}")
-        progress.setRange(0, 0)
-        progress.setCancelButton(None)
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.setAutoClose(False)
-        progress.setAutoReset(False)
-        progress.show()
-
-        thread = QThread(self)
+        progress = create_progress_dialog(
+            self,
+            title="正在导入图像",
+            label_text=f"正在读取整张图像并量化为 8-bit 显示图...\n{image_path}",
+            minimum=0,
+            maximum=0,
+        )
         worker = ImagePreviewLoadWorker(image_path, None)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.finished.connect(self._handle_single_image_import_finished)
-        worker.failed.connect(self._handle_single_image_import_failed)
-        worker.finished.connect(thread.quit)
-        worker.failed.connect(thread.quit)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._cleanup_single_image_import)
+        task = start_qt_worker_task(
+            parent=self,
+            worker=worker,
+            finished_signal=worker.finished,
+            failed_signal=worker.failed,
+            on_finished=self._handle_single_image_import_finished,
+            on_failed=self._handle_single_image_import_failed,
+            on_cleanup=self._cleanup_single_image_import,
+            progress_dialog=progress,
+        )
 
-        self._image_import_thread = thread
-        self._image_import_worker = worker
+        self._image_import_thread = task.thread
+        self._image_import_worker = task.worker
         self._image_import_progress = progress
         if hasattr(self, "_update_image_sequence_controls"):
             self._update_image_sequence_controls()
-        thread.start()
 
     def load_single_image(self, file_path: str | Path) -> None:
         try:
@@ -362,38 +357,33 @@ class ImageMixin:
         self._set_mask_import_controls_enabled(False)
         self.ui.statusbar.showMessage(f"正在导入蒙版并生成缓存预览: {mask_path}")
 
-        progress = QProgressDialog(self)
-        progress.setWindowTitle("正在导入蒙版")
-        progress.setLabelText(f"正在读取蒙版并生成缓存预览...\n{mask_path}")
-        progress.setRange(0, 0)
-        progress.setCancelButton(None)
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.setAutoClose(False)
-        progress.setAutoReset(False)
-        progress.show()
-
-        thread = QThread(self)
+        progress = create_progress_dialog(
+            self,
+            title="正在导入蒙版",
+            label_text=f"正在读取蒙版并生成缓存预览...\n{mask_path}",
+            minimum=0,
+            maximum=0,
+        )
         worker = SkyMaskLoadWorker(
             mask_path,
             expected_size=(image.width(), image.height()),
             source_image=image,
             source_path=source_path,
         )
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.finished.connect(self._handle_sky_mask_import_finished)
-        worker.failed.connect(self._handle_sky_mask_import_failed)
-        worker.finished.connect(thread.quit)
-        worker.failed.connect(thread.quit)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._cleanup_sky_mask_import)
+        task = start_qt_worker_task(
+            parent=self,
+            worker=worker,
+            finished_signal=worker.finished,
+            failed_signal=worker.failed,
+            on_finished=self._handle_sky_mask_import_finished,
+            on_failed=self._handle_sky_mask_import_failed,
+            on_cleanup=self._cleanup_sky_mask_import,
+            progress_dialog=progress,
+        )
 
-        self._mask_import_thread = thread
-        self._mask_import_worker = worker
+        self._mask_import_thread = task.thread
+        self._mask_import_worker = task.worker
         self._mask_import_progress = progress
-        thread.start()
 
     def _handle_sky_mask_import_finished(self, result: object) -> None:
         if self._mask_import_progress is not None:

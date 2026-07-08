@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
-from PyQt5.QtCore import QDateTime, QEvent, QObject, QPoint, QPointF, QRectF, QThread, QTimer, Qt, pyqtSignal
+from PyQt5.QtCore import QDateTime, QEvent, QObject, QPoint, QPointF, QRectF, QTimer, Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QBrush, QCursor, QFont, QIcon, QImage, QPainter, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
@@ -74,11 +74,11 @@ from .simulator import (
 from .star_fitting import FittedStarPosition, fit_star_position
 from .star_pair_store import StarPairStore
 from .ui.ui_main_window import Ui_MainWindow
-
-# ---------------------------------------------------------------------------
-# 从 app_constants 重新导出所有常量（向后兼容）
-# ---------------------------------------------------------------------------
-from .app_constants import *  # noqa: F401, F403, E402
+from .app_constants import (
+    AUTO_MATCH_CONSTRAINT_MODES,
+    AUTO_MATCH_CONSTRAINT_SOFT,
+    REAL_IMAGE_MAX_ZOOM_SCALE,
+)
 
 # ---------------------------------------------------------------------------
 # 导入拆分后的模块
@@ -115,15 +115,6 @@ from .app_utils import (
 # _session_image_candidate, _resolve_star_pair_session_real_image_path,
 # _relative_image_path_for_session, _qimage_to_binary_mask, _image_with_binary_mask
 # 均已在上面从 app_utils 导入，此处仅保留名称以便兼容旧引用。
-
-
-# ---------------------------------------------------------------------------
-# 额外常量（依赖 Qt，无法放入 app_constants）
-# ---------------------------------------------------------------------------
-
-# 这些常量使用 Qt.UserRole，已在 app_constants 中定义
-# 此处重新导出以保持向后兼容
-# （app_constants 中已包含所有 STAR_PAIR_* 与 AUTO_MATCH_* 常量）
 
 
 # ===================================================================
@@ -220,18 +211,18 @@ class MainWindow(
         self._last_render_size: tuple[int, int] | None = None
         self._last_reference_render_size: tuple[int, int] | None = None
         self.current_image_preview: ImagePreview | None = None
-        self._image_import_thread: QThread | None = None
+        self._image_import_thread: object | None = None
         self._image_import_worker: ImagePreviewLoadWorker | None = None
         self._image_import_progress: QProgressDialog | None = None
-        self._sequence_import_thread: QThread | None = None
+        self._sequence_import_thread: object | None = None
         self._sequence_import_worker: ImageSequenceCollectWorker | None = None
         self._sequence_import_progress: QProgressDialog | None = None
-        self._json_import_thread: QThread | None = None
+        self._json_import_thread: object | None = None
         self._json_import_worker: QObject | None = None
         self._json_import_progress: QProgressDialog | None = None
         self._star_pair_session_import_switch_to_reference = True
         self._star_pair_session_import_clear_input_name = "新的配对 JSON"
-        self._mask_import_thread: QThread | None = None
+        self._mask_import_thread: object | None = None
         self._mask_import_worker: QObject | None = None
         self._mask_import_progress: QProgressDialog | None = None
         self._mapping_validation_dialog: QObject | None = None
@@ -262,7 +253,6 @@ class MainWindow(
         self._manual_reference_star_ids: list[str] = []
         self._imported_reference_star_by_id: dict[str, ReferenceStar] = {}
         self._auto_match_reference_star_ids: list[str] = []
-        self._auto_match_constraint_by_star_id: dict[str, tuple[str, float]] = {}
         self._auto_match_group_order: list[str] = []
         self._auto_match_group_by_star_id: dict[str, str] = {}
         self._auto_match_group_expanded_by_id: dict[str, bool] = {}

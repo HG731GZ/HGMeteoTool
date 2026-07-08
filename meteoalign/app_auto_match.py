@@ -1,5 +1,4 @@
 from __future__ import annotations
-from .app_constants import *
 
 import math
 
@@ -35,7 +34,6 @@ class AutoMatchMixin:
     _current_reference_star_map: ProjectedStarMap | None
     _current_reference_stars: tuple
     _auto_match_reference_star_ids: list
-    _auto_match_constraint_by_star_id: dict
     _auto_match_group_order: list
     _auto_match_group_by_star_id: dict
     _auto_match_group_expanded_by_id: dict
@@ -398,9 +396,7 @@ class AutoMatchMixin:
                 continue
             self._auto_match_reference_star_ids.append(star_id)
             self._auto_match_group_by_star_id[star_id] = group_id
-            self._auto_match_constraint_by_star_id[star_id] = (constraint_mode, fit_weight)
 
-            # 同步写入 StarPairStore（若已有记录则更新约束，否则暂不创建空记录）
             store = getattr(self, "_star_pair_store", None)
             if store is not None and star_id in store:
                 store.set_constraint(star_id, constraint_mode, fit_weight)
@@ -415,7 +411,7 @@ class AutoMatchMixin:
     def _remove_unmatched_auto_match_candidates(self, candidate_star_ids: set[str]) -> int:
         if not candidate_star_ids:
             return 0
-        matched_positions = self._collect_star_pair_positions()
+        matched_positions = self._star_pair_position_texts_from_store()
         remove_star_ids = {
             star_id
             for star_id in candidate_star_ids
@@ -428,14 +424,13 @@ class AutoMatchMixin:
             star_id for star_id in self._auto_match_reference_star_ids if star_id not in remove_star_ids
         ]
         for star_id in remove_star_ids:
-            self._auto_match_constraint_by_star_id.pop(star_id, None)
             self._auto_match_group_by_star_id.pop(star_id, None)
         self._normalize_auto_match_groups()
         self._refresh_reference_stars_from_current_map()
         return len(remove_star_ids)
 
     def _existing_matched_positions(self) -> list[tuple[float, float]]:
-        return [record.position for record in self._star_pair_record_snapshot()]
+        return [record.position for record in self._star_pair_store.snapshot()]
 
     def _position_is_duplicate(self, position: tuple[float, float], accepted_positions: list[tuple[float, float]]) -> bool:
         for accepted_x, accepted_y in accepted_positions:

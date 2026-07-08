@@ -28,7 +28,6 @@ class StarPairTableMixin(
     _focused_star_annotations: list
     _manual_match_group_expanded: bool
     _auto_match_reference_star_ids: list
-    _auto_match_constraint_by_star_id: dict
     _auto_match_group_order: list
     _auto_match_group_by_star_id: dict
     _auto_match_group_expanded_by_id: dict
