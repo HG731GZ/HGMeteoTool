@@ -31,42 +31,53 @@ class StarPairAnnotationsMixin:
     """星对图像标注、视图聚焦和拾取光标。"""
 
     def _create_star_pick_cursor(self) -> QCursor:
-        if self._star_pick_cursor is not None:
-            return self._star_pick_cursor
+        """创建选星圈光标，直径以图像像素为单位，自动适配当前视图缩放。
 
-        diameter = self._star_pick_circle_diameter_px + 1
-        radius = self._star_pick_circle_diameter_px // 2
-        pixmap = QPixmap(diameter, diameter)
+        光标不缓存——每次调用都根据当前视图变换重新生成，
+        确保缩放/平移后选星圈在屏幕上的大小始终对应相同的图像像素尺寸。
+        """
+        image_diameter = max(1, self._star_pick_circle_diameter_px)
+        # 将图像像素直径转换为当前视图下的屏幕像素直径
+        transform = self.ui.realImageView.transform()
+        scale_x = abs(float(transform.m11()))
+        scale_y = abs(float(transform.m22()))
+        avg_scale = max(scale_x, scale_y, 0.01)
+        screen_diameter = max(4, int(round(image_diameter * avg_scale)))
+
+        screen_radius = screen_diameter // 2
+        pixmap = QPixmap(screen_diameter + 2, screen_diameter + 2)
         pixmap.fill(Qt.transparent)
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.Antialiasing, True)
-        painter.setPen(QPen(QColor(255, 220, 80), 2))
-        painter.drawEllipse(1, 1, diameter - 3, diameter - 3)
+        pen_width = max(1, int(round(avg_scale * 0.8)))
+        painter.setPen(QPen(QColor(255, 220, 80), pen_width))
+        painter.drawEllipse(1, 1, screen_diameter, screen_diameter)
         painter.setPen(QPen(QColor(20, 20, 20), 1))
-        painter.drawPoint(radius, radius)
+        painter.drawPoint(screen_radius + 1, screen_radius + 1)
         painter.end()
 
-        self._star_pick_cursor = QCursor(pixmap, radius, radius)
-        return self._star_pick_cursor
+        cursor = QCursor(pixmap, screen_radius + 1, screen_radius + 1)
+        # 不缓存到 self._star_pick_cursor，确保每次调用都按当前缩放重新生成
+        return cursor
 
     def _set_star_pick_circle_diameter(self, diameter_px: int, show_status: bool = True) -> None:
+        """设置选星圈直径（图像像素）。"""
         minimum = self.ui_config.star_pick_circle_min_diameter_px
         maximum = self.ui_config.star_pick_circle_max_diameter_px
         new_diameter = min(max(int(diameter_px), minimum), maximum)
         if new_diameter == self._star_pick_circle_diameter_px:
             if show_status and self._active_star_pair_row is not None:
                 self.ui.statusbar.showMessage(
-                    f"选星圈直径已到边界：{new_diameter} px。Ctrl+左键确认，右键取消。"
+                    f"选星圈直径已到边界：{new_diameter} 图像px。Ctrl+左键确认，右键取消。"
                 )
             return
 
         self._star_pick_circle_diameter_px = new_diameter
-        self._star_pick_cursor = None
         if self._active_star_pair_row is not None:
             self._update_real_image_pick_cursor()
             if show_status:
                 self.ui.statusbar.showMessage(
-                    f"选星圈直径：{new_diameter} px。Ctrl+左键确认，右键取消，Ctrl+滚轮 / Ctrl+加减继续缩放。"
+                    f"选星圈直径：{new_diameter} 图像px。Ctrl+左键确认，右键取消，Ctrl+滚轮 / Ctrl+加减继续缩放。"
                 )
 
     def _adjust_star_pick_circle_diameter(self, step_count: int) -> None:
@@ -77,11 +88,12 @@ class StarPairAnnotationsMixin:
         )
 
     def _star_pick_circle_image_radius_px(self, viewport_pos: QPoint) -> int:
-        scene_center = self.ui.realImageView.mapToScene(viewport_pos)
-        screen_radius = max(1, self._star_pick_circle_diameter_px // 2)
-        scene_edge = self.ui.realImageView.mapToScene(viewport_pos + QPoint(screen_radius, 0))
-        image_radius = ((scene_edge.x() - scene_center.x()) ** 2 + (scene_edge.y() - scene_center.y()) ** 2) ** 0.5
-        return max(MIN_PSF_RADIUS_PX, int(round(image_radius)))
+        """返回选星圈在图像空间中的半径（像素）。
+
+        _star_pick_circle_diameter_px 本身就以图像像素为单位存储，
+        无需再做屏幕→图像坐标转换。
+        """
+        return max(MIN_PSF_RADIUS_PX, self._star_pick_circle_diameter_px // 2)
 
     def _star_pick_psf_radius_px(self, viewport_pos: QPoint) -> int:
         circle_radius = self._star_pick_circle_image_radius_px(viewport_pos)
@@ -92,7 +104,7 @@ class StarPairAnnotationsMixin:
     def _show_star_pick_status_hint(self, row: int) -> None:
         self.ui.statusbar.showMessage(
             "正在点选 {label}；普通左键拖动预览，Ctrl+左键确认，右键取消，Ctrl+滚轮 / Ctrl+加减缩放选星圈。"
-            "当前选星圈直径：{diameter} px，PSF半径比例：{scale:.2f}，上限：{max_radius} px。".format(
+            "当前选星圈直径：{diameter} 图像px，PSF半径比例：{scale:.2f}，上限：{max_radius} 图像px。".format(
                 label=self._star_pair_label(row),
                 diameter=self._star_pick_circle_diameter_px,
                 scale=self.ui_config.star_pick_psf_radius_scale,
