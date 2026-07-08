@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import json
 import math
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
-from PyQt5.QtCore import QDateTime, QElapsedTimer, QEvent, QTimer, Qt
-from PyQt5.QtGui import QColor, QImage
-from PyQt5.QtWidgets import QApplication, QFileDialog, QGraphicsScene, QMessageBox
+from PyQt5.QtCore import QDateTime, QElapsedTimer, QEvent, QRectF, QTimer, Qt
+from PyQt5.QtGui import QColor, QImage, QPainter, QPen
+from PyQt5.QtWidgets import QApplication, QFileDialog, QGraphicsScene, QMessageBox, QProgressDialog
 
 from .alignment.constants import (
     SKY_KNOWN_PROJECTION_DISPLAY_NAMES,
@@ -34,6 +35,21 @@ from .mosaic_grid_service import (
     build_coverage_cache,
     compute_center_from_model,
     suggest_fov_from_coverage,
+)
+from .mosaic_export import (
+    MOSAIC_EXPORT_DEFAULT_BLOCK_ROWS,
+    MOSAIC_EXPORT_TIFF_FILTER,
+    load_mosaic_export_source_image,
+    mosaic_export_available,
+    mosaic_export_cropped_geometry,
+    write_mosaic_reprojection_tiff,
+)
+from .mosaic_framing import (
+    MOSAIC_FRAMING_SCHEMA,
+    MOSAIC_FRAMING_VERSION,
+    MOSAIC_RESOLUTION_METHOD,
+    MosaicResolutionEstimate,
+    estimate_mosaic_optimal_resolution,
 )
 from .mosaic_model_io import (
     MosaicCoverageCache,
@@ -64,6 +80,9 @@ from .view_gestures import (
     roll_after_drag,
     sky_center_after_drag,
 )
+
+
+MOSAIC_FRAMING_JSON_FILTER = "自由投影取景 JSON (*.json);;JSON 文件 (*.json);;所有文件 (*)"
 
 
 class MosaicProjectionMixin:
@@ -123,6 +142,11 @@ class MosaicProjectionMixin:
         self._mosaic_center_az_deg = 0.0
         self._mosaic_center_alt_deg = 20.0
         self._mosaic_roll_deg = 0.0
+        self._mosaic_output_boundary_width_px = 0
+        self._mosaic_output_boundary_height_px = 0
+        self._mosaic_resolution_estimate: MosaicResolutionEstimate | None = None
+        self._mosaic_framing_observer: ObserverSettings | None = None
+        self._mosaic_framing_utc_offset_hours = 0.0
         self._init_mosaic_projection_defaults()
 
     def _init_mosaic_projection_defaults(self) -> None:
@@ -151,6 +175,8 @@ class MosaicProjectionMixin:
         self._update_mosaic_projection_controls()
         self._update_mosaic_grid_precision_tooltip()
         self._set_mosaic_grid_controls_enabled(False)
+        self._update_mosaic_output_labels()
+        self._update_mosaic_crop_control_limits()
         self._update_mosaic_model_labels()
         self._update_mosaic_view_label()
 
@@ -203,6 +229,22 @@ class MosaicProjectionMixin:
             self.ui.doubleSpinBoxMosaicLongitude.valueChanged.connect(self._handle_mosaic_observer_changed)
             self.ui.doubleSpinBoxMosaicElevation.valueChanged.connect(self._handle_mosaic_observer_changed)
             self.ui.pushButtonResetMosaicObserver.clicked.connect(self.reset_mosaic_observer_from_json)
+        if hasattr(self.ui, "pushButtonCalculateMosaicResolution"):
+            self.ui.pushButtonCalculateMosaicResolution.clicked.connect(self.calculate_mosaic_optimal_resolution)
+        if hasattr(self.ui, "pushButtonExportMosaicFraming"):
+            self.ui.pushButtonExportMosaicFraming.clicked.connect(self.export_mosaic_framing_json)
+        if hasattr(self.ui, "pushButtonImportMosaicFraming"):
+            self.ui.pushButtonImportMosaicFraming.clicked.connect(self.import_mosaic_framing_json)
+        if hasattr(self.ui, "pushButtonExportMosaicProjectedImage"):
+            self.ui.pushButtonExportMosaicProjectedImage.clicked.connect(self.export_mosaic_projected_image)
+        for control_name in (
+            "doubleSpinBoxMosaicCropTop",
+            "doubleSpinBoxMosaicCropBottom",
+            "doubleSpinBoxMosaicCropLeft",
+            "doubleSpinBoxMosaicCropRight",
+        ):
+            if hasattr(self.ui, control_name):
+                getattr(self.ui, control_name).valueChanged.connect(self._handle_mosaic_crop_changed)
         self.ui.labelMosaicModelPath.installEventFilter(self)
         self.ui.labelMosaicSourceImage.installEventFilter(self)
         self.ui.labelMosaicModelInfo.installEventFilter(self)
@@ -228,7 +270,14 @@ class MosaicProjectionMixin:
         self.schedule_mosaic_render(delay_ms=10)
 
     def _handle_mosaic_observer_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        observer = self._mosaic_observer_from_control_values()
+        if observer is not None:
+            self._mosaic_framing_observer = observer
+            self._mosaic_framing_utc_offset_hours = self._mosaic_utc_offset_from_controls()
         self.schedule_mosaic_render(delay_ms=120)
+
+    def _handle_mosaic_crop_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        self.schedule_mosaic_render(delay_ms=0)
 
     def _update_mosaic_projection_controls(self) -> None:
         if not hasattr(self.ui, "doubleSpinBoxMosaicFov"):
@@ -253,6 +302,518 @@ class MosaicProjectionMixin:
         if index < 0 or index >= len(MOSAIC_PROJECTION_MODELS):
             return SKY_MATCHING_MODEL_RECTILINEAR
         return MOSAIC_PROJECTION_MODELS[index]
+
+    def _mosaic_output_size(self) -> tuple[int, int]:
+        return (
+            max(0, int(getattr(self, "_mosaic_output_boundary_width_px", 0))),
+            max(0, int(getattr(self, "_mosaic_output_boundary_height_px", 0))),
+        )
+
+    def _set_mosaic_output_resolution(
+        self,
+        width_px: int,
+        height_px: int,
+        estimate: MosaicResolutionEstimate | None = None,
+    ) -> None:
+        self._mosaic_output_boundary_width_px = max(0, int(round(width_px)))
+        self._mosaic_output_boundary_height_px = max(0, int(round(height_px)))
+        self._mosaic_resolution_estimate = estimate
+        self._update_mosaic_output_labels()
+        self._update_mosaic_crop_control_limits()
+
+    def _update_mosaic_output_labels(self) -> None:
+        if not hasattr(self.ui, "labelMosaicOptimalWidth"):
+            return
+        width_px, height_px = self._mosaic_output_size()
+        self.ui.labelMosaicOptimalWidth.setText(f"{width_px} px" if width_px > 0 else "-")
+        self.ui.labelMosaicOptimalHeight.setText(f"{height_px} px" if height_px > 0 else "-")
+        if hasattr(self.ui, "labelMosaicResolutionInfo"):
+            estimate = getattr(self, "_mosaic_resolution_estimate", None)
+            if estimate is None:
+                info = "尚未计算" if width_px <= 0 or height_px <= 0 else "导入取景"
+            else:
+                arcsec_per_px = estimate.center_angular_resolution_rad_per_px * 180.0 * 3600.0 / math.pi
+                info = f"中心 {arcsec_per_px:.2f} arcsec/px"
+            self.ui.labelMosaicResolutionInfo.setText(info)
+
+    def _update_mosaic_crop_control_limits(self) -> None:
+        width_px, height_px = self._mosaic_output_size()
+        limits = {
+            "doubleSpinBoxMosaicCropLeft": width_px,
+            "doubleSpinBoxMosaicCropRight": width_px,
+            "doubleSpinBoxMosaicCropTop": height_px,
+            "doubleSpinBoxMosaicCropBottom": height_px,
+        }
+        for control_name, output_limit in limits.items():
+            if not hasattr(self.ui, control_name):
+                continue
+            control = getattr(self.ui, control_name)
+            maximum = float(output_limit) if output_limit > 0 else 1_000_000_000.0
+            was_blocked = control.blockSignals(True)
+            control.setMaximum(max(1.0, maximum))
+            if control.value() > control.maximum():
+                control.setValue(control.maximum())
+            control.blockSignals(was_blocked)
+
+    def _mosaic_crop_margins(self) -> dict[str, float]:
+        margins: dict[str, float] = {}
+        controls = {
+            "top_px": "doubleSpinBoxMosaicCropTop",
+            "bottom_px": "doubleSpinBoxMosaicCropBottom",
+            "left_px": "doubleSpinBoxMosaicCropLeft",
+            "right_px": "doubleSpinBoxMosaicCropRight",
+        }
+        for key, control_name in controls.items():
+            value = 0.0
+            if hasattr(self.ui, control_name):
+                raw_value = float(getattr(self.ui, control_name).value())
+                value = raw_value if np.isfinite(raw_value) else 0.0
+            margins[key] = max(0.0, float(value))
+        return margins
+
+    def _set_mosaic_crop_controls(self, margins: dict[str, object]) -> None:
+        controls = {
+            "top_px": "doubleSpinBoxMosaicCropTop",
+            "bottom_px": "doubleSpinBoxMosaicCropBottom",
+            "left_px": "doubleSpinBoxMosaicCropLeft",
+            "right_px": "doubleSpinBoxMosaicCropRight",
+        }
+        for key, control_name in controls.items():
+            if not hasattr(self.ui, control_name):
+                continue
+            try:
+                value = float(margins.get(key, 0.0))
+            except (TypeError, ValueError):
+                value = 0.0
+            control = getattr(self.ui, control_name)
+            was_blocked = control.blockSignals(True)
+            control.setValue(max(0.0, min(float(control.maximum()), value if np.isfinite(value) else 0.0)))
+            control.blockSignals(was_blocked)
+
+    def _mosaic_crop_rect_payload(self) -> dict[str, object]:
+        width_px, height_px = self._mosaic_output_size()
+        margins = self._mosaic_crop_margins()
+        left_px = min(margins["left_px"], float(width_px))
+        right_px = min(margins["right_px"], max(0.0, float(width_px) - left_px))
+        top_px = min(margins["top_px"], float(height_px))
+        bottom_px = min(margins["bottom_px"], max(0.0, float(height_px) - top_px))
+        crop_width = max(0.0, float(width_px) - left_px - right_px)
+        crop_height = max(0.0, float(height_px) - top_px - bottom_px)
+        return {
+            "top_px": float(top_px),
+            "bottom_px": float(bottom_px),
+            "left_px": float(left_px),
+            "right_px": float(right_px),
+            "x_px": float(left_px),
+            "y_px": float(top_px),
+            "width_px": float(crop_width),
+            "height_px": float(crop_height),
+        }
+
+    def _mosaic_estimate_optimal_resolution(self) -> MosaicResolutionEstimate:
+        source_model = self._mosaic_source_model
+        if source_model is None:
+            raise ValueError("需要先导入源图模型，才能按源图中心角分辨率计算最优输出尺寸。")
+        width, height = self._mosaic_render_size()
+        return estimate_mosaic_optimal_resolution(
+            source_model.model,
+            source_image_width_px=source_model.image_width_px,
+            source_image_height_px=source_model.image_height_px,
+            projection_model=self._mosaic_projection_model(),
+            fov_deg=float(self.ui.doubleSpinBoxMosaicFov.value()),
+            viewport_width_px=width,
+            viewport_height_px=height,
+        )
+
+    def calculate_mosaic_optimal_resolution(self) -> bool:
+        try:
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            estimate = self._mosaic_estimate_optimal_resolution()
+        except Exception as exc:  # noqa: BLE001 - 手动计算入口需要把模型与投影错误直接反馈到界面。
+            QMessageBox.warning(self, "计算最优分辨率失败", str(exc))
+            self.ui.statusbar.showMessage(f"计算最优分辨率失败: {exc}")
+            return False
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        self._set_mosaic_output_resolution(
+            estimate.boundary_width_px,
+            estimate.boundary_height_px,
+            estimate,
+        )
+        self.schedule_mosaic_render(delay_ms=0)
+        self.ui.statusbar.showMessage(
+            f"最优输出边界: {estimate.boundary_width_px} x {estimate.boundary_height_px} px"
+        )
+        return True
+
+    def _mosaic_observer_payload(self, observer: ObserverSettings) -> dict[str, object]:
+        return {
+            "observation_time_utc": observer.observation_time_utc.astimezone(timezone.utc).isoformat(),
+            "utc_offset_hours": float(self._mosaic_utc_offset_from_controls()),
+            "latitude_deg": float(observer.latitude_deg),
+            "longitude_deg": float(observer.longitude_deg),
+            "elevation_m": float(observer.elevation_m),
+        }
+
+    def _mosaic_resolution_payload(self) -> dict[str, object]:
+        estimate = getattr(self, "_mosaic_resolution_estimate", None)
+        if estimate is None:
+            return {
+                "method": MOSAIC_RESOLUTION_METHOD,
+                "status": "imported_or_manual",
+            }
+        return {
+            "method": MOSAIC_RESOLUTION_METHOD,
+            "source_center_x_px": float(estimate.source_center_x_px),
+            "source_center_y_px": float(estimate.source_center_y_px),
+            "source_center_angular_resolution_rad_per_px": float(
+                estimate.center_angular_resolution_rad_per_px
+            ),
+            "target_center_px_per_rad": float(estimate.target_center_px_per_rad),
+            "source_jacobian_rad_per_px": [
+                [float(value) for value in row]
+                for row in estimate.source_jacobian_rad_per_px
+            ],
+        }
+
+    def _mosaic_framing_payload(self) -> dict[str, object]:
+        width_px, height_px = self._mosaic_output_size()
+        if width_px <= 0 or height_px <= 0:
+            raise ValueError("请先计算最优分辨率，或导入包含输出边界的取景 JSON。")
+        observer = self._mosaic_observer_from_controls()
+        if observer is None:
+            raise ValueError("取景 JSON 需要有效的拍摄时间和地点。")
+        render_width, render_height = self._mosaic_render_size()
+        projection_model = self._mosaic_projection_model()
+        crop_payload = self._mosaic_crop_rect_payload()
+        source_model = self._mosaic_source_model
+        payload: dict[str, object] = {
+            "schema": MOSAIC_FRAMING_SCHEMA,
+            "version": MOSAIC_FRAMING_VERSION,
+            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+            "projection": {
+                "model": projection_model,
+                "display_name": SKY_KNOWN_PROJECTION_DISPLAY_NAMES.get(projection_model, projection_model),
+                "fov_deg": float(self.ui.doubleSpinBoxMosaicFov.value()),
+            },
+            "view": {
+                "center_az_deg": float(self._mosaic_center_az_deg) % 360.0,
+                "center_alt_deg": float(self._mosaic_center_alt_deg),
+                "roll_deg": float(self._mosaic_roll_deg),
+            },
+            "observer": self._mosaic_observer_payload(observer),
+            "output": {
+                "boundary_width_px": int(width_px),
+                "boundary_height_px": int(height_px),
+                "pixel_convention": "0-based_pixel_center",
+                "crop": crop_payload,
+                "cropped_width_px": float(crop_payload["width_px"]),
+                "cropped_height_px": float(crop_payload["height_px"]),
+            },
+            "viewport_reference": {
+                "width_px": int(render_width),
+                "height_px": int(render_height),
+                "height_over_width": float(render_height / max(float(render_width), 1.0)),
+            },
+            "resolution_method": self._mosaic_resolution_payload(),
+        }
+        if source_model is not None:
+            payload["source_model"] = {
+                "path": str(source_model.json_path),
+                "image_width_px": int(source_model.image_width_px),
+                "image_height_px": int(source_model.image_height_px),
+                "rms_px": float(source_model.rms_px),
+            }
+        return payload
+
+    def export_mosaic_framing_json(self) -> None:
+        if self._mosaic_source_model is not None:
+            try:
+                estimate = self._mosaic_estimate_optimal_resolution()
+                self._set_mosaic_output_resolution(
+                    estimate.boundary_width_px,
+                    estimate.boundary_height_px,
+                    estimate,
+                )
+            except Exception as exc:  # noqa: BLE001 - 导出前自动刷新尺寸失败时直接反馈用户。
+                QMessageBox.warning(self, "导出取景失败", f"无法刷新最优分辨率：{exc}")
+                self.ui.statusbar.showMessage(f"导出取景失败: {exc}")
+                return
+        try:
+            payload = self._mosaic_framing_payload()
+        except Exception as exc:  # noqa: BLE001 - 导出入口需要把缺失参数直接反馈到界面。
+            QMessageBox.warning(self, "导出取景失败", str(exc))
+            self.ui.statusbar.showMessage(f"导出取景失败: {exc}")
+            return
+
+        default_dir = project_root() / "outputs"
+        if self._mosaic_source_model is not None:
+            default_dir = self._mosaic_source_model.json_path.parent
+        if not default_dir.exists():
+            default_dir = project_root()
+        file_path, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "导出自由投影取景 JSON",
+            str(default_dir / "mosaic_framing.json"),
+            MOSAIC_FRAMING_JSON_FILTER,
+        )
+        if not file_path:
+            return
+        json_path = Path(file_path).expanduser()
+        try:
+            json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001 - 文件写入错误需要直接反馈。
+            QMessageBox.critical(self, "导出取景失败", str(exc))
+            self.ui.statusbar.showMessage(f"导出取景失败: {exc}")
+            return
+        self.ui.statusbar.showMessage(f"已导出自由投影取景: {json_path}")
+
+    def export_mosaic_projected_image(self) -> None:
+        source_model = self._mosaic_source_model
+        if source_model is None:
+            QMessageBox.warning(self, "导出重投影图失败", "请先导入源图模型 JSON。")
+            return
+        if source_model.source_image_path is None:
+            QMessageBox.warning(self, "导出重投影图失败", "源图模型 JSON 未记录原图路径。")
+            return
+        if not mosaic_export_available():
+            QMessageBox.critical(self, "导出重投影图失败", "当前环境缺少 OpenCV 或 tifffile，无法写入 16-bit TIFF。")
+            return
+
+        if self._mosaic_output_size()[0] <= 0 or self._mosaic_output_size()[1] <= 0:
+            if not self.calculate_mosaic_optimal_resolution():
+                return
+        try:
+            payload = self._mosaic_framing_payload()
+            output_payload = payload.get("output")
+            if not isinstance(output_payload, dict):
+                raise ValueError("当前取景缺少输出边界。")
+            geometry = mosaic_export_cropped_geometry(
+                boundary_width_px=int(output_payload["boundary_width_px"]),
+                boundary_height_px=int(output_payload["boundary_height_px"]),
+                crop=output_payload.get("crop") if isinstance(output_payload.get("crop"), dict) else {},
+            )
+            if geometry.output_width_px <= 0 or geometry.output_height_px <= 0:
+                raise ValueError("裁剪后的导出尺寸无效，请减小四边裁剪量。")
+        except Exception as exc:  # noqa: BLE001 - 导出入口需要把缺失参数直接反馈到界面。
+            QMessageBox.warning(self, "导出重投影图失败", str(exc))
+            self.ui.statusbar.showMessage(f"导出重投影图失败: {exc}")
+            return
+
+        default_dir = source_model.json_path.parent if source_model.json_path.parent.exists() else project_root()
+        default_name = f"{source_model.json_path.stem}_mosaic_{geometry.output_width_px}x{geometry.output_height_px}.tif"
+        file_path, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "导出自由投影重投影图",
+            str(default_dir / default_name),
+            MOSAIC_EXPORT_TIFF_FILTER,
+        )
+        if not file_path:
+            return
+        output_path = Path(file_path).expanduser()
+        if output_path.suffix.lower() not in (".tif", ".tiff"):
+            output_path = output_path.with_suffix(".tif")
+        if QMessageBox.question(
+            self,
+            "确认导出重投影图",
+            (
+                f"导出文件：\n{output_path}\n\n"
+                f"尺寸：{geometry.output_width_px} x {geometry.output_height_px} px\n"
+                "格式：无压缩 16-bit TIFF"
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        ) != QMessageBox.Yes:
+            return
+
+        self._write_mosaic_projected_image(output_path, payload, geometry)
+
+    def _write_mosaic_projected_image(
+        self,
+        output_path: Path,
+        framing_payload: dict[str, object],
+        geometry,
+    ) -> None:  # type: ignore[no-untyped-def]
+        source_model = self._mosaic_source_model
+        observer = self._mosaic_observer_from_controls()
+        if source_model is None or observer is None:
+            return
+        temp_path = output_path.with_name(f"{output_path.stem}.tmp{output_path.suffix or '.tif'}")
+        progress = QProgressDialog("正在导出重投影 TIFF...", "取消", 0, int(geometry.output_height_px), self)
+        progress.setWindowTitle("导出自由投影重投影图")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+
+        def update_progress(rows_done: int) -> None:
+            progress.setValue(int(rows_done))
+            QApplication.processEvents()
+            if progress.wasCanceled():
+                raise InterruptedError("用户取消了导出。")
+
+        try:
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            source_image = load_mosaic_export_source_image(source_model.source_image_path)
+            if source_image.width_px != source_model.image_width_px or source_image.height_px != source_model.image_height_px:
+                raise ValueError(
+                    "原图尺寸与源图模型不一致："
+                    f"原图 {source_image.width_px} x {source_image.height_px} px，"
+                    f"模型 {source_model.image_width_px} x {source_model.image_height_px} px。"
+                )
+            camera = self._mosaic_camera_for_render(geometry.boundary_width_px, geometry.boundary_height_px)
+            view = self._mosaic_view_settings(camera)
+            write_mosaic_reprojection_tiff(
+                output_path=temp_path,
+                source_model=source_model.model,
+                source_image=source_image,
+                camera=camera,
+                view=view,
+                observer=observer,
+                geometry=geometry,
+                framing_payload=framing_payload,
+                block_rows=MOSAIC_EXPORT_DEFAULT_BLOCK_ROWS,
+                progress_callback=update_progress,
+            )
+            temp_path.replace(output_path)
+        except InterruptedError as exc:
+            self.ui.statusbar.showMessage(str(exc))
+            try:
+                if temp_path.exists():
+                    temp_path.unlink()
+            except OSError:
+                pass
+            return
+        except Exception as exc:  # noqa: BLE001 - 长流程导出需要把文件和几何错误直接反馈。
+            QMessageBox.critical(self, "导出重投影图失败", str(exc))
+            self.ui.statusbar.showMessage(f"导出重投影图失败: {exc}")
+            try:
+                if temp_path.exists():
+                    temp_path.unlink()
+            except OSError:
+                pass
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+            progress.close()
+        self.ui.statusbar.showMessage(f"已导出自由投影重投影图: {output_path}")
+
+    def import_mosaic_framing_json(self) -> None:
+        default_dir = project_root() / "outputs"
+        if self._mosaic_source_model is not None:
+            default_dir = self._mosaic_source_model.json_path.parent
+        if not default_dir.exists():
+            default_dir = project_root()
+        file_path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "导入自由投影取景 JSON",
+            str(default_dir),
+            MOSAIC_FRAMING_JSON_FILTER,
+        )
+        if not file_path:
+            return
+        self.load_mosaic_framing_json(file_path)
+
+    def load_mosaic_framing_json(self, file_path: str | Path) -> bool:
+        json_path = Path(file_path).expanduser()
+        try:
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("取景 JSON 根对象必须是对象。")
+            self._apply_mosaic_framing_payload(payload)
+        except Exception as exc:  # noqa: BLE001 - 导入入口需要把 JSON 错误直接反馈到界面。
+            QMessageBox.critical(self, "导入取景失败", str(exc))
+            self.ui.statusbar.showMessage(f"导入取景失败: {exc}")
+            return False
+        self.ui.statusbar.showMessage(f"已导入自由投影取景: {json_path}")
+        return True
+
+    def _mosaic_payload_float(self, payload: dict[str, object], key: str, default: float) -> float:
+        try:
+            value = float(payload.get(key, default))
+        except (TypeError, ValueError):
+            value = float(default)
+        return float(value) if np.isfinite(value) else float(default)
+
+    def _observer_from_mosaic_framing_payload(self, payload: dict[str, object]) -> tuple[ObserverSettings, float]:
+        time_text = str(payload.get("observation_time_utc") or "").strip()
+        if not time_text:
+            raise ValueError("取景 JSON 缺少 observer.observation_time_utc。")
+        parsed_time = datetime.fromisoformat(time_text.replace("Z", "+00:00"))
+        if parsed_time.tzinfo is None:
+            parsed_time = parsed_time.replace(tzinfo=timezone.utc)
+        observer = ObserverSettings(
+            observation_time_utc=parsed_time.astimezone(timezone.utc),
+            latitude_deg=self._mosaic_payload_float(payload, "latitude_deg", 0.0),
+            longitude_deg=self._mosaic_payload_float(payload, "longitude_deg", 0.0),
+            elevation_m=self._mosaic_payload_float(payload, "elevation_m", 0.0),
+        )
+        utc_offset_hours = self._mosaic_payload_float(payload, "utc_offset_hours", 0.0)
+        return observer, utc_offset_hours
+
+    def _apply_mosaic_framing_payload(self, payload: dict[str, object]) -> None:
+        schema = str(payload.get("schema") or "")
+        if schema != MOSAIC_FRAMING_SCHEMA:
+            raise ValueError("这不是 MeteoAlign 自由投影取景 JSON。")
+
+        projection_payload = payload.get("projection")
+        if not isinstance(projection_payload, dict):
+            raise ValueError("取景 JSON 缺少 projection 对象。")
+        projection_model = str(projection_payload.get("model") or "")
+        if projection_model not in MOSAIC_PROJECTION_MODELS:
+            raise ValueError(f"取景 JSON 包含不支持的目标投影：{projection_model}")
+        projection_index = MOSAIC_PROJECTION_MODELS.index(projection_model)
+        was_blocked = self.ui.comboBoxMosaicProjection.blockSignals(True)
+        self.ui.comboBoxMosaicProjection.setCurrentIndex(projection_index)
+        self.ui.comboBoxMosaicProjection.blockSignals(was_blocked)
+        self._update_mosaic_projection_controls()
+
+        fov_value = self._mosaic_payload_float(projection_payload, "fov_deg", float(self.ui.doubleSpinBoxMosaicFov.value()))
+        was_blocked = self.ui.doubleSpinBoxMosaicFov.blockSignals(True)
+        self.ui.doubleSpinBoxMosaicFov.setValue(
+            max(
+                float(self.ui.doubleSpinBoxMosaicFov.minimum()),
+                min(float(self.ui.doubleSpinBoxMosaicFov.maximum()), fov_value),
+            )
+        )
+        self.ui.doubleSpinBoxMosaicFov.blockSignals(was_blocked)
+
+        view_payload = payload.get("view")
+        if not isinstance(view_payload, dict):
+            raise ValueError("取景 JSON 缺少 view 对象。")
+        self._mosaic_center_az_deg = self._mosaic_payload_float(view_payload, "center_az_deg", self._mosaic_center_az_deg) % 360.0
+        self._mosaic_center_alt_deg = max(
+            -90.0,
+            min(90.0, self._mosaic_payload_float(view_payload, "center_alt_deg", self._mosaic_center_alt_deg)),
+        )
+        self._mosaic_roll_deg = self._mosaic_payload_float(view_payload, "roll_deg", self._mosaic_roll_deg)
+        while self._mosaic_roll_deg > 180.0:
+            self._mosaic_roll_deg -= 360.0
+        while self._mosaic_roll_deg < -180.0:
+            self._mosaic_roll_deg += 360.0
+        self._set_mosaic_view_controls_from_state()
+
+        observer_payload = payload.get("observer")
+        if not isinstance(observer_payload, dict):
+            raise ValueError("取景 JSON 缺少 observer 对象。")
+        observer, utc_offset_hours = self._observer_from_mosaic_framing_payload(observer_payload)
+        self._mosaic_framing_observer = observer
+        self._mosaic_framing_utc_offset_hours = utc_offset_hours
+        self._set_mosaic_observer_controls_from_values(observer, utc_offset_hours)
+        self._set_mosaic_observer_controls_enabled(True)
+
+        output_payload = payload.get("output")
+        if not isinstance(output_payload, dict):
+            raise ValueError("取景 JSON 缺少 output 对象。")
+        width_px = int(round(self._mosaic_payload_float(output_payload, "boundary_width_px", 0.0)))
+        height_px = int(round(self._mosaic_payload_float(output_payload, "boundary_height_px", 0.0)))
+        if width_px <= 0 or height_px <= 0:
+            raise ValueError("取景 JSON 的输出边界尺寸无效。")
+        self._set_mosaic_output_resolution(width_px, height_px, None)
+        crop_payload = output_payload.get("crop")
+        self._set_mosaic_crop_controls(crop_payload if isinstance(crop_payload, dict) else {})
+        self._update_mosaic_view_label()
+        self.schedule_mosaic_render(delay_ms=0)
 
     def import_mosaic_model_json(self) -> None:
         default_dir = project_root() / "outputs"
@@ -371,6 +932,15 @@ class MosaicProjectionMixin:
             getattr(self.ui, control_name).setEnabled(enabled)
 
     def _set_mosaic_observer_controls_from_source_model(self, source_model: MosaicSourceModel) -> None:
+        self._mosaic_framing_observer = source_model.observer
+        self._mosaic_framing_utc_offset_hours = source_model.utc_offset_hours
+        self._set_mosaic_observer_controls_from_values(source_model.observer, source_model.utc_offset_hours)
+
+    def _set_mosaic_observer_controls_from_values(
+        self,
+        observer: ObserverSettings,
+        utc_offset_hours: float,
+    ) -> None:
         if not hasattr(self.ui, "dateTimeEditMosaicObservation"):
             return
         controls = (
@@ -382,14 +952,14 @@ class MosaicProjectionMixin:
         )
         previous_blocks = [control.blockSignals(True) for control in controls]
         try:
-            utc_offset_hours = self._bounded_mosaic_utc_offset(source_model.utc_offset_hours)
+            utc_offset_hours = self._bounded_mosaic_utc_offset(utc_offset_hours)
             self.ui.dateTimeEditMosaicObservation.setDateTime(
-                self._mosaic_qdatetime_for_observer(source_model.observer, utc_offset_hours)
+                self._mosaic_qdatetime_for_observer(observer, utc_offset_hours)
             )
             self.ui.doubleSpinBoxMosaicUtcOffset.setValue(utc_offset_hours)
-            self.ui.doubleSpinBoxMosaicLatitude.setValue(float(source_model.observer.latitude_deg))
-            self.ui.doubleSpinBoxMosaicLongitude.setValue(float(source_model.observer.longitude_deg))
-            self.ui.doubleSpinBoxMosaicElevation.setValue(float(source_model.observer.elevation_m))
+            self.ui.doubleSpinBoxMosaicLatitude.setValue(float(observer.latitude_deg))
+            self.ui.doubleSpinBoxMosaicLongitude.setValue(float(observer.longitude_deg))
+            self.ui.doubleSpinBoxMosaicElevation.setValue(float(observer.elevation_m))
         finally:
             for control, was_blocked in zip(controls, previous_blocks, strict=True):
                 control.blockSignals(was_blocked)
@@ -397,24 +967,53 @@ class MosaicProjectionMixin:
     def reset_mosaic_observer_from_json(self) -> None:
         source_model = self._mosaic_source_model
         if source_model is None:
+            observer = getattr(self, "_mosaic_framing_observer", None)
+            if observer is None:
+                return
+            self._set_mosaic_observer_controls_from_values(
+                observer,
+                getattr(self, "_mosaic_framing_utc_offset_hours", 0.0),
+            )
+            self.schedule_mosaic_render(delay_ms=0)
             return
         self._set_mosaic_observer_controls_from_source_model(source_model)
         self.schedule_mosaic_render(delay_ms=0)
 
+    def _mosaic_utc_offset_from_controls(self) -> float:
+        if hasattr(self.ui, "doubleSpinBoxMosaicUtcOffset"):
+            return float(self.ui.doubleSpinBoxMosaicUtcOffset.value())
+        source_model = self._mosaic_source_model
+        if source_model is not None:
+            return float(source_model.utc_offset_hours)
+        return float(getattr(self, "_mosaic_framing_utc_offset_hours", 0.0))
+
+    def _mosaic_observer_from_control_values(self) -> ObserverSettings | None:
+        if not hasattr(self.ui, "dateTimeEditMosaicObservation"):
+            return None
+        try:
+            local_dt = self.ui.dateTimeEditMosaicObservation.dateTime().toPyDateTime()
+            offset = timezone(timedelta(hours=self._mosaic_utc_offset_from_controls()))
+            aware_dt = local_dt.replace(tzinfo=offset)
+            return ObserverSettings(
+                observation_time_utc=aware_dt.astimezone(timezone.utc),
+                latitude_deg=float(self.ui.doubleSpinBoxMosaicLatitude.value()),
+                longitude_deg=float(self.ui.doubleSpinBoxMosaicLongitude.value()),
+                elevation_m=float(self.ui.doubleSpinBoxMosaicElevation.value()),
+            )
+        except Exception:  # noqa: BLE001 - 控件读值失败时使用已有取景或源图观察者兜底。
+            return None
+
     def _mosaic_observer_from_controls(self) -> ObserverSettings | None:
-        if self._mosaic_source_model is None:
+        fallback_observer = None
+        if self._mosaic_source_model is not None:
+            fallback_observer = self._mosaic_source_model.observer
+        elif getattr(self, "_mosaic_framing_observer", None) is not None:
+            fallback_observer = self._mosaic_framing_observer
+        if fallback_observer is None:
             return None
         if not hasattr(self.ui, "dateTimeEditMosaicObservation"):
-            return self._mosaic_source_model.observer
-        local_dt = self.ui.dateTimeEditMosaicObservation.dateTime().toPyDateTime()
-        offset = timezone(timedelta(hours=float(self.ui.doubleSpinBoxMosaicUtcOffset.value())))
-        aware_dt = local_dt.replace(tzinfo=offset)
-        return ObserverSettings(
-            observation_time_utc=aware_dt.astimezone(timezone.utc),
-            latitude_deg=float(self.ui.doubleSpinBoxMosaicLatitude.value()),
-            longitude_deg=float(self.ui.doubleSpinBoxMosaicLongitude.value()),
-            elevation_m=float(self.ui.doubleSpinBoxMosaicElevation.value()),
-        )
+            return fallback_observer
+        return self._mosaic_observer_from_control_values() or fallback_observer
 
     def _mosaic_grid_precision_value(self) -> int:
         if not hasattr(self.ui, "spinBoxMosaicGridPrecision"):
@@ -615,7 +1214,7 @@ class MosaicProjectionMixin:
     ) -> tuple[FrameAstrometricModel | None, MosaicCoverageCache | None, ObserverSettings | None]:
         source_model = self._mosaic_source_model
         if source_model is None:
-            return None, None, None
+            return None, None, self._mosaic_observer_from_controls()
         observer = self._mosaic_observer_from_controls() or source_model.observer
         return source_model.model, self._mosaic_coverage_cache, observer
 
@@ -712,9 +1311,10 @@ class MosaicProjectionMixin:
         width, height = self._mosaic_render_size()
         source_model = self._mosaic_source_model
         effective_model, coverage_cache, observer = self._effective_mosaic_model_and_coverage()
-        if source_model is None or effective_model is None or coverage_cache is None or observer is None:
+        if observer is None:
             image = QImage(width, height, QImage.Format_ARGB32_Premultiplied)
             image.fill(QColor(0, 0, 0))
+            self._paint_mosaic_crop_rect(image)
             self.mosaic_image_item.set_image(image)
             self.mosaic_scene.setSceneRect(0.0, 0.0, float(width), float(height))
             self.ui.mosaicProjectionView.resetTransform()
@@ -746,18 +1346,56 @@ class MosaicProjectionMixin:
                     draw_direction_labels=self.ui.checkBoxMosaicShowGrid.isChecked(),
                 ),
             )
-            if self._mosaic_overlay_enabled():
+            if (
+                source_model is not None
+                and effective_model is not None
+                and coverage_cache is not None
+                and self._mosaic_overlay_enabled()
+            ):
                 render_cache = self._mosaic_render_coverage_cache(coverage_cache)
                 if self._mosaic_overlay_mode() == MOSAIC_OVERLAY_MODE_SOURCE_IMAGE:
                     self._paint_mosaic_source_image(image, camera, view, render_cache, observer, source_model)
                 else:
                     self._paint_mosaic_coverage(image, camera, view, render_cache, observer)
+            self._paint_mosaic_crop_rect(image)
             self.mosaic_image_item.set_image(image)
             self.mosaic_scene.setSceneRect(0.0, 0.0, float(width), float(height))
             self.ui.mosaicProjectionView.resetTransform()
             self._update_mosaic_view_label()
         except Exception as exc:  # noqa: BLE001 - 预览渲染要把模型和投影错误反馈给用户。
             self.ui.statusbar.showMessage(f"自由投影预览渲染失败: {exc}")
+
+    def _mosaic_crop_rect_for_preview(self, image_width_px: int, image_height_px: int) -> QRectF | None:
+        output_width_px, output_height_px = self._mosaic_output_size()
+        if output_width_px <= 0 or output_height_px <= 0 or image_width_px <= 0 or image_height_px <= 0:
+            return None
+        crop = self._mosaic_crop_rect_payload()
+        if float(crop["width_px"]) <= 0.0 or float(crop["height_px"]) <= 0.0:
+            return None
+        scale_x = float(image_width_px) / float(output_width_px)
+        scale_y = float(image_height_px) / float(output_height_px)
+        return QRectF(
+            float(crop["x_px"]) * scale_x,
+            float(crop["y_px"]) * scale_y,
+            float(crop["width_px"]) * scale_x,
+            float(crop["height_px"]) * scale_y,
+        )
+
+    def _paint_mosaic_crop_rect(self, image: QImage) -> None:
+        """在预览图上按输出边界比例绘制红色裁剪框。"""
+
+        rect = self._mosaic_crop_rect_for_preview(image.width(), image.height())
+        if rect is None:
+            return
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        pen = QPen(QColor(255, 32, 32, 230))
+        pen.setWidthF(max(1.5, min(float(image.width()), float(image.height())) / 320.0))
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        inset = pen.widthF() * 0.5
+        painter.drawRect(rect.adjusted(inset, inset, -inset, -inset))
+        painter.end()
 
     def _paint_mosaic_coverage(
         self,

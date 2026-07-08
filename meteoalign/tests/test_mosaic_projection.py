@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 
 from meteoalign.alignment.constants import SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT
+from meteoalign.app_reference_json_io import ReferenceJsonIOMixin
 from meteoalign.app_mosaic import MosaicProjectionMixin
 from meteoalign.config import load_star_map_ui_config
+from meteoalign.mosaic_framing import MOSAIC_FRAMING_SCHEMA
 from meteoalign.mosaic_common import (
     MOSAIC_OVERLAY_MODE_SOURCE_IMAGE,
     MOSAIC_OVERLAY_MODES,
@@ -37,11 +40,25 @@ class _ComboBox(_Control):
 
 
 class _SpinBox(_Control):
+    def __init__(self, value=0, minimum=0.0, maximum=360.0) -> None:  # type: ignore[no-untyped-def]
+        super().__init__(value)
+        self._minimum = float(minimum)
+        self._maximum = float(maximum)
+
     def value(self) -> float:
         return float(self._value)
 
     def setValue(self, value: float) -> None:  # noqa: N802 - Qt 控件接口命名
         self._value = float(value)
+
+    def minimum(self) -> float:
+        return float(self._minimum)
+
+    def maximum(self) -> float:
+        return float(self._maximum)
+
+    def setMaximum(self, value: float) -> None:  # noqa: N802 - Qt 控件接口命名
+        self._maximum = float(value)
 
 
 class _CheckBox(_Control):
@@ -179,3 +196,69 @@ def test_mosaic_interaction_grid_reduction_keeps_image_edges() -> None:
     assert reduced.grid_columns == 3
     assert reduced.grid_x_px[0, 0] == cache.grid_x_px[0, 0]
     assert reduced.grid_x_px[-1, -1] == cache.grid_x_px[-1, -1]
+
+
+class _MosaicWithReferenceJsonMixin(ReferenceJsonIOMixin, MosaicProjectionMixin):
+    pass
+
+
+def test_mosaic_framing_import_uses_mosaic_payload_parser_despite_mro_collision() -> None:
+    window = _MosaicWithReferenceJsonMixin.__new__(_MosaicWithReferenceJsonMixin)
+    window.ui = SimpleNamespace(
+        comboBoxMosaicProjection=_ComboBox(0),
+        doubleSpinBoxMosaicFov=_SpinBox(120.0, minimum=5.0, maximum=360.0),
+        doubleSpinBoxMosaicCropTop=_SpinBox(0.0, minimum=0.0, maximum=1_000_000.0),
+        doubleSpinBoxMosaicCropBottom=_SpinBox(0.0, minimum=0.0, maximum=1_000_000.0),
+        doubleSpinBoxMosaicCropLeft=_SpinBox(0.0, minimum=0.0, maximum=1_000_000.0),
+        doubleSpinBoxMosaicCropRight=_SpinBox(0.0, minimum=0.0, maximum=1_000_000.0),
+    )
+    window._mosaic_source_model = None
+    window._mosaic_center_az_deg = 0.0
+    window._mosaic_center_alt_deg = 20.0
+    window._mosaic_roll_deg = 0.0
+    window._mosaic_output_boundary_width_px = 0
+    window._mosaic_output_boundary_height_px = 0
+    window._mosaic_resolution_estimate = None
+    window._mosaic_framing_observer = None
+    window._mosaic_framing_utc_offset_hours = 0.0
+
+    payload = {
+        "schema": MOSAIC_FRAMING_SCHEMA,
+        "version": 1,
+        "projection": {
+            "model": SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT,
+            "fov_deg": 200.0,
+        },
+        "view": {
+            "center_az_deg": 199.0,
+            "center_alt_deg": 88.0,
+            "roll_deg": 3.0,
+        },
+        "observer": {
+            "observation_time_utc": datetime(2025, 12, 14, 18, 11, 45, tzinfo=timezone.utc).isoformat(),
+            "utc_offset_hours": 8.0,
+            "latitude_deg": 25.0,
+            "longitude_deg": 102.0,
+            "elevation_m": 200.0,
+        },
+        "output": {
+            "boundary_width_px": 5835,
+            "boundary_height_px": 4540,
+            "crop": {
+                "top_px": 190.0,
+                "bottom_px": 210.0,
+                "left_px": 770.0,
+                "right_px": 750.0,
+            },
+        },
+    }
+
+    MosaicProjectionMixin._apply_mosaic_framing_payload(window, payload)
+
+    assert window.ui.comboBoxMosaicProjection.currentIndex() == MOSAIC_PROJECTION_MODELS.index(
+        SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT
+    )
+    assert window.ui.doubleSpinBoxMosaicFov.value() == 200.0
+    assert window._mosaic_output_size() == (5835, 4540)
+    assert window._mosaic_framing_observer.latitude_deg == 25.0
+    assert window.ui.doubleSpinBoxMosaicCropTop.value() == 190.0

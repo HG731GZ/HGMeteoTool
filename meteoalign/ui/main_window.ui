@@ -2193,6 +2193,201 @@
              </widget>
             </item>
             <item>
+             <widget class="QGroupBox" name="groupBoxMosaicFraming">
+              <property name="title">
+               <string>输出取景</string>
+              </property>
+              <layout class="QVBoxLayout" name="verticalLayoutMosaicFraming">
+               <item>
+                <widget class="QPushButton" name="pushButtonCalculateMosaicResolution">
+                 <property name="text">
+                  <string>计算最优分辨率</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <layout class="QFormLayout" name="formLayoutMosaicOutputSize">
+                 <item row="0" column="0">
+                  <widget class="QLabel" name="labelMosaicOptimalWidthTitle">
+                   <property name="text">
+                    <string>边界宽</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="0" column="1">
+                  <widget class="QLabel" name="labelMosaicOptimalWidth">
+                   <property name="text">
+                    <string>-</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="1" column="0">
+                  <widget class="QLabel" name="labelMosaicOptimalHeightTitle">
+                   <property name="text">
+                    <string>边界高</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="1" column="1">
+                  <widget class="QLabel" name="labelMosaicOptimalHeight">
+                   <property name="text">
+                    <string>-</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="2" column="0">
+                  <widget class="QLabel" name="labelMosaicResolutionInfoTitle">
+                   <property name="text">
+                    <string>分辨率</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="2" column="1">
+                  <widget class="QLabel" name="labelMosaicResolutionInfo">
+                   <property name="text">
+                    <string>尚未计算</string>
+                   </property>
+                  </widget>
+                 </item>
+                </layout>
+               </item>
+               <item>
+                <layout class="QFormLayout" name="formLayoutMosaicCrop">
+                 <item row="0" column="0">
+                  <widget class="QLabel" name="labelMosaicCropTop">
+                   <property name="text">
+                    <string>上裁剪</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="0" column="1">
+                  <widget class="QDoubleSpinBox" name="doubleSpinBoxMosaicCropTop">
+                   <property name="decimals">
+                    <number>1</number>
+                   </property>
+                   <property name="minimum">
+                    <double>0.000000000000000</double>
+                   </property>
+                   <property name="maximum">
+                    <double>1000000000.000000000000000</double>
+                   </property>
+                   <property name="singleStep">
+                    <double>10.000000000000000</double>
+                   </property>
+                   <property name="suffix">
+                    <string> px</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="1" column="0">
+                  <widget class="QLabel" name="labelMosaicCropBottom">
+                   <property name="text">
+                    <string>下裁剪</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="1" column="1">
+                  <widget class="QDoubleSpinBox" name="doubleSpinBoxMosaicCropBottom">
+                   <property name="decimals">
+                    <number>1</number>
+                   </property>
+                   <property name="minimum">
+                    <double>0.000000000000000</double>
+                   </property>
+                   <property name="maximum">
+                    <double>1000000000.000000000000000</double>
+                   </property>
+                   <property name="singleStep">
+                    <double>10.000000000000000</double>
+                   </property>
+                   <property name="suffix">
+                    <string> px</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="2" column="0">
+                  <widget class="QLabel" name="labelMosaicCropLeft">
+                   <property name="text">
+                    <string>左裁剪</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="2" column="1">
+                  <widget class="QDoubleSpinBox" name="doubleSpinBoxMosaicCropLeft">
+                   <property name="decimals">
+                    <number>1</number>
+                   </property>
+                   <property name="minimum">
+                    <double>0.000000000000000</double>
+                   </property>
+                   <property name="maximum">
+                    <double>1000000000.000000000000000</double>
+                   </property>
+                   <property name="singleStep">
+                    <double>10.000000000000000</double>
+                   </property>
+                   <property name="suffix">
+                    <string> px</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="3" column="0">
+                  <widget class="QLabel" name="labelMosaicCropRight">
+                   <property name="text">
+                    <string>右裁剪</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="3" column="1">
+                  <widget class="QDoubleSpinBox" name="doubleSpinBoxMosaicCropRight">
+                   <property name="decimals">
+                    <number>1</number>
+                   </property>
+                   <property name="minimum">
+                    <double>0.000000000000000</double>
+                   </property>
+                   <property name="maximum">
+                    <double>1000000000.000000000000000</double>
+                   </property>
+                   <property name="singleStep">
+                    <double>10.000000000000000</double>
+                   </property>
+                   <property name="suffix">
+                    <string> px</string>
+                   </property>
+                  </widget>
+                 </item>
+                </layout>
+               </item>
+               <item>
+                <layout class="QHBoxLayout" name="horizontalLayoutMosaicFramingIo">
+                 <item>
+                  <widget class="QPushButton" name="pushButtonExportMosaicFraming">
+                   <property name="text">
+                    <string>导出取景</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QPushButton" name="pushButtonImportMosaicFraming">
+                   <property name="text">
+                    <string>导入取景</string>
+                   </property>
+                  </widget>
+                 </item>
+                </layout>
+               </item>
+               <item>
+                <widget class="QPushButton" name="pushButtonExportMosaicProjectedImage">
+                 <property name="text">
+                  <string>导出重投影图</string>
+                 </property>
+                </widget>
+               </item>
+              </layout>
+             </widget>
+            </item>
+            <item>
              <spacer name="verticalSpacerMosaicSidePanel">
               <property name="orientation">
                <enum>Qt::Vertical</enum>
