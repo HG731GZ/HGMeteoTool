@@ -163,6 +163,8 @@ def test_source_model_exports_known_projection_payload() -> None:
     restored = FrameAstrometricModel.from_json_payload(payload)
     restored_pixels = restored.sky_to_pixel_points(radec)
     assert np.max(np.linalg.norm(restored_pixels - pixels, axis=1)) < 1e-5
+    restored_vector_pixels = restored.icrs_vectors_to_pixel_points(radec_to_unit_vectors(radec[:, 0], radec[:, 1]))
+    assert np.max(np.linalg.norm(restored_vector_pixels - pixels, axis=1)) < 1e-5
     restored_radec = restored.pixel_to_sky_points(pixels)
     expected_vectors = radec_to_unit_vectors(radec[:, 0], radec[:, 1])
     actual_vectors = radec_to_unit_vectors(restored_radec[:, 0], restored_radec[:, 1])

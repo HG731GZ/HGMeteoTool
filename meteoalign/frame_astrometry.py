@@ -268,7 +268,22 @@ class FrameAstrometricModel:
         if radec.ndim != 2 or radec.shape[1] != 2:
             raise ValueError("sky_to_pixel_points 需要 Nx2 的 RA/Dec 数组。")
         vectors = radec_to_unit_vectors(radec[:, 0], radec[:, 1])
-        camera_vectors = self.frame_pose.icrs_vectors_to_camera(vectors)
+        return self.icrs_vectors_to_pixel_points(vectors)
+
+    def icrs_vectors_to_pixel_points(self, vectors: np.ndarray) -> np.ndarray:
+        """把 ICRS 单位方向直接投影到当前帧像素坐标。"""
+
+        vector_array = np.asarray(vectors, dtype=np.float64)
+        if vector_array.ndim == 1:
+            vector_array = vector_array.reshape(1, 3)
+        if vector_array.ndim != 2 or vector_array.shape[1] != 3:
+            raise ValueError("icrs_vectors_to_pixel_points 需要 Nx3 的 ICRS 方向数组。")
+        norm = np.linalg.norm(vector_array, axis=1)
+        valid = np.all(np.isfinite(vector_array), axis=1) & np.isfinite(norm) & (norm > 1e-12)
+        normalized = np.full_like(vector_array, np.nan, dtype=np.float64)
+        normalized[valid] = vector_array[valid] / norm[valid, None]
+        normalized[~valid] = np.nan
+        camera_vectors = self.frame_pose.icrs_vectors_to_camera(normalized)
         pixels = self.camera_calibration_profile.camera_ray_to_pixel_points(camera_vectors)
         return self._apply_frame_local_residual_forward(pixels)
 

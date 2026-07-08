@@ -30,6 +30,7 @@ class StarMapUiConfig:
     mosaic_texture_max_long_side_px: int = 1920
     mosaic_grid_precision_default: int = 36
     mosaic_render_fps_limit: int = 60
+    mosaic_export_block_rows: int = 1024
 
 
 def default_config_path() -> Path:
@@ -128,4 +129,5 @@ def load_star_map_ui_config(path: Path | None = None) -> StarMapUiConfig:
         mosaic_texture_max_long_side_px=_read_int(raw_config, "mosaic_texture_max_long_side_px", 1920, 64, 20000),
         mosaic_grid_precision_default=_read_int(raw_config, "mosaic_grid_precision_default", 36, 12, 180),
         mosaic_render_fps_limit=_read_int(raw_config, "mosaic_render_fps_limit", 60, 1, 240),
+        mosaic_export_block_rows=_read_int(raw_config, "mosaic_export_block_rows", 1024, 8, 4096),
     )

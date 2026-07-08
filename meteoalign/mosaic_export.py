@@ -1,23 +1,31 @@
 from __future__ import annotations
 
+import base64
 import json
-import math
 import warnings
+import zlib
 from dataclasses import dataclass
+from datetime import timezone
 from pathlib import Path
 from typing import Callable, Iterator
 
 import numpy as np
+from astropy import units as u
+from astropy.coordinates import AltAz, EarthLocation, SkyCoord
+from astropy.time import Time
 from PIL import Image, ImageOps
 
-from .coordinates import unit_vectors_to_radec
-from .sequence_geometry import icrs_to_enu_rotation_matrix
+from .coordinates import normalize_vector, radec_to_unit_vectors, unit_vectors_to_radec
 from .simulator import (
+    CYLINDRICAL_LENS_MODELS,
+    FISHEYE_LENS_MODELS,
     CameraSettings,
     ObserverSettings,
+    MERCATOR_LENS_MODEL,
+    RECTILINEAR_LENS_MODEL,
     ViewSettings,
-    camera_basis_from_view,
-    image_points_to_local_vectors,
+    _fisheye_theta_from_radius_ratio,
+    _projection_horizontal_scale_px,
 )
 
 try:
@@ -32,8 +40,10 @@ except ImportError:  # pragma: no cover - tifffile 由环境声明，兜底用�
 
 
 MOSAIC_EXPORT_TIFF_FILTER = "无压缩 16-bit TIFF (*.tif *.tiff)"
-MOSAIC_EXPORT_DEFAULT_BLOCK_ROWS = 32
+MOSAIC_EXPORT_DEFAULT_BLOCK_ROWS = 1024
 MOSAIC_EXPORT_WHITE_U16 = 65535
+MOSAIC_REPROJECTION_MAP_VERSION = 1
+MOSAIC_REPROJECTION_MAP_COMPRESSION_LEVEL = 6
 
 # 这些标签由导出图自身决定，继续复制原图值会造成尺寸、压缩或方向冲突。
 _EXIF_EXCLUDED_TAGS = {
@@ -77,6 +87,17 @@ def mosaic_export_available() -> bool:
     return cv2 is not None and tifffile is not None
 
 
+def mosaic_export_block_rows(config: object, default_value: int = MOSAIC_EXPORT_DEFAULT_BLOCK_ROWS) -> int:
+    """从 UI 配置读取导出分块行数。"""
+
+    configured = getattr(config, "mosaic_export_block_rows", default_value)
+    try:
+        value = int(configured)
+    except (TypeError, ValueError):
+        value = int(default_value)
+    return max(8, min(4096, value))
+
+
 def mosaic_export_cropped_geometry(
     *,
     boundary_width_px: int,
@@ -109,6 +130,183 @@ def _crop_margin_px(value: object, maximum: int) -> int:
     if not np.isfinite(numeric):
         numeric = 0.0
     return max(0, min(int(round(numeric)), max(0, int(maximum))))
+
+
+def build_mosaic_reprojection_map_payload(
+    *,
+    source_model: object,
+    camera: CameraSettings,
+    view: ViewSettings,
+    observer: ObserverSettings,
+    geometry: MosaicExportGeometry,
+    source_model_path: str | None = None,
+    source_image_width_px: int | None = None,
+    source_image_height_px: int | None = None,
+    block_rows: int = MOSAIC_EXPORT_DEFAULT_BLOCK_ROWS,
+    progress_callback: Callable[[int], None] | None = None,
+) -> dict[str, object]:
+    """生成裁剪导出区域的 map_x/map_y，并以分块压缩形式写入 JSON 负载。"""
+
+    blocks: list[dict[str, object]] = []
+    for block in mosaic_reprojection_map_blocks(
+        source_model=source_model,
+        camera=camera,
+        view=view,
+        observer=observer,
+        geometry=geometry,
+        block_rows=block_rows,
+        progress_callback=progress_callback,
+    ):
+        blocks.append(_encode_map_block(block["row_start"], block["map_x"], block["map_y"]))
+    return {
+        "version": MOSAIC_REPROJECTION_MAP_VERSION,
+        "scope": "cropped_output",
+        "dtype": "float32",
+        "invalid_value": -1.0,
+        "encoding": "zlib+base64",
+        "block_rows": int(max(1, block_rows)),
+        "boundary_width_px": int(geometry.boundary_width_px),
+        "boundary_height_px": int(geometry.boundary_height_px),
+        "crop_left_px": int(geometry.crop_left_px),
+        "crop_top_px": int(geometry.crop_top_px),
+        "output_width_px": int(geometry.output_width_px),
+        "output_height_px": int(geometry.output_height_px),
+        "source_model_path": "" if source_model_path is None else str(source_model_path),
+        "source_image_width_px": None if source_image_width_px is None else int(source_image_width_px),
+        "source_image_height_px": None if source_image_height_px is None else int(source_image_height_px),
+        "transform_signature": _mosaic_reprojection_map_signature(camera, view, observer),
+        "blocks": blocks,
+    }
+
+
+def mosaic_reprojection_map_payload_matches(
+    payload: object,
+    *,
+    geometry: MosaicExportGeometry,
+    source_model_path: str | None = None,
+    camera: CameraSettings | None = None,
+    view: ViewSettings | None = None,
+    observer: ObserverSettings | None = None,
+) -> bool:
+    """检查 JSON 中的重投影 map 是否匹配当前导出几何。"""
+
+    if not isinstance(payload, dict):
+        return False
+    if int(payload.get("version", 0) or 0) != MOSAIC_REPROJECTION_MAP_VERSION:
+        return False
+    if str(payload.get("scope") or "") != "cropped_output":
+        return False
+    expected = {
+        "boundary_width_px": geometry.boundary_width_px,
+        "boundary_height_px": geometry.boundary_height_px,
+        "crop_left_px": geometry.crop_left_px,
+        "crop_top_px": geometry.crop_top_px,
+        "output_width_px": geometry.output_width_px,
+        "output_height_px": geometry.output_height_px,
+    }
+    for key, expected_value in expected.items():
+        try:
+            actual_value = int(payload.get(key, -1))
+        except (TypeError, ValueError):
+            return False
+        if actual_value != int(expected_value):
+            return False
+    if source_model_path:
+        recorded_path = str(payload.get("source_model_path") or "")
+        if recorded_path and recorded_path != str(source_model_path):
+            return False
+    if camera is not None or view is not None or observer is not None:
+        if camera is None or view is None or observer is None:
+            return False
+        if payload.get("transform_signature") != _mosaic_reprojection_map_signature(camera, view, observer):
+            return False
+    return isinstance(payload.get("blocks"), list)
+
+
+def _mosaic_reprojection_map_signature(
+    camera: CameraSettings,
+    view: ViewSettings,
+    observer: ObserverSettings,
+) -> dict[str, object]:
+    """把影响 map_x/map_y 的取景参数固化为可比较签名。"""
+
+    observation_time = observer.observation_time_utc
+    if observation_time.tzinfo is None:
+        observation_time = observation_time.replace(tzinfo=timezone.utc)
+    observation_time = observation_time.astimezone(timezone.utc)
+    return {
+        "camera": {
+            "lens_model": str(camera.lens_model),
+            "sensor_width_mm": _signature_float(camera.sensor_width_mm),
+            "sensor_height_mm": _signature_float(camera.sensor_height_mm),
+            "image_width_px": int(camera.image_width_px),
+            "image_height_px": int(camera.image_height_px),
+            "focal_length_mm": _signature_float(camera.focal_length_mm),
+            "fisheye_fov_deg": _signature_float(camera.fisheye_fov_deg),
+        },
+        "view": {
+            "center_az_deg": _signature_float(float(view.center_az_deg) % 360.0),
+            "center_alt_deg": _signature_float(view.center_alt_deg),
+            "roll_deg": _signature_float(view.roll_deg),
+        },
+        "observer": {
+            "observation_time_utc": observation_time.isoformat(),
+            "latitude_deg": _signature_float(observer.latitude_deg),
+            "longitude_deg": _signature_float(observer.longitude_deg),
+            "elevation_m": _signature_float(observer.elevation_m),
+        },
+    }
+
+
+def _signature_float(value: object) -> float:
+    return round(float(value), 12)
+
+
+def _encode_map_block(row_start: int, map_x: np.ndarray, map_y: np.ndarray) -> dict[str, object]:
+    rows, columns = map_x.shape
+    return {
+        "row_start": int(row_start),
+        "rows": int(rows),
+        "columns": int(columns),
+        "map_x": _encode_float32_array(map_x),
+        "map_y": _encode_float32_array(map_y),
+    }
+
+
+def _encode_float32_array(array: np.ndarray) -> str:
+    values = np.ascontiguousarray(array, dtype=np.float32)
+    compressed = zlib.compress(values.tobytes(order="C"), level=MOSAIC_REPROJECTION_MAP_COMPRESSION_LEVEL)
+    return base64.b64encode(compressed).decode("ascii")
+
+
+def iter_mosaic_reprojection_map_payload_blocks(payload: dict[str, object]) -> Iterator[dict[str, object]]:
+    """逐块解码 JSON 中的 map_x/map_y。"""
+
+    blocks = payload.get("blocks")
+    if not isinstance(blocks, list):
+        raise ValueError("取景 JSON 中的 reprojection_map.blocks 必须是数组。")
+    for block in blocks:
+        if not isinstance(block, dict):
+            raise ValueError("取景 JSON 中的 reprojection_map block 必须是对象。")
+        rows = int(block.get("rows", 0) or 0)
+        columns = int(block.get("columns", 0) or 0)
+        row_start = int(block.get("row_start", 0) or 0)
+        if rows <= 0 or columns <= 0:
+            raise ValueError("取景 JSON 中的 map block 尺寸无效。")
+        yield {
+            "row_start": row_start,
+            "map_x": _decode_float32_array(str(block.get("map_x") or ""), rows, columns),
+            "map_y": _decode_float32_array(str(block.get("map_y") or ""), rows, columns),
+        }
+
+
+def _decode_float32_array(encoded: str, rows: int, columns: int) -> np.ndarray:
+    raw = zlib.decompress(base64.b64decode(encoded.encode("ascii")))
+    values = np.frombuffer(raw, dtype=np.float32)
+    expected_size = int(rows) * int(columns)
+    if values.size != expected_size:
+        raise ValueError("取景 JSON 中的 map 数组长度与尺寸不一致。")
+    return values.reshape((int(rows), int(columns))).copy()
 
 
 def load_mosaic_export_source_image(image_path: str | Path) -> MosaicExportSourceImage:
@@ -231,77 +429,144 @@ def mosaic_reprojection_blocks(
     geometry: MosaicExportGeometry,
     block_rows: int = MOSAIC_EXPORT_DEFAULT_BLOCK_ROWS,
     progress_callback: Callable[[int], None] | None = None,
+    map_payload: dict[str, object] | None = None,
 ) -> Iterator[np.ndarray]:
     """逐块生成裁剪后目标图像的 RGB uint16 像素。"""
 
     if cv2 is None:
         raise RuntimeError("当前环境缺少 OpenCV，无法执行重投影导出。")
     source = np.ascontiguousarray(source_rgb_u16, dtype=np.uint16)
-    basis = camera_basis_from_view(view)
-    enu_to_icrs = icrs_to_enu_rotation_matrix(observer)
+    map_blocks: Iterator[dict[str, object]]
+    if map_payload is not None:
+        map_blocks = iter_mosaic_reprojection_map_payload_blocks(map_payload)
+    else:
+        map_blocks = mosaic_reprojection_map_blocks(
+            source_model=source_model,
+            camera=camera,
+            view=view,
+            observer=observer,
+            geometry=geometry,
+            block_rows=block_rows,
+            progress_callback=None,
+        )
+    completed_rows = 0
+
+    for map_block in map_blocks:
+        map_x = np.asarray(map_block["map_x"], dtype=np.float32)
+        map_y = np.asarray(map_block["map_y"], dtype=np.float32)
+        block = _render_mosaic_reprojection_block_from_map(
+            source_rgb_u16=source,
+            map_x=map_x,
+            map_y=map_y,
+        )
+        completed_rows += int(map_x.shape[0])
+        if progress_callback is not None:
+            progress_callback(completed_rows)
+        yield block
+
+
+def mosaic_reprojection_map_blocks(
+    *,
+    source_model: object,
+    camera: CameraSettings,
+    view: ViewSettings,
+    observer: ObserverSettings,
+    geometry: MosaicExportGeometry,
+    block_rows: int = MOSAIC_EXPORT_DEFAULT_BLOCK_ROWS,
+    progress_callback: Callable[[int], None] | None = None,
+) -> Iterator[dict[str, object]]:
+    """逐块生成目标像素到源图像素的 map_x/map_y。"""
+
     output_width = int(geometry.output_width_px)
     output_height = int(geometry.output_height_px)
     safe_block_rows = max(1, int(block_rows))
     full_x = (geometry.crop_left_px + np.arange(output_width, dtype=np.float64)).astype(np.float64)
+    basis = _icrs_camera_basis_from_view(view, observer)
     completed_rows = 0
 
     for row_start in range(0, output_height, safe_block_rows):
         rows = min(safe_block_rows, output_height - row_start)
         full_y = geometry.crop_top_px + row_start + np.arange(rows, dtype=np.float64)
         grid_x, grid_y = np.meshgrid(full_x, full_y)
-        block = _render_mosaic_reprojection_block(
+        map_x, map_y = _build_mosaic_reprojection_map_block(
             source_model=source_model,
-            source_rgb_u16=source,
             x_px=grid_x.ravel(),
             y_px=grid_y.ravel(),
             rows=rows,
             columns=output_width,
             camera=camera,
-            basis=basis,
-            enu_to_icrs=enu_to_icrs,
+            icrs_basis=basis,
         )
         completed_rows += rows
         if progress_callback is not None:
             progress_callback(completed_rows)
-        yield block
+        yield {
+            "row_start": int(row_start),
+            "map_x": map_x,
+            "map_y": map_y,
+        }
 
 
-def _render_mosaic_reprojection_block(
+def _build_mosaic_reprojection_map_block(
     *,
     source_model: object,
-    source_rgb_u16: np.ndarray,
     x_px: np.ndarray,
     y_px: np.ndarray,
     rows: int,
     columns: int,
     camera: CameraSettings,
-    basis: tuple[np.ndarray, np.ndarray, np.ndarray],
-    enu_to_icrs: np.ndarray,
-) -> np.ndarray:
-    vectors, valid_projection = image_points_to_local_vectors(x_px, y_px, camera, basis)
+    icrs_basis: tuple[np.ndarray, np.ndarray, np.ndarray],
+) -> tuple[np.ndarray, np.ndarray]:
+    icrs_vectors, valid_projection = target_image_points_to_icrs_vectors(
+        x_px,
+        y_px,
+        camera=camera,
+        icrs_basis=icrs_basis,
+    )
     map_x = np.full(x_px.shape, -1.0, dtype=np.float32)
     map_y = np.full(y_px.shape, -1.0, dtype=np.float32)
-    valid = valid_projection & np.all(np.isfinite(vectors), axis=1)
+    valid = valid_projection & np.all(np.isfinite(icrs_vectors), axis=1)
     if np.any(valid):
-        icrs_vectors = vectors[valid] @ enu_to_icrs
-        radec = unit_vectors_to_radec(icrs_vectors)
-        source_pixels = np.asarray(source_model.sky_to_pixel_points(radec), dtype=np.float64)
+        source_pixels = _source_pixels_from_icrs_vectors(source_model, icrs_vectors[valid])
         mapped_valid = (
             np.all(np.isfinite(source_pixels), axis=1)
-            & (source_pixels[:, 0] >= -0.5)
-            & (source_pixels[:, 0] <= source_rgb_u16.shape[1] - 0.5)
-            & (source_pixels[:, 1] >= -0.5)
-            & (source_pixels[:, 1] <= source_rgb_u16.shape[0] - 0.5)
         )
+        source_width = getattr(source_model, "image_width_px", None)
+        source_height = getattr(source_model, "image_height_px", None)
+        if source_width is not None and source_height is not None:
+            mapped_valid &= (
+                (source_pixels[:, 0] >= -0.5)
+                & (source_pixels[:, 0] <= float(source_width) - 0.5)
+                & (source_pixels[:, 1] >= -0.5)
+                & (source_pixels[:, 1] <= float(source_height) - 0.5)
+            )
         valid_indices = np.flatnonzero(valid)
         accepted = valid_indices[mapped_valid]
         map_x[accepted] = source_pixels[mapped_valid, 0].astype(np.float32)
         map_y[accepted] = source_pixels[mapped_valid, 1].astype(np.float32)
+    return map_x.reshape((rows, columns)), map_y.reshape((rows, columns))
+
+
+def _source_pixels_from_icrs_vectors(source_model: object, icrs_vectors: np.ndarray) -> np.ndarray:
+    direct_project = getattr(source_model, "icrs_vectors_to_pixel_points", None)
+    if callable(direct_project):
+        return np.asarray(direct_project(icrs_vectors), dtype=np.float64)
+    radec = unit_vectors_to_radec(icrs_vectors)
+    return np.asarray(source_model.sky_to_pixel_points(radec), dtype=np.float64)
+
+
+def _render_mosaic_reprojection_block_from_map(
+    *,
+    source_rgb_u16: np.ndarray,
+    map_x: np.ndarray,
+    map_y: np.ndarray,
+) -> np.ndarray:
+    rows, columns = map_x.shape
 
     remapped = cv2.remap(
         source_rgb_u16,
-        map_x.reshape((rows, columns)),
-        map_y.reshape((rows, columns)),
+        map_x,
+        map_y,
         interpolation=cv2.INTER_LINEAR,
         borderMode=cv2.BORDER_CONSTANT,
         borderValue=(MOSAIC_EXPORT_WHITE_U16, MOSAIC_EXPORT_WHITE_U16, MOSAIC_EXPORT_WHITE_U16),
@@ -309,6 +574,135 @@ def _render_mosaic_reprojection_block(
     if remapped.ndim == 2:
         remapped = np.repeat(remapped[:, :, None], 3, axis=2)
     return np.ascontiguousarray(remapped, dtype=np.uint16)
+
+
+def target_image_points_to_icrs_vectors(
+    x_px: np.ndarray,
+    y_px: np.ndarray,
+    *,
+    camera: CameraSettings,
+    icrs_basis: tuple[np.ndarray, np.ndarray, np.ndarray],
+) -> tuple[np.ndarray, np.ndarray]:
+    """把目标画布像素直接反解为 ICRS 单位方向。"""
+
+    camera_vectors, valid = target_image_points_to_camera_vectors(x_px, y_px, camera)
+    right, up, forward = icrs_basis
+    icrs_x = camera_vectors[:, 0, None] * right[None, :]
+    icrs_y = camera_vectors[:, 1, None] * up[None, :]
+    icrs_z = camera_vectors[:, 2, None] * forward[None, :]
+    vectors = icrs_x + icrs_y + icrs_z
+    norm = np.linalg.norm(vectors, axis=1)
+    valid &= np.isfinite(norm) & (norm > 1e-12)
+    vectors[valid] /= norm[valid, None]
+    vectors[~valid] = np.nan
+    return vectors.astype(np.float64), valid.astype(bool)
+
+
+def target_image_points_to_camera_vectors(
+    x_px: np.ndarray,
+    y_px: np.ndarray,
+    camera: CameraSettings,
+) -> tuple[np.ndarray, np.ndarray]:
+    """把目标画布像素反解为目标相机坐标系下的方向。"""
+
+    x_values = np.asarray(x_px, dtype=np.float64)
+    y_values = np.asarray(y_px, dtype=np.float64)
+    if x_values.shape != y_values.shape:
+        raise ValueError("目标像素 x/y 数组形状必须一致。")
+
+    if camera.lens_model == RECTILINEAR_LENS_MODEL:
+        x_mm = (x_values - camera.image_width_px * 0.5) * camera.sensor_width_mm / camera.image_width_px
+        y_mm = (camera.image_height_px * 0.5 - y_values) * camera.sensor_height_mm / camera.image_height_px
+        cam_x = x_mm / camera.focal_length_mm
+        cam_y = y_mm / camera.focal_length_mm
+        cam_z = np.ones_like(cam_x, dtype=np.float64)
+        valid = np.isfinite(cam_x) & np.isfinite(cam_y)
+    elif camera.lens_model in FISHEYE_LENS_MODELS:
+        center_x = camera.image_width_px * 0.5
+        center_y = camera.image_height_px * 0.5
+        screen_x = x_values - center_x
+        screen_y = center_y - y_values
+        r_px = np.hypot(screen_x, screen_y)
+        r_limit = min(camera.image_width_px, camera.image_height_px) * 0.5 - 0.5
+        rho = np.divide(r_px, r_limit, out=np.full_like(r_px, np.inf), where=r_limit > 1e-12)
+        theta_max = np.deg2rad(camera.fisheye_fov_deg * 0.5)
+        theta = _fisheye_theta_from_radius_ratio(np.clip(rho, 0.0, 1.0), theta_max, camera.lens_model)
+        plane_norm = np.sin(theta)
+        unit_x = np.divide(screen_x, r_px, out=np.zeros_like(screen_x), where=r_px > 1e-12)
+        unit_y = np.divide(screen_y, r_px, out=np.zeros_like(screen_y), where=r_px > 1e-12)
+        cam_x = unit_x * plane_norm
+        cam_y = unit_y * plane_norm
+        cam_z = np.cos(theta)
+        valid = (rho <= 1.0 + 1e-9) & np.isfinite(cam_x) & np.isfinite(cam_y) & np.isfinite(cam_z)
+    elif camera.lens_model in CYLINDRICAL_LENS_MODELS:
+        center_x = camera.image_width_px * 0.5
+        center_y = camera.image_height_px * 0.5
+        scale_px = _projection_horizontal_scale_px(camera)
+        longitude = (x_values - center_x) / max(scale_px, 1e-12)
+        plane_y = (center_y - y_values) / max(scale_px, 1e-12)
+        if camera.lens_model == MERCATOR_LENS_MODEL:
+            latitude = np.arcsin(np.clip(np.tanh(plane_y), -1.0, 1.0))
+            valid = np.isfinite(longitude) & np.isfinite(latitude)
+        else:
+            latitude = plane_y
+            valid = np.isfinite(longitude) & np.isfinite(latitude) & (np.abs(latitude) <= np.pi * 0.5 + 1e-8)
+        cos_lat = np.cos(latitude)
+        cam_x = cos_lat * np.sin(longitude)
+        cam_y = np.sin(latitude)
+        cam_z = cos_lat * np.cos(longitude)
+    else:
+        raise ValueError(f"不支持的目标投影模型：{camera.lens_model}")
+
+    vectors = np.column_stack((cam_x, cam_y, cam_z)).astype(np.float64)
+    norm = np.linalg.norm(vectors, axis=1)
+    valid &= np.isfinite(norm) & (norm > 1e-12)
+    vectors[valid] /= norm[valid, None]
+    vectors[~valid] = np.nan
+    return vectors.astype(np.float64), valid.astype(bool)
+
+
+def _icrs_camera_basis_from_view(
+    view: ViewSettings,
+    observer: ObserverSettings,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    center, zenith, north = _reference_icrs_vectors_from_view(view, observer)
+    right = np.cross(center, zenith)
+    if float(np.linalg.norm(right)) < 1e-8:
+        right = np.cross(center, north)
+    right = normalize_vector(right)
+    up = normalize_vector(np.cross(right, center))
+
+    roll = np.deg2rad(view.roll_deg)
+    cos_roll = np.cos(roll)
+    sin_roll = np.sin(roll)
+    rolled_right = right * cos_roll + up * sin_roll
+    rolled_up = -right * sin_roll + up * cos_roll
+    return (
+        normalize_vector(rolled_right),
+        normalize_vector(rolled_up),
+        normalize_vector(center),
+    )
+
+
+def _reference_icrs_vectors_from_view(
+    view: ViewSettings,
+    observer: ObserverSettings,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    alt_deg = np.asarray([view.center_alt_deg, 90.0, 0.0], dtype=np.float64)
+    az_deg = np.asarray([view.center_az_deg, view.center_az_deg, 0.0], dtype=np.float64)
+    location = EarthLocation.from_geodetic(
+        lon=observer.longitude_deg * u.deg,
+        lat=observer.latitude_deg * u.deg,
+        height=observer.elevation_m * u.m,
+    )
+    altaz = SkyCoord(
+        alt=alt_deg * u.deg,
+        az=az_deg * u.deg,
+        frame=AltAz(obstime=Time(observer.observation_time_utc), location=location),
+    )
+    icrs = altaz.icrs
+    vectors = radec_to_unit_vectors(icrs.ra.degree, icrs.dec.degree)
+    return normalize_vector(vectors[0]), normalize_vector(vectors[1]), normalize_vector(vectors[2])
 
 
 def write_mosaic_reprojection_tiff(
@@ -323,6 +717,7 @@ def write_mosaic_reprojection_tiff(
     framing_payload: dict[str, object] | None = None,
     block_rows: int = MOSAIC_EXPORT_DEFAULT_BLOCK_ROWS,
     progress_callback: Callable[[int], None] | None = None,
+    map_payload: dict[str, object] | None = None,
 ) -> None:
     """把重投影结果写成无压缩 16-bit RGB TIFF。"""
 
@@ -330,6 +725,14 @@ def write_mosaic_reprojection_tiff(
         raise RuntimeError("当前环境缺少 tifffile，无法写入 16-bit TIFF。")
     if geometry.output_width_px <= 0 or geometry.output_height_px <= 0:
         raise ValueError("裁剪后的导出尺寸无效。")
+    if map_payload is not None and not mosaic_reprojection_map_payload_matches(
+        map_payload,
+        geometry=geometry,
+        camera=camera,
+        view=view,
+        observer=observer,
+    ):
+        raise ValueError("取景 JSON 中的 map_x/map_y 与当前导出取景不匹配。")
     description = _mosaic_export_description(framing_payload)
     blocks = mosaic_reprojection_blocks(
         source_model=source_model,
@@ -340,6 +743,7 @@ def write_mosaic_reprojection_tiff(
         geometry=geometry,
         block_rows=block_rows,
         progress_callback=progress_callback,
+        map_payload=map_payload,
     )
     tifffile.imwrite(
         str(output_path),

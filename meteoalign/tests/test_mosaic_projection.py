@@ -135,6 +135,7 @@ def test_mosaic_ui_config_reads_texture_and_grid_defaults(tmp_path: Path) -> Non
                 "mosaic_texture_max_long_side_px": 1800,
                 "mosaic_grid_precision_default": 30,
                 "mosaic_render_fps_limit": 75,
+                "mosaic_export_block_rows": 512,
             }
         ),
         encoding="utf-8",
@@ -146,6 +147,7 @@ def test_mosaic_ui_config_reads_texture_and_grid_defaults(tmp_path: Path) -> Non
     assert config.mosaic_texture_max_long_side_px == 1800
     assert config.mosaic_grid_precision_default == 30
     assert config.mosaic_render_fps_limit == 75
+    assert config.mosaic_export_block_rows == 512
 
 
 def test_mosaic_render_fps_limit_is_clamped() -> None:

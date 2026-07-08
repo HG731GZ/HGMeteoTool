@@ -37,11 +37,13 @@ from .mosaic_grid_service import (
     suggest_fov_from_coverage,
 )
 from .mosaic_export import (
-    MOSAIC_EXPORT_DEFAULT_BLOCK_ROWS,
     MOSAIC_EXPORT_TIFF_FILTER,
+    build_mosaic_reprojection_map_payload,
     load_mosaic_export_source_image,
     mosaic_export_available,
+    mosaic_export_block_rows,
     mosaic_export_cropped_geometry,
+    mosaic_reprojection_map_payload_matches,
     write_mosaic_reprojection_tiff,
 )
 from .mosaic_framing import (
@@ -147,6 +149,7 @@ class MosaicProjectionMixin:
         self._mosaic_resolution_estimate: MosaicResolutionEstimate | None = None
         self._mosaic_framing_observer: ObserverSettings | None = None
         self._mosaic_framing_utc_offset_hours = 0.0
+        self._mosaic_reprojection_map_payload: dict[str, object] | None = None
         self._init_mosaic_projection_defaults()
 
     def _init_mosaic_projection_defaults(self) -> None:
@@ -198,7 +201,7 @@ class MosaicProjectionMixin:
             return
         self.ui.pushButtonImportMosaicModel.clicked.connect(self.import_mosaic_model_json)
         self.ui.comboBoxMosaicProjection.currentIndexChanged.connect(self._handle_mosaic_projection_changed)
-        self.ui.doubleSpinBoxMosaicFov.valueChanged.connect(self.schedule_mosaic_render)
+        self.ui.doubleSpinBoxMosaicFov.valueChanged.connect(self._handle_mosaic_fov_changed)
         if hasattr(self.ui, "doubleSpinBoxMosaicAz"):
             self.ui.doubleSpinBoxMosaicAz.valueChanged.connect(self._handle_mosaic_view_controls_changed)
         if hasattr(self.ui, "doubleSpinBoxMosaicAlt"):
@@ -251,10 +254,16 @@ class MosaicProjectionMixin:
         self.ui.labelMosaicViewInfo.installEventFilter(self)
 
     def _handle_mosaic_projection_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        self._invalidate_mosaic_reprojection_map()
         self._update_mosaic_projection_controls()
         self.schedule_mosaic_render()
 
+    def _handle_mosaic_fov_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        self._invalidate_mosaic_reprojection_map()
+        self.schedule_mosaic_render()
+
     def _handle_mosaic_view_controls_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        self._invalidate_mosaic_reprojection_map()
         if hasattr(self.ui, "doubleSpinBoxMosaicAz"):
             self._mosaic_center_az_deg = float(self.ui.doubleSpinBoxMosaicAz.value()) % 360.0
         if hasattr(self.ui, "doubleSpinBoxMosaicAlt"):
@@ -270,6 +279,7 @@ class MosaicProjectionMixin:
         self.schedule_mosaic_render(delay_ms=10)
 
     def _handle_mosaic_observer_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        self._invalidate_mosaic_reprojection_map()
         observer = self._mosaic_observer_from_control_values()
         if observer is not None:
             self._mosaic_framing_observer = observer
@@ -277,6 +287,7 @@ class MosaicProjectionMixin:
         self.schedule_mosaic_render(delay_ms=120)
 
     def _handle_mosaic_crop_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        self._invalidate_mosaic_reprojection_map()
         self.schedule_mosaic_render(delay_ms=0)
 
     def _update_mosaic_projection_controls(self) -> None:
@@ -309,6 +320,12 @@ class MosaicProjectionMixin:
             max(0, int(getattr(self, "_mosaic_output_boundary_height_px", 0))),
         )
 
+    def _invalidate_mosaic_reprojection_map(self) -> None:
+        self._mosaic_reprojection_map_payload = None
+
+    def _mosaic_export_block_rows(self) -> int:
+        return mosaic_export_block_rows(getattr(self, "ui_config", object()))
+
     def _set_mosaic_output_resolution(
         self,
         width_px: int,
@@ -318,6 +335,7 @@ class MosaicProjectionMixin:
         self._mosaic_output_boundary_width_px = max(0, int(round(width_px)))
         self._mosaic_output_boundary_height_px = max(0, int(round(height_px)))
         self._mosaic_resolution_estimate = estimate
+        self._invalidate_mosaic_reprojection_map()
         self._update_mosaic_output_labels()
         self._update_mosaic_crop_control_limits()
 
@@ -527,6 +545,79 @@ class MosaicProjectionMixin:
             }
         return payload
 
+    def _mosaic_geometry_from_framing_payload(self, payload: dict[str, object]):
+        output_payload = payload.get("output")
+        if not isinstance(output_payload, dict):
+            raise ValueError("当前取景缺少输出边界。")
+        return mosaic_export_cropped_geometry(
+            boundary_width_px=int(output_payload["boundary_width_px"]),
+            boundary_height_px=int(output_payload["boundary_height_px"]),
+            crop=output_payload.get("crop") if isinstance(output_payload.get("crop"), dict) else {},
+        )
+
+    def _mosaic_current_map_matches(self, geometry) -> bool:  # type: ignore[no-untyped-def]
+        source_model = self._mosaic_source_model
+        observer = self._mosaic_observer_from_controls()
+        if source_model is None or observer is None:
+            return False
+        camera = self._mosaic_camera_for_render(geometry.boundary_width_px, geometry.boundary_height_px)
+        view = self._mosaic_view_settings(camera)
+        return mosaic_reprojection_map_payload_matches(
+            getattr(self, "_mosaic_reprojection_map_payload", None),
+            geometry=geometry,
+            source_model_path=str(source_model.json_path),
+            camera=camera,
+            view=view,
+            observer=observer,
+        )
+
+    def _build_mosaic_reprojection_map_for_geometry(
+        self,
+        geometry,
+        *,
+        title: str,
+    ) -> dict[str, object]:  # type: ignore[no-untyped-def]
+        source_model = self._mosaic_source_model
+        observer = self._mosaic_observer_from_controls()
+        if source_model is None or observer is None:
+            raise ValueError("生成 map_x/map_y 需要先导入源图模型，并设置有效拍摄信息。")
+        if not mosaic_export_available():
+            raise ValueError("当前环境缺少 OpenCV 或 tifffile，无法生成 map_x/map_y。")
+
+        progress = QProgressDialog("正在生成 map_x/map_y...", "取消", 0, int(geometry.output_height_px), self)
+        progress.setWindowTitle(title)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+
+        def update_progress(rows_done: int) -> None:
+            progress.setValue(int(rows_done))
+            QApplication.processEvents()
+            if progress.wasCanceled():
+                raise InterruptedError("用户取消了 map_x/map_y 生成。")
+
+        try:
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            camera = self._mosaic_camera_for_render(geometry.boundary_width_px, geometry.boundary_height_px)
+            view = self._mosaic_view_settings(camera)
+            map_payload = build_mosaic_reprojection_map_payload(
+                source_model=source_model.model,
+                camera=camera,
+                view=view,
+                observer=observer,
+                geometry=geometry,
+                source_model_path=str(source_model.json_path),
+                source_image_width_px=source_model.image_width_px,
+                source_image_height_px=source_model.image_height_px,
+                block_rows=self._mosaic_export_block_rows(),
+                progress_callback=update_progress,
+            )
+        finally:
+            QApplication.restoreOverrideCursor()
+            progress.close()
+        self._mosaic_reprojection_map_payload = map_payload
+        return map_payload
+
     def export_mosaic_framing_json(self) -> None:
         if self._mosaic_source_model is not None:
             try:
@@ -562,7 +653,19 @@ class MosaicProjectionMixin:
             return
         json_path = Path(file_path).expanduser()
         try:
+            geometry = self._mosaic_geometry_from_framing_payload(payload)
+            if self._mosaic_source_model is not None and geometry.output_width_px > 0 and geometry.output_height_px > 0:
+                if self._mosaic_current_map_matches(geometry):
+                    payload["reprojection_map"] = self._mosaic_reprojection_map_payload
+                else:
+                    payload["reprojection_map"] = self._build_mosaic_reprojection_map_for_geometry(
+                        geometry,
+                        title="导出自由投影取景",
+                    )
             json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        except InterruptedError as exc:
+            self.ui.statusbar.showMessage(str(exc))
+            return
         except Exception as exc:  # noqa: BLE001 - 文件写入错误需要直接反馈。
             QMessageBox.critical(self, "导出取景失败", str(exc))
             self.ui.statusbar.showMessage(f"导出取景失败: {exc}")
@@ -586,14 +689,7 @@ class MosaicProjectionMixin:
                 return
         try:
             payload = self._mosaic_framing_payload()
-            output_payload = payload.get("output")
-            if not isinstance(output_payload, dict):
-                raise ValueError("当前取景缺少输出边界。")
-            geometry = mosaic_export_cropped_geometry(
-                boundary_width_px=int(output_payload["boundary_width_px"]),
-                boundary_height_px=int(output_payload["boundary_height_px"]),
-                crop=output_payload.get("crop") if isinstance(output_payload.get("crop"), dict) else {},
-            )
+            geometry = self._mosaic_geometry_from_framing_payload(payload)
             if geometry.output_width_px <= 0 or geometry.output_height_px <= 0:
                 raise ValueError("裁剪后的导出尺寸无效，请减小四边裁剪量。")
         except Exception as exc:  # noqa: BLE001 - 导出入口需要把缺失参数直接反馈到界面。
@@ -627,13 +723,30 @@ class MosaicProjectionMixin:
         ) != QMessageBox.Yes:
             return
 
-        self._write_mosaic_projected_image(output_path, payload, geometry)
+        map_payload = getattr(self, "_mosaic_reprojection_map_payload", None)
+        try:
+            if not self._mosaic_current_map_matches(geometry):
+                map_payload = self._build_mosaic_reprojection_map_for_geometry(
+                    geometry,
+                    title="准备导出重投影图",
+                )
+            payload["reprojection_map"] = map_payload
+        except InterruptedError as exc:
+            self.ui.statusbar.showMessage(str(exc))
+            return
+        except Exception as exc:  # noqa: BLE001 - map 生成失败需要阻止导出错图。
+            QMessageBox.critical(self, "导出重投影图失败", str(exc))
+            self.ui.statusbar.showMessage(f"导出重投影图失败: {exc}")
+            return
+
+        self._write_mosaic_projected_image(output_path, payload, geometry, map_payload)
 
     def _write_mosaic_projected_image(
         self,
         output_path: Path,
         framing_payload: dict[str, object],
         geometry,
+        map_payload: dict[str, object] | None,
     ) -> None:  # type: ignore[no-untyped-def]
         source_model = self._mosaic_source_model
         observer = self._mosaic_observer_from_controls()
@@ -672,8 +785,9 @@ class MosaicProjectionMixin:
                 observer=observer,
                 geometry=geometry,
                 framing_payload=framing_payload,
-                block_rows=MOSAIC_EXPORT_DEFAULT_BLOCK_ROWS,
+                block_rows=self._mosaic_export_block_rows(),
                 progress_callback=update_progress,
+                map_payload=map_payload,
             )
             temp_path.replace(output_path)
         except InterruptedError as exc:
@@ -812,6 +926,8 @@ class MosaicProjectionMixin:
         self._set_mosaic_output_resolution(width_px, height_px, None)
         crop_payload = output_payload.get("crop")
         self._set_mosaic_crop_controls(crop_payload if isinstance(crop_payload, dict) else {})
+        map_payload = payload.get("reprojection_map")
+        self._mosaic_reprojection_map_payload = map_payload if isinstance(map_payload, dict) else None
         self._update_mosaic_view_label()
         self.schedule_mosaic_render(delay_ms=0)
 
@@ -851,6 +967,7 @@ class MosaicProjectionMixin:
         self._mosaic_interaction_source_texture_cache = None
         self._mosaic_interaction_coverage_cache = None
         self._mosaic_interaction_coverage_source_id = None
+        self._invalidate_mosaic_reprojection_map()
         self._set_mosaic_projection_from_source_model(source_model)
         self._set_mosaic_overlay_defaults_for_model(source_model)
         self._set_mosaic_observer_controls_from_source_model(source_model)
@@ -965,6 +1082,7 @@ class MosaicProjectionMixin:
                 control.blockSignals(was_blocked)
 
     def reset_mosaic_observer_from_json(self) -> None:
+        self._invalidate_mosaic_reprojection_map()
         source_model = self._mosaic_source_model
         if source_model is None:
             observer = getattr(self, "_mosaic_framing_observer", None)
@@ -1152,6 +1270,7 @@ class MosaicProjectionMixin:
         self.ui.doubleSpinBoxMosaicFov.blockSignals(was_blocked)
 
     def reset_mosaic_projection_view(self) -> None:
+        self._invalidate_mosaic_reprojection_map()
         self._reset_mosaic_center_from_model()
         self.schedule_mosaic_render(delay_ms=0)
 
@@ -1523,6 +1642,7 @@ class MosaicProjectionMixin:
 
     def _handle_mosaic_pan_delta(self, dx: int, dy: int) -> None:
         """处理平移拖拽。"""
+        self._invalidate_mosaic_reprojection_map()
         width, height = self._mosaic_render_size()
         camera = self._mosaic_camera_for_render(width, height)
         self._mosaic_center_az_deg, self._mosaic_center_alt_deg = sky_center_after_drag(
@@ -1542,6 +1662,7 @@ class MosaicProjectionMixin:
 
     def _handle_mosaic_roll_delta(self, dx: int) -> None:
         """处理滚转拖拽。"""
+        self._invalidate_mosaic_reprojection_map()
         self._mosaic_roll_deg = roll_after_drag(self._mosaic_roll_deg, dx, drag_sign=-1.0)
         self._set_mosaic_view_controls_from_state()
         self._update_mosaic_view_label()
@@ -1549,6 +1670,7 @@ class MosaicProjectionMixin:
 
     def _handle_mosaic_zoom_factor(self, zoom_factor: float) -> None:
         """处理缩放（滚轮或触控板）。"""
+        self._invalidate_mosaic_reprojection_map()
         self._apply_mosaic_fov_zoom_factor(zoom_factor)
         self.schedule_mosaic_render(delay_ms=0)
 

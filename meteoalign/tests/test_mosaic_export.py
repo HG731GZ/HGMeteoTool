@@ -5,9 +5,12 @@ from datetime import datetime, timezone
 import numpy as np
 import tifffile
 
+from meteoalign.coordinates import unit_vectors_to_radec
 from meteoalign.mosaic_export import (
     MosaicExportGeometry,
     MosaicExportSourceImage,
+    build_mosaic_reprojection_map_payload,
+    iter_mosaic_reprojection_map_payload_blocks,
     mosaic_export_cropped_geometry,
     write_mosaic_reprojection_tiff,
 )
@@ -36,6 +39,10 @@ class _TargetProjectionSourceModel:
         pixels = np.column_stack((x_px, y_px)).astype(np.float64)
         pixels[~valid] = np.nan
         return pixels
+
+    def icrs_vectors_to_pixel_points(self, vectors: np.ndarray) -> np.ndarray:
+        radec = unit_vectors_to_radec(vectors)
+        return self.sky_to_pixel_points(radec)
 
 
 def test_mosaic_export_cropped_geometry_subtracts_all_margins() -> None:
@@ -118,3 +125,67 @@ def test_mosaic_export_writes_cropped_uncompressed_u16_tiff_with_exif(tmp_path) 
     assert compression == 1
     assert make == "UnitTestCamera"
     assert np.max(np.abs(exported[0, 0].astype(np.int32) - source_rgb[1, 1].astype(np.int32))) < 8
+
+
+def test_mosaic_export_reuses_encoded_map_payload(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    width, height = 8, 6
+    source_rgb = np.full((height, width, 3), 1000, dtype=np.uint16)
+    source_rgb[2, 2] = (30000, 40000, 50000)
+    observer = ObserverSettings(
+        observation_time_utc=datetime(2025, 12, 14, 18, 11, 45, tzinfo=timezone.utc),
+        latitude_deg=25.0,
+        longitude_deg=102.0,
+        elevation_m=200.0,
+    )
+    camera = CameraSettings(
+        sensor_width_mm=36.0,
+        sensor_height_mm=27.0,
+        image_width_px=width,
+        image_height_px=height,
+        focal_length_mm=24.0,
+        lens_model=RECTILINEAR_LENS_MODEL,
+        fisheye_fov_deg=90.0,
+    )
+    view = ViewSettings(center_az_deg=180.0, center_alt_deg=45.0, roll_deg=0.0)
+    source_model = _TargetProjectionSourceModel(camera, view, observer)
+    geometry = MosaicExportGeometry(
+        boundary_width_px=width,
+        boundary_height_px=height,
+        crop_left_px=1,
+        crop_top_px=1,
+        output_width_px=6,
+        output_height_px=4,
+    )
+    map_payload = build_mosaic_reprojection_map_payload(
+        source_model=source_model,
+        camera=camera,
+        view=view,
+        observer=observer,
+        geometry=geometry,
+        block_rows=2,
+    )
+    decoded_blocks = list(iter_mosaic_reprojection_map_payload_blocks(map_payload))
+    output_path = tmp_path / "mapped_export.tif"
+
+    write_mosaic_reprojection_tiff(
+        output_path=output_path,
+        source_model=source_model,
+        source_image=MosaicExportSourceImage(
+            path=tmp_path / "source.tif",
+            rgb_u16=source_rgb,
+            exif_tags=(),
+            icc_profile=None,
+        ),
+        camera=camera,
+        view=view,
+        observer=observer,
+        geometry=geometry,
+        block_rows=2,
+        map_payload=map_payload,
+    )
+
+    exported = tifffile.imread(output_path)
+    assert map_payload["output_width_px"] == 6
+    assert len(decoded_blocks) == 2
+    assert exported.shape == (4, 6, 3)
+    assert np.max(np.abs(exported[1, 1].astype(np.int32) - source_rgb[2, 2].astype(np.int32))) < 8
