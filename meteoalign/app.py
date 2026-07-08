@@ -225,7 +225,6 @@ class MainWindow(
         self._mask_import_thread: object | None = None
         self._mask_import_worker: QObject | None = None
         self._mask_import_progress: QProgressDialog | None = None
-        self._mapping_validation_dialog: QObject | None = None
         self._real_image_zoom_max_scale = REAL_IMAGE_MAX_ZOOM_SCALE
         self._syncing_camera_dimensions = False
         self._active_star_pair_row: int | None = None
@@ -385,7 +384,6 @@ class MainWindow(
             self.ui.comboBoxProfileSolveMode.currentIndexChanged.connect(self._handle_profile_reuse_options_changed)
         self.ui.comboBoxAutoMatchConstraintMode.currentIndexChanged.connect(self._update_auto_match_controls)
         self.ui.pushButtonAutoMatchFieldStars.clicked.connect(self.auto_match_field_stars)
-        self.ui.pushButtonValidateMapping.clicked.connect(self.show_mapping_validation_dialog)
         self.ui.pushButtonExportSourceModel.clicked.connect(self.export_source_model_json)
         self.ui.actionImportSingleImage.triggered.connect(self.import_single_image)
         self.ui.actionImportImageSequence.triggered.connect(self.import_image_sequence)

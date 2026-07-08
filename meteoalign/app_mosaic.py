@@ -126,6 +126,8 @@ class MosaicProjectionMixin:
         self.ui.doubleSpinBoxMosaicMagLimit.setValue(6.5)
         if hasattr(self.ui, "comboBoxMosaicOverlayMode"):
             self.ui.comboBoxMosaicOverlayMode.setCurrentIndex(0)
+        if hasattr(self.ui, "checkBoxMosaicSkyOnly"):
+            self.ui.checkBoxMosaicSkyOnly.setChecked(False)
         if hasattr(self.ui, "doubleSpinBoxMosaicOverlayOpacity"):
             self.ui.doubleSpinBoxMosaicOverlayOpacity.setValue(100.0)
         elif hasattr(self.ui, "doubleSpinBoxMosaicCoverageOpacity"):
@@ -170,6 +172,8 @@ class MosaicProjectionMixin:
             self.ui.checkBoxMosaicShowCoverage.toggled.connect(self.schedule_mosaic_render)
         if hasattr(self.ui, "comboBoxMosaicOverlayMode"):
             self.ui.comboBoxMosaicOverlayMode.currentIndexChanged.connect(self.schedule_mosaic_render)
+        if hasattr(self.ui, "checkBoxMosaicSkyOnly"):
+            self.ui.checkBoxMosaicSkyOnly.toggled.connect(self.schedule_mosaic_render)
         if hasattr(self.ui, "doubleSpinBoxMosaicOverlayOpacity"):
             self.ui.doubleSpinBoxMosaicOverlayOpacity.valueChanged.connect(self.schedule_mosaic_render)
         elif hasattr(self.ui, "doubleSpinBoxMosaicCoverageOpacity"):
@@ -253,22 +257,25 @@ class MosaicProjectionMixin:
             return
         self.load_mosaic_model_json(file_path)
 
-    def load_mosaic_model_json(self, file_path: str | Path) -> None:
+    def load_mosaic_model_json(self, file_path: str | Path, *, quiet: bool = False) -> bool:
         json_path = Path(file_path).expanduser()
         try:
             QApplication.setOverrideCursor(Qt.WaitCursor)
             source_model = _load_mosaic_source_model(json_path)
             coverage_cache = self._build_mosaic_coverage_cache(source_model.model)
         except Exception as exc:  # noqa: BLE001 - 导入入口需要把 JSON 和模型错误直接反馈到界面。
-            QMessageBox.critical(self, "导入源图模型失败", str(exc))
+            if not quiet:
+                QMessageBox.critical(self, "导入源图模型失败", str(exc))
             self.ui.statusbar.showMessage(f"导入源图模型失败: {exc}")
-            return
+            return False
         finally:
             QApplication.restoreOverrideCursor()
 
         self._mosaic_source_model = source_model
         self._mosaic_coverage_cache = coverage_cache
         self._mosaic_source_texture_cache = None
+        self._set_mosaic_projection_from_source_model(source_model)
+        self._set_mosaic_overlay_defaults_for_model(source_model)
         self._set_mosaic_observer_controls_from_source_model(source_model)
         self._set_mosaic_observer_controls_enabled(True)
         self._set_mosaic_grid_controls_enabled(True)
@@ -276,7 +283,47 @@ class MosaicProjectionMixin:
         self._reset_mosaic_center_from_model()
         self._update_mosaic_model_labels()
         self.schedule_mosaic_render(delay_ms=0)
-        self.ui.statusbar.showMessage(f"已导入源图模型: {source_model.json_path}")
+        if not quiet:
+            self.ui.statusbar.showMessage(f"已导入源图模型: {source_model.json_path}")
+        return True
+
+    def _set_mosaic_projection_from_source_model(self, source_model: MosaicSourceModel) -> bool:
+        if not hasattr(self.ui, "comboBoxMosaicProjection"):
+            return False
+        projection_model = str(source_model.model.camera_calibration_profile.base_projection_type)
+        if projection_model not in MOSAIC_PROJECTION_MODELS:
+            return False
+        index = MOSAIC_PROJECTION_MODELS.index(projection_model)
+        was_blocked = self.ui.comboBoxMosaicProjection.blockSignals(True)
+        self.ui.comboBoxMosaicProjection.setCurrentIndex(index)
+        self.ui.comboBoxMosaicProjection.blockSignals(was_blocked)
+        self._update_mosaic_projection_controls()
+        return True
+
+    def _set_mosaic_overlay_defaults_for_model(self, source_model: MosaicSourceModel) -> None:
+        if hasattr(self.ui, "checkBoxMosaicSkyOnly"):
+            was_blocked = self.ui.checkBoxMosaicSkyOnly.blockSignals(True)
+            self.ui.checkBoxMosaicSkyOnly.setChecked(False)
+            self.ui.checkBoxMosaicSkyOnly.blockSignals(was_blocked)
+        if hasattr(self.ui, "comboBoxMosaicOverlayMode"):
+            overlay_mode = (
+                MOSAIC_OVERLAY_MODE_SOURCE_IMAGE
+                if source_model.source_image_path is not None
+                else MOSAIC_OVERLAY_MODE_COVERAGE
+            )
+            index = MOSAIC_OVERLAY_MODES.index(overlay_mode)
+            was_blocked = self.ui.comboBoxMosaicOverlayMode.blockSignals(True)
+            self.ui.comboBoxMosaicOverlayMode.setCurrentIndex(index)
+            self.ui.comboBoxMosaicOverlayMode.blockSignals(was_blocked)
+        opacity_control = None
+        if hasattr(self.ui, "doubleSpinBoxMosaicOverlayOpacity"):
+            opacity_control = self.ui.doubleSpinBoxMosaicOverlayOpacity
+        elif hasattr(self.ui, "doubleSpinBoxMosaicCoverageOpacity"):
+            opacity_control = self.ui.doubleSpinBoxMosaicCoverageOpacity
+        if opacity_control is not None:
+            was_blocked = opacity_control.blockSignals(True)
+            opacity_control.setValue(50.0)
+            opacity_control.blockSignals(was_blocked)
 
     def _bounded_mosaic_utc_offset(self, offset_hours: float) -> float:
         if not hasattr(self.ui, "doubleSpinBoxMosaicUtcOffset"):
@@ -542,6 +589,8 @@ class MosaicProjectionMixin:
         return max(0.0, min(1.0, float(value) / 100.0))
 
     def _mosaic_overlay_enabled(self) -> bool:
+        if hasattr(self.ui, "checkBoxMosaicSkyOnly") and self.ui.checkBoxMosaicSkyOnly.isChecked():
+            return False
         if hasattr(self.ui, "comboBoxMosaicOverlayMode"):
             return True
         if hasattr(self.ui, "checkBoxMosaicShowCoverage"):

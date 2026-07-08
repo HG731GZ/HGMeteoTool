@@ -556,7 +556,6 @@ class AlignmentMixin:
             self.ui.checkBoxShowSkyMask.setChecked(False)
             self.ui.checkBoxShowSkyMask.blockSignals(was_blocked)
         self.ui.pushButtonAutoMatchFieldStars.setEnabled(has_alignment)
-        self.ui.pushButtonValidateMapping.setEnabled(has_export_model)
         self.ui.pushButtonExportSourceModel.setEnabled(has_export_model)
         self._update_camera_profile_controls()
         if not has_alignment and self.ui.checkBoxSyncReferenceAndRealView.isChecked():
@@ -566,7 +565,7 @@ class AlignmentMixin:
 
         sky_transform = self._sky_alignment_transform
         if sky_transform is not None:
-            source_model_text = "，映射验证可用，模型可导出"
+            source_model_text = "，模型可导出"
             distances = self._alignment_residual_distances()
             compact_summary = ""
             residual_summary = "暂无逐星残差"
@@ -614,7 +613,7 @@ class AlignmentMixin:
                     projection_tooltip=projection_tooltip,
                     soft_tooltip=soft_tooltip,
                     source_model_summary=(
-                        "已可导出 xy→RA/Dec JSON。"
+                        "已可导出 xy→RA/Dec JSON，并可在自由投影拼图中验证。"
                         if self._source_astrometric_model is not None
                         else self._source_model_error_message or "尚未就绪。"
                     ),

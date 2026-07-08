@@ -39,7 +39,6 @@ class ImageMixin:
     _reference_alignment_error_message: str
     _sky_alignment_error_message: str
     _source_model_error_message: str
-    _mapping_validation_dialog: object | None
     real_image_item: object
     real_image_scene: object
 
@@ -240,13 +239,6 @@ class ImageMixin:
         self._reference_alignment_error_message = ""
         self._sky_alignment_error_message = ""
         self._source_model_error_message = ""
-        dialog = getattr(self, "_mapping_validation_dialog", None)
-        if dialog is not None:
-            try:
-                dialog.close()
-            except RuntimeError:
-                pass
-            self._mapping_validation_dialog = None
 
     def _set_image_import_controls_enabled(self, enabled: bool) -> None:
         self.ui.pushButtonImportSingleImage.setEnabled(enabled)

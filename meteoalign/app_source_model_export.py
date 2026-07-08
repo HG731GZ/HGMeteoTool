@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
-from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QFileDialog, QMessageBox
 
 from .alignment.constants import MIN_ALIGNMENT_PAIRS
@@ -17,12 +16,11 @@ from .fixed_camera_model import (
     FixedCameraTimeFitResult,
     estimate_frame_time_correction,
 )
-from .mapping_validation import MappingValidationDialog
 from .simulator import ObserverSettings
 from .source_model import SourceAstrometricModel
 
 class SourceModelExportMixin:
-    """单图源模型 JSON 导出和映射验证入口。"""
+    """单图源模型 JSON 导出入口。"""
 
     def _default_source_model_path(self) -> Path:
         if self.current_image_preview is not None:
@@ -213,64 +211,20 @@ class SourceModelExportMixin:
                 self.ui.statusbar.showMessage("已取消导出 xy→RA/Dec 映射 JSON。")
                 return
             json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            preloaded_to_mosaic = False
+            if hasattr(self, "load_mosaic_model_json"):
+                preloaded_to_mosaic = bool(self.load_mosaic_model_json(json_path, quiet=True))
+            preload_status = "，已预载到自由投影拼图" if preloaded_to_mosaic else "，自由投影预载失败"
             self.ui.statusbar.showMessage(
-                f"已导出 xy→RA/Dec 映射 JSON: {json_path}  配对数: {pair_count}  RMS: {rms_px:.2f}px"
+                f"已导出 xy→RA/Dec 映射 JSON: {json_path}  配对数: {pair_count}  "
+                f"RMS: {rms_px:.2f}px{preload_status}"
             )
+            preload_message = "\n已预载到自由投影拼图，可切换页面查看。" if preloaded_to_mosaic else "\n自由投影预载失败，可稍后手动导入检查。"
             QMessageBox.information(
                 self,
                 "映射 JSON 已导出",
-                f"JSON：{json_path}\n配对数：{pair_count}\nRMS：{rms_px:.2f} px",
+                f"JSON：{json_path}\n配对数：{pair_count}\nRMS：{rms_px:.2f} px{preload_message}",
             )
         except Exception as exc:  # noqa: BLE001 - 导出入口需要把模型生成与文件错误直接反馈给用户。
             self.ui.statusbar.showMessage(f"导出 xy→RA/Dec 映射 JSON 失败: {exc}")
             QMessageBox.critical(self, "导出 xy→RA/Dec 映射 JSON 失败", str(exc))
-
-    def show_mapping_validation_dialog(self) -> None:
-        if self.current_image_preview is None:
-            QMessageBox.information(self, "尚未导入图像", "请先导入真实图像，再进行映射验证。")
-            return
-
-        try:
-            model = self._current_source_model().to_frame_astrometric_model()
-        except Exception as exc:  # noqa: BLE001 - 验证入口需要把模型未就绪原因直接反馈给用户。
-            QMessageBox.information(self, "映射尚未就绪", str(exc))
-            return
-
-        old_dialog = getattr(self, "_mapping_validation_dialog", None)
-        if old_dialog is not None:
-            try:
-                if old_dialog.isVisible():
-                    old_dialog.raise_()
-                    old_dialog.activateWindow()
-                    return
-            except RuntimeError:
-                pass
-
-        observer = self._observer_settings()
-        base_camera = self._output_camera_settings()
-        initial_view = self._view_settings()
-        visible_mag_limit = float(self.ui.doubleSpinBoxMagLimit.value())
-        dialog = MappingValidationDialog(
-            parent=self,
-            renderer=self.renderer,
-            model=model,
-            source_image=self.current_image_preview.image,
-            observer=observer,
-            base_camera=base_camera,
-            initial_view=initial_view,
-            visible_mag_limit=visible_mag_limit,
-            horizontal_catalog=self._get_horizontal_catalog(observer, visible_mag_limit),
-            horizontal_milky_way=self._get_horizontal_milky_way(observer),
-            horizontal_solar_system=self._get_horizontal_solar_system(observer),
-            ui_config=self.ui_config,
-        )
-        dialog.setAttribute(Qt.WA_DeleteOnClose, True)
-        dialog.destroyed.connect(lambda _obj=None: setattr(self, "_mapping_validation_dialog", None))
-        parent_size = self.size()
-        dialog.resize(max(720, int(parent_size.width() * 0.88)), max(520, int(parent_size.height() * 0.88)))
-        dialog_geometry = dialog.frameGeometry()
-        dialog_geometry.moveCenter(self.geometry().center())
-        dialog.move(dialog_geometry.topLeft())
-        self._mapping_validation_dialog = dialog
-        dialog.show()
-

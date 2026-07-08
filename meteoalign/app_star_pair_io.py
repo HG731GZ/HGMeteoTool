@@ -83,7 +83,6 @@ class StarPairIOMixin(
     _source_model_error_message: str
     _sky_alignment_error_message: str
     _reference_alignment_error_message: str
-    _mapping_validation_dialog: object | None
     current_image_preview: object | None
     current_sky_mask: np.ndarray | None
     current_sky_mask_path: Path | None

@@ -1412,13 +1412,6 @@
               <item>
                <layout class="QHBoxLayout" name="horizontalLayoutSourceModelButtons">
                 <item>
-                 <widget class="QPushButton" name="pushButtonValidateMapping">
-                  <property name="text">
-                   <string>映射验证</string>
-                  </property>
-                 </widget>
-                </item>
-                <item>
                  <widget class="QPushButton" name="pushButtonExportSourceModel">
                   <property name="text">
                    <string>导出映射</string>
@@ -2233,15 +2226,38 @@
                 </font>
                </property>
                <property name="sizePolicy">
-                <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
-                 <horstretch>1</horstretch>
+                <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+                 <horstretch>0</horstretch>
                  <verstretch>0</verstretch>
                 </sizepolicy>
                </property>
                <property name="text">
                 <string>自由投影预览</string>
                </property>
+             </widget>
+            </item>
+             <item>
+              <widget class="QCheckBox" name="checkBoxMosaicSkyOnly">
+               <property name="text">
+                <string>只显示模拟星空</string>
+               </property>
+               <property name="checked">
+                <bool>false</bool>
+               </property>
               </widget>
+             </item>
+             <item>
+              <spacer name="horizontalSpacerMosaicPreviewHeader">
+               <property name="orientation">
+                <enum>Qt::Horizontal</enum>
+               </property>
+               <property name="sizeHint" stdset="0">
+                <size>
+                 <width>40</width>
+                 <height>20</height>
+                </size>
+               </property>
+              </spacer>
              </item>
              <item>
               <widget class="QComboBox" name="comboBoxMosaicOverlayMode">

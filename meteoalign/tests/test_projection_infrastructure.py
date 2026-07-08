@@ -3,7 +3,6 @@ from __future__ import annotations
 import numpy as np
 
 from meteoalign.geometry2d import cell_crosses_angle_break, expand_polygon_radially
-from meteoalign.mapping_validation import MappingValidationDialog
 from meteoalign.projection_grid import build_pixel_grid, grid_shape_for_long_side, project_altaz_grid_to_screen
 from meteoalign.simulator import CameraSettings, RECTILINEAR_LENS_MODEL, ViewSettings
 from meteoalign.view_gestures import ViewZoomPolicy, fov_after_zoom, roll_after_drag, sky_center_after_drag, wheel_zoom_factor
@@ -86,25 +85,3 @@ def test_view_gesture_math_is_directionally_consistent() -> None:
     assert az == 99.0
     assert alt == 19.5
     assert roll_after_drag(179.0, 8, drag_sign=1.0) == -179.0
-
-
-def test_mapping_validation_camera_for_render_updates_base_camera() -> None:
-    dialog = MappingValidationDialog.__new__(MappingValidationDialog)
-    dialog.base_camera = CameraSettings(
-        sensor_width_mm=36.0,
-        sensor_height_mm=24.0,
-        image_width_px=100,
-        image_height_px=100,
-        focal_length_mm=24.0,
-        lens_model=RECTILINEAR_LENS_MODEL,
-        fisheye_fov_deg=120.0,
-    )
-    dialog.focal_length_mm = 35.0
-    dialog.fisheye_fov_deg = 180.0
-
-    camera = MappingValidationDialog._camera_for_render(dialog, 640, 480)
-
-    assert camera.image_width_px == 640
-    assert camera.image_height_px == 480
-    assert camera.focal_length_mm == 35.0
-    assert camera.fisheye_fov_deg == 180.0
