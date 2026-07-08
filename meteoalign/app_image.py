@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-from PyQt5.QtCore import QThread, Qt
+from PyQt5.QtCore import QDateTime, QThread, Qt
 from PyQt5.QtGui import QImage
 from PyQt5.QtWidgets import QApplication, QFileDialog, QMenu, QMessageBox, QProgressDialog
 
@@ -14,6 +14,7 @@ from .image_preview import IMAGE_FILE_FILTER
 from .app_utils import _image_with_binary_mask
 from .app_workers import ImagePreviewLoadWorker, SkyMaskLoadWorker
 from .catalog import project_root
+from .image_sequence import read_image_capture_time, sequence_item_local_datetime
 from .image_preview import ImagePreview, load_image_preview
 from .reference import build_reference_payload, save_reference_outputs
 
@@ -65,6 +66,23 @@ class ImageMixin:
         else:
             self._set_elided_label_text(self.ui.labelImportedImagePath, image_path.name, image_path_text)
         self.ui.labelImportedImageSize.setText(f"{preview.original_width} x {preview.original_height} px")
+
+    def _apply_single_image_exif_observation_time(self, image_path: str | Path) -> str:
+        """读取单张图像 EXIF 时间，并同步到星空模拟页的拍摄时间。"""
+
+        try:
+            capture_item = read_image_capture_time(image_path)
+            local_dt = sequence_item_local_datetime(capture_item, self.ui.doubleSpinBoxUtcOffset.value())
+            qt_datetime = QDateTime.fromString(local_dt.strftime("%Y-%m-%d %H:%M:%S"), "yyyy-MM-dd HH:mm:ss")
+            if not qt_datetime.isValid():
+                raise ValueError("EXIF 拍摄时间无法转换为界面时间。")
+        except Exception:
+            return ""
+
+        self.ui.dateTimeEditObservation.setDateTime(qt_datetime)
+        if hasattr(self, "schedule_render"):
+            self.schedule_render(delay_ms=0)
+        return f"  已应用 EXIF 拍摄时间: {capture_item.capture_datetime.isoformat()}。"
 
     def _show_imported_image_path_context_menu(self, position) -> None:  # type: ignore[no-untyped-def]
         """显示真实图像文件名右键菜单，用于复制完整路径。"""
@@ -268,11 +286,15 @@ class ImageMixin:
         if switch_to_reference:
             self.ui.tabWidgetMain.setCurrentWidget(self.ui.tabReferenceImage)
         self._update_imported_image_labels(preview)
+        exif_time_message = ""
+        if clear_existing_pairs:
+            exif_time_message = self._apply_single_image_exif_observation_time(preview.path)
         self.ui.statusbar.showMessage(
-            "已导入图像: {path}  原始: {width} x {height} px。右键配对表行选择“点选位置”。".format(
+            "已导入图像: {path}  原始: {width} x {height} px。{exif}右键配对表行选择“点选位置”。".format(
                 path=Path(preview.path).expanduser().resolve(),
                 width=preview.original_width,
                 height=preview.original_height,
+                exif=exif_time_message,
             )
         )
         skip_auto_import = (

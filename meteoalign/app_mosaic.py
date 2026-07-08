@@ -29,6 +29,13 @@ from .app_constants import (
 from .app_graphics_items import GraphicsImageItem
 from .catalog import project_root
 from .frame_astrometry import FrameAstrometricModel
+from .image_preview import load_image_preview
+from .texture_projection import (
+    qimage_to_rgb_array,
+    rgba_array_to_qimage,
+    texture_projection_available,
+    warp_grid_texture_to_rgba,
+)
 from .simulator import (
     CYLINDRICAL_LENS_MODELS,
     CameraSettings,
@@ -54,8 +61,17 @@ MOSAIC_PROJECTION_MODELS = (
 )
 MOSAIC_RENDER_MIN_SIZE_PX = 128
 MOSAIC_COVERAGE_GRID_LONG_SIDE = 54
+MOSAIC_GRID_MIN_PRECISION = 12
+MOSAIC_GRID_MAX_PRECISION = 180
 MOSAIC_ZOOM_FACTOR = 1.18
 MOSAIC_MODEL_REFIT_MIN_PAIRS = 4
+MOSAIC_SOURCE_TEXTURE_LONG_SIDE_PX = 4096
+MOSAIC_OVERLAY_MODE_COVERAGE = "coverage"
+MOSAIC_OVERLAY_MODE_SOURCE_IMAGE = "source_image"
+MOSAIC_OVERLAY_MODES = (
+    MOSAIC_OVERLAY_MODE_COVERAGE,
+    MOSAIC_OVERLAY_MODE_SOURCE_IMAGE,
+)
 
 
 @dataclass(frozen=True)
@@ -89,9 +105,21 @@ class MosaicSourceModel:
 class MosaicCoverageCache:
     grid_rows: int
     grid_columns: int
+    grid_x_px: np.ndarray
+    grid_y_px: np.ndarray
     ra_deg: np.ndarray
     dec_deg: np.ndarray
     valid: np.ndarray
+
+
+@dataclass(frozen=True)
+class MosaicSourceTextureCache:
+    source_image_path: Path
+    source_rgb: np.ndarray
+    source_scale_x: float
+    source_scale_y: float
+    source_width_px: int
+    source_height_px: int
 
 
 def _parse_datetime_utc(value: object, field_name: str) -> datetime:
@@ -190,6 +218,20 @@ def _payload_utc_offset_hours(payload: dict[str, object]) -> float:
         if isinstance(observer_payload, dict):
             return _payload_optional_float(observer_payload.get("utc_offset_hours"), 0.0)
     return 0.0
+
+
+def _expanded_polygon_points(xs: np.ndarray, ys: np.ndarray, padding_px: float) -> list[QPointF]:
+    """让覆盖面片相互轻微重叠，避免逐格填充时出现内部接缝。"""
+
+    points = np.column_stack((xs, ys)).astype(np.float64)
+    if padding_px > 0.0:
+        center = np.mean(points, axis=0)
+        vectors = points - center
+        lengths = np.linalg.norm(vectors, axis=1)
+        valid = lengths > 1e-6
+        if np.any(valid):
+            points[valid] = center + vectors[valid] * ((lengths[valid] + padding_px) / lengths[valid])[:, None]
+    return [QPointF(float(x_value), float(y_value)) for x_value, y_value in points]
 
 
 def _load_mosaic_fit_data(payload: dict[str, object]) -> MosaicModelFitData | None:
@@ -305,6 +347,7 @@ class MosaicProjectionMixin:
         self.mosaic_render_timer.timeout.connect(self.render_mosaic_projection_now)
         self._mosaic_source_model: MosaicSourceModel | None = None
         self._mosaic_coverage_cache: MosaicCoverageCache | None = None
+        self._mosaic_source_texture_cache: MosaicSourceTextureCache | None = None
         self._mosaic_last_drag_pos: QPoint | None = None
         self._mosaic_center_az_deg = 0.0
         self._mosaic_center_alt_deg = 20.0
@@ -323,9 +366,18 @@ class MosaicProjectionMixin:
         if hasattr(self.ui, "doubleSpinBoxMosaicRoll"):
             self.ui.doubleSpinBoxMosaicRoll.setValue(self._mosaic_roll_deg)
         self.ui.doubleSpinBoxMosaicMagLimit.setValue(6.5)
-        self.ui.doubleSpinBoxMosaicCoverageOpacity.setValue(45.0)
+        if hasattr(self.ui, "comboBoxMosaicOverlayMode"):
+            self.ui.comboBoxMosaicOverlayMode.setCurrentIndex(0)
+        if hasattr(self.ui, "doubleSpinBoxMosaicOverlayOpacity"):
+            self.ui.doubleSpinBoxMosaicOverlayOpacity.setValue(100.0)
+        elif hasattr(self.ui, "doubleSpinBoxMosaicCoverageOpacity"):
+            self.ui.doubleSpinBoxMosaicCoverageOpacity.setValue(100.0)
+        if hasattr(self.ui, "spinBoxMosaicGridPrecision"):
+            self.ui.spinBoxMosaicGridPrecision.setValue(MOSAIC_COVERAGE_GRID_LONG_SIDE)
         self._init_mosaic_observer_controls()
         self._update_mosaic_projection_controls()
+        self._update_mosaic_grid_precision_tooltip()
+        self._set_mosaic_grid_controls_enabled(False)
         self._update_mosaic_model_labels()
         self._update_mosaic_view_label()
 
@@ -356,8 +408,18 @@ class MosaicProjectionMixin:
             self.ui.doubleSpinBoxMosaicRoll.valueChanged.connect(self._handle_mosaic_view_controls_changed)
         self.ui.doubleSpinBoxMosaicMagLimit.valueChanged.connect(self.schedule_mosaic_render)
         self.ui.checkBoxMosaicShowGrid.toggled.connect(self.schedule_mosaic_render)
-        self.ui.checkBoxMosaicShowCoverage.toggled.connect(self.schedule_mosaic_render)
-        self.ui.doubleSpinBoxMosaicCoverageOpacity.valueChanged.connect(self.schedule_mosaic_render)
+        if hasattr(self.ui, "checkBoxMosaicShowCoverage"):
+            self.ui.checkBoxMosaicShowCoverage.toggled.connect(self.schedule_mosaic_render)
+        if hasattr(self.ui, "comboBoxMosaicOverlayMode"):
+            self.ui.comboBoxMosaicOverlayMode.currentIndexChanged.connect(self.schedule_mosaic_render)
+        if hasattr(self.ui, "doubleSpinBoxMosaicOverlayOpacity"):
+            self.ui.doubleSpinBoxMosaicOverlayOpacity.valueChanged.connect(self.schedule_mosaic_render)
+        elif hasattr(self.ui, "doubleSpinBoxMosaicCoverageOpacity"):
+            self.ui.doubleSpinBoxMosaicCoverageOpacity.valueChanged.connect(self.schedule_mosaic_render)
+        if hasattr(self.ui, "spinBoxMosaicGridPrecision"):
+            self.ui.spinBoxMosaicGridPrecision.valueChanged.connect(self._update_mosaic_grid_precision_tooltip)
+        if hasattr(self.ui, "pushButtonResolveMosaicGrid"):
+            self.ui.pushButtonResolveMosaicGrid.clicked.connect(self.resolve_mosaic_grid_again)
         self.ui.pushButtonResetMosaicView.clicked.connect(self.reset_mosaic_projection_view)
         if hasattr(self.ui, "dateTimeEditMosaicObservation"):
             self.ui.dateTimeEditMosaicObservation.dateTimeChanged.connect(self._handle_mosaic_observer_changed)
@@ -448,8 +510,11 @@ class MosaicProjectionMixin:
 
         self._mosaic_source_model = source_model
         self._mosaic_coverage_cache = coverage_cache
+        self._mosaic_source_texture_cache = None
         self._set_mosaic_observer_controls_from_source_model(source_model)
         self._set_mosaic_observer_controls_enabled(True)
+        self._set_mosaic_grid_controls_enabled(True)
+        self._update_mosaic_grid_precision_tooltip()
         self._reset_mosaic_center_from_model()
         self._update_mosaic_model_labels()
         self.schedule_mosaic_render(delay_ms=0)
@@ -530,15 +595,51 @@ class MosaicProjectionMixin:
             elevation_m=float(self.ui.doubleSpinBoxMosaicElevation.value()),
         )
 
+    def _mosaic_grid_precision_value(self) -> int:
+        if not hasattr(self.ui, "spinBoxMosaicGridPrecision"):
+            return MOSAIC_COVERAGE_GRID_LONG_SIDE
+        return max(
+            MOSAIC_GRID_MIN_PRECISION,
+            min(MOSAIC_GRID_MAX_PRECISION, int(self.ui.spinBoxMosaicGridPrecision.value())),
+        )
+
+    def _mosaic_grid_shape_for_size(self, width: int, height: int) -> tuple[int, int]:
+        precision = self._mosaic_grid_precision_value()
+        if width >= height:
+            columns = precision
+            rows = max(3, int(round(precision * height / float(max(width, 1)))))
+        else:
+            rows = precision
+            columns = max(3, int(round(precision * width / float(max(height, 1)))))
+        return rows, columns
+
+    def _update_mosaic_grid_precision_tooltip(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        if not hasattr(self.ui, "spinBoxMosaicGridPrecision"):
+            return
+        source_model = self._mosaic_source_model
+        if source_model is None:
+            precision = self._mosaic_grid_precision_value()
+            text = f"下一次导入模型将使用长边 {precision} 点的贴图网格。"
+        else:
+            rows, columns = self._mosaic_grid_shape_for_size(
+                source_model.image_width_px,
+                source_model.image_height_px,
+            )
+            text = f"下一次重新求解将使用 {columns} x {rows} 个源图网格点。"
+        self.ui.spinBoxMosaicGridPrecision.setToolTip(text)
+        if hasattr(self.ui, "pushButtonResolveMosaicGrid"):
+            self.ui.pushButtonResolveMosaicGrid.setToolTip(text)
+
+    def _set_mosaic_grid_controls_enabled(self, enabled: bool) -> None:
+        if hasattr(self.ui, "spinBoxMosaicGridPrecision"):
+            self.ui.spinBoxMosaicGridPrecision.setEnabled(True)
+        if hasattr(self.ui, "pushButtonResolveMosaicGrid"):
+            self.ui.pushButtonResolveMosaicGrid.setEnabled(bool(enabled))
+
     def _build_mosaic_coverage_cache(self, model: FrameAstrometricModel) -> MosaicCoverageCache:
         width = max(1, int(model.image_width_px))
         height = max(1, int(model.image_height_px))
-        if width >= height:
-            columns = MOSAIC_COVERAGE_GRID_LONG_SIDE
-            rows = max(3, int(round(MOSAIC_COVERAGE_GRID_LONG_SIDE * height / float(width))))
-        else:
-            rows = MOSAIC_COVERAGE_GRID_LONG_SIDE
-            columns = max(3, int(round(MOSAIC_COVERAGE_GRID_LONG_SIDE * width / float(height))))
+        rows, columns = self._mosaic_grid_shape_for_size(width, height)
         x_values = np.linspace(0.0, max(width - 1, 0), columns, dtype=np.float64)
         y_values = np.linspace(0.0, max(height - 1, 0), rows, dtype=np.float64)
         grid_x, grid_y = np.meshgrid(x_values, y_values)
@@ -548,10 +649,32 @@ class MosaicProjectionMixin:
         return MosaicCoverageCache(
             grid_rows=rows,
             grid_columns=columns,
+            grid_x_px=grid_x.astype(np.float64),
+            grid_y_px=grid_y.astype(np.float64),
             ra_deg=radec[:, 0].reshape((rows, columns)).astype(np.float64),
             dec_deg=radec[:, 1].reshape((rows, columns)).astype(np.float64),
             valid=valid.reshape((rows, columns)).astype(bool),
         )
+
+    def resolve_mosaic_grid_again(self) -> None:
+        source_model = self._mosaic_source_model
+        if source_model is None:
+            self.ui.statusbar.showMessage("尚未导入源图模型，无法重新求解自由投影网格。")
+            return
+        try:
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            self._mosaic_coverage_cache = self._build_mosaic_coverage_cache(source_model.model)
+        except Exception as exc:  # noqa: BLE001 - 手动重算入口需要把模型错误直接反馈到界面。
+            QMessageBox.critical(self, "重新求解自由投影网格失败", str(exc))
+            self.ui.statusbar.showMessage(f"重新求解自由投影网格失败: {exc}")
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        self._update_mosaic_grid_precision_tooltip()
+        self.schedule_mosaic_render(delay_ms=0)
+        cache = self._mosaic_coverage_cache
+        if cache is not None:
+            self.ui.statusbar.showMessage(f"已重新求解自由投影网格: {cache.grid_columns} x {cache.grid_rows}")
 
     def _mosaic_coverage_altaz(
         self,
@@ -690,6 +813,29 @@ class MosaicProjectionMixin:
         observer = self._mosaic_observer_from_controls() or source_model.observer
         return source_model.model, self._mosaic_coverage_cache, observer
 
+    def _mosaic_overlay_mode(self) -> str:
+        if hasattr(self.ui, "comboBoxMosaicOverlayMode"):
+            index = self.ui.comboBoxMosaicOverlayMode.currentIndex()
+            if 0 <= index < len(MOSAIC_OVERLAY_MODES):
+                return MOSAIC_OVERLAY_MODES[index]
+        return MOSAIC_OVERLAY_MODE_COVERAGE
+
+    def _mosaic_overlay_opacity(self) -> float:
+        if hasattr(self.ui, "doubleSpinBoxMosaicOverlayOpacity"):
+            value = self.ui.doubleSpinBoxMosaicOverlayOpacity.value()
+        elif hasattr(self.ui, "doubleSpinBoxMosaicCoverageOpacity"):
+            value = self.ui.doubleSpinBoxMosaicCoverageOpacity.value()
+        else:
+            value = 100.0
+        return max(0.0, min(1.0, float(value) / 100.0))
+
+    def _mosaic_overlay_enabled(self) -> bool:
+        if hasattr(self.ui, "comboBoxMosaicOverlayMode"):
+            return True
+        if hasattr(self.ui, "checkBoxMosaicShowCoverage"):
+            return bool(self.ui.checkBoxMosaicShowCoverage.isChecked())
+        return True
+
     def _set_mosaic_view_controls_from_state(self) -> None:
         control_values = (
             ("doubleSpinBoxMosaicAz", self._mosaic_center_az_deg % 360.0),
@@ -745,8 +891,11 @@ class MosaicProjectionMixin:
                 draw_solar_system_labels=True,
                 draw_direction_labels=self.ui.checkBoxMosaicShowGrid.isChecked(),
             )
-            if self.ui.checkBoxMosaicShowCoverage.isChecked():
-                self._paint_mosaic_coverage(image, camera, view, coverage_cache, observer)
+            if self._mosaic_overlay_enabled():
+                if self._mosaic_overlay_mode() == MOSAIC_OVERLAY_MODE_SOURCE_IMAGE:
+                    self._paint_mosaic_source_image(image, camera, view, coverage_cache, observer, source_model)
+                else:
+                    self._paint_mosaic_coverage(image, camera, view, coverage_cache, observer)
             self.mosaic_image_item.set_image(image)
             self.mosaic_scene.setSceneRect(0.0, 0.0, float(width), float(height))
             self.ui.mosaicProjectionView.resetTransform()
@@ -787,7 +936,7 @@ class MosaicProjectionMixin:
                 cache_az.ravel(),
                 basis,
             ).reshape((cache.grid_rows, cache.grid_columns))
-        opacity = max(0.0, min(1.0, float(self.ui.doubleSpinBoxMosaicCoverageOpacity.value()) / 100.0))
+        opacity = self._mosaic_overlay_opacity()
         fill_color = QColor(205, 205, 205, int(round(255.0 * opacity)))
         edge_color = QColor(245, 245, 245, int(round(220.0 * min(1.0, opacity + 0.25))))
         max_cell_bbox_area = max(256.0, image.width() * image.height() * 0.35)
@@ -842,14 +991,100 @@ class MosaicProjectionMixin:
                 bbox_area = max(float(np.max(xs) - np.min(xs)), 0.0) * max(float(np.max(ys) - np.min(ys)), 0.0)
                 if bbox_area <= 0.05 or bbox_area > max_cell_bbox_area:
                     continue
-                polygon = QPolygonF()
-                for x_value, y_value in zip(xs, ys):
-                    polygon.append(QPointF(float(x_value), float(y_value)))
+                polygon = QPolygonF(_expanded_polygon_points(xs, ys, 0.75))
                 painter.drawPolygon(polygon)
 
         painter.setPen(edge_color)
         painter.setBrush(Qt.NoBrush)
         self._paint_mosaic_coverage_boundary(painter, screen_x, screen_y, valid)
+        painter.end()
+
+    def _mosaic_source_texture(self, source_model: MosaicSourceModel) -> MosaicSourceTextureCache | None:
+        image_path = source_model.source_image_path
+        if image_path is None:
+            self.ui.statusbar.showMessage("源图模型 JSON 未记录真实图像路径，无法显示原图。")
+            return None
+        try:
+            resolved_path = image_path.expanduser().resolve()
+        except OSError:
+            resolved_path = image_path.expanduser()
+        cache = self._mosaic_source_texture_cache
+        if cache is not None and cache.source_image_path == resolved_path:
+            return cache
+        if not resolved_path.exists():
+            self.ui.statusbar.showMessage(f"源图不存在，无法显示原图: {resolved_path}")
+            return None
+        try:
+            preview = load_image_preview(resolved_path, max_long_side_px=MOSAIC_SOURCE_TEXTURE_LONG_SIDE_PX)
+            source_rgb = qimage_to_rgb_array(preview.image)
+        except Exception as exc:  # noqa: BLE001 - 预览渲染入口只在状态栏提示缺图或解码错误。
+            self.ui.statusbar.showMessage(f"读取源图失败，无法显示原图: {exc}")
+            return None
+        texture_cache = MosaicSourceTextureCache(
+            source_image_path=resolved_path,
+            source_rgb=source_rgb.astype(np.uint8),
+            source_scale_x=source_rgb.shape[1] / max(float(source_model.image_width_px), 1.0),
+            source_scale_y=source_rgb.shape[0] / max(float(source_model.image_height_px), 1.0),
+            source_width_px=int(source_model.image_width_px),
+            source_height_px=int(source_model.image_height_px),
+        )
+        self._mosaic_source_texture_cache = texture_cache
+        return texture_cache
+
+    def _paint_mosaic_source_image(
+        self,
+        image: QImage,
+        camera: CameraSettings,
+        view: ViewSettings,
+        cache: MosaicCoverageCache | None,
+        observer: ObserverSettings,
+        source_model: MosaicSourceModel,
+    ) -> None:
+        if cache is None or not texture_projection_available():
+            return
+        texture = self._mosaic_source_texture(source_model)
+        if texture is None:
+            return
+        cache_alt, cache_az, cache_valid = self._mosaic_coverage_altaz(cache, observer)
+        basis = camera_basis_from_view(view)
+        x_px, y_px, valid_projection = _project_altaz_points(
+            cache_alt.ravel(),
+            cache_az.ravel(),
+            camera=camera,
+            basis=basis,
+        )
+        screen_x = x_px.reshape((cache.grid_rows, cache.grid_columns))
+        screen_y = y_px.reshape((cache.grid_rows, cache.grid_columns))
+        valid = (
+            valid_projection.reshape((cache.grid_rows, cache.grid_columns))
+            & cache_valid
+            & np.isfinite(screen_x)
+            & np.isfinite(screen_y)
+        )
+        screen_longitudes = None
+        if camera.lens_model in CYLINDRICAL_LENS_MODELS:
+            screen_longitudes = _camera_longitudes_from_altaz(
+                cache_alt.ravel(),
+                cache_az.ravel(),
+                basis,
+            ).reshape((cache.grid_rows, cache.grid_columns))
+        rgba = np.zeros((image.height(), image.width(), 4), dtype=np.uint8)
+        warp_grid_texture_to_rgba(
+            rgba,
+            source_rgb=texture.source_rgb,
+            source_grid_x_px=cache.grid_x_px,
+            source_grid_y_px=cache.grid_y_px,
+            source_scale_x=texture.source_scale_x,
+            source_scale_y=texture.source_scale_y,
+            screen_x_px=screen_x,
+            screen_y_px=screen_y,
+            valid_points=valid,
+            opacity=self._mosaic_overlay_opacity(),
+            screen_longitudes_rad=screen_longitudes,
+        )
+        overlay = rgba_array_to_qimage(rgba)
+        painter = QPainter(image)
+        painter.drawImage(0, 0, overlay)
         painter.end()
 
     def _paint_mosaic_coverage_boundary(

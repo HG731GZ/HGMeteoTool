@@ -29,12 +29,13 @@ from .simulator import (
     project_horizontal_catalog,
     vertical_fov_deg,
 )
+from .texture_projection import (
+    qimage_to_rgb_array,
+    rgba_array_to_qimage,
+    texture_projection_available,
+    warp_grid_texture_to_rgba,
+)
 from .ui.ui_mapping_validation_dialog import Ui_MappingValidationDialog
-
-try:
-    import cv2
-except ImportError:  # pragma: no cover - OpenCV 是项目依赖；兜底方便环境诊断。
-    cv2 = None
 
 
 VALIDATION_PIXEL_TO_SKY_CHUNK_SIZE = 24_576
@@ -62,24 +63,6 @@ class ImageSkyProjectionCache:
     az_deg: np.ndarray
     valid: np.ndarray
     source_rgb: np.ndarray
-
-
-def _qimage_to_rgb_array(image: QImage) -> np.ndarray:
-    rgb_image = image.convertToFormat(QImage.Format_RGB888)
-    width = rgb_image.width()
-    height = rgb_image.height()
-    bytes_per_line = rgb_image.bytesPerLine()
-    pointer = rgb_image.bits()
-    pointer.setsize(rgb_image.byteCount())
-    raw = np.frombuffer(pointer, dtype=np.uint8).reshape((height, bytes_per_line))
-    return raw[:, : width * 3].reshape((height, width, 3)).copy()
-
-
-def _rgba_array_to_qimage(rgba: np.ndarray) -> QImage:
-    image_array = np.ascontiguousarray(rgba, dtype=np.uint8)
-    height, width, _channels = image_array.shape
-    qimage = QImage(image_array.data, width, height, width * 4, QImage.Format_RGBA8888)
-    return qimage.copy()
 
 
 class PixelToSkyValidationWorker(QObject):
@@ -129,7 +112,7 @@ class PixelToSkyValidationWorker(QObject):
             preview = self.source_image.scaled(preview_width, preview_height, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         else:
             preview = self.source_image
-        rgb = _qimage_to_rgb_array(preview)
+        rgb = qimage_to_rgb_array(preview)
         return rgb, rgb.shape[1] / max(float(width), 1.0), rgb.shape[0] / max(float(height), 1.0)
 
     def _build_cache(self) -> ImageSkyProjectionCache:
@@ -496,8 +479,8 @@ class MappingValidationDialog(QDialog):
         height = int(camera.image_height_px)
         rgba = np.zeros((height, width, 4), dtype=np.uint8)
         cache = self.cache
-        if cache is None or cache.alt_deg.size == 0 or cv2 is None:
-            return _rgba_array_to_qimage(rgba)
+        if cache is None or cache.alt_deg.size == 0 or not texture_projection_available():
+            return rgba_array_to_qimage(rgba)
 
         basis = camera_basis_from_view(view)
         x_px, y_px, valid_projection = _project_altaz_points(
@@ -514,106 +497,18 @@ class MappingValidationDialog(QDialog):
             & np.isfinite(screen_x)
             & np.isfinite(screen_y)
         )
-        self._warp_grid_cells_to_overlay(rgba, cache, screen_x, screen_y, valid_screen)
-        return _rgba_array_to_qimage(rgba)
-
-    def _warp_grid_cells_to_overlay(
-        self,
-        rgba: np.ndarray,
-        cache: ImageSkyProjectionCache,
-        screen_x: np.ndarray,
-        screen_y: np.ndarray,
-        valid_screen: np.ndarray,
-    ) -> None:
-        height, width, _channels = rgba.shape
-        source_rgb = cache.source_rgb
-        source_height, source_width, _source_channels = source_rgb.shape
-        max_cell_bbox_area = max(64.0, width * height * 0.45)
-
-        for row in range(cache.grid_rows - 1):
-            for column in range(cache.grid_columns - 1):
-                if not bool(
-                    valid_screen[row, column]
-                    and valid_screen[row, column + 1]
-                    and valid_screen[row + 1, column + 1]
-                    and valid_screen[row + 1, column]
-                ):
-                    continue
-
-                dst_quad = np.asarray(
-                    [
-                        [screen_x[row, column], screen_y[row, column]],
-                        [screen_x[row, column + 1], screen_y[row, column + 1]],
-                        [screen_x[row + 1, column + 1], screen_y[row + 1, column + 1]],
-                        [screen_x[row + 1, column], screen_y[row + 1, column]],
-                    ],
-                    dtype=np.float32,
-                )
-                if abs(float(cv2.contourArea(dst_quad))) < 0.25:
-                    continue
-
-                dst_min = np.floor(np.min(dst_quad, axis=0) - 1.0).astype(np.int64)
-                dst_max = np.ceil(np.max(dst_quad, axis=0) + 1.0).astype(np.int64)
-                bbox_left = max(0, int(dst_min[0]))
-                bbox_top = max(0, int(dst_min[1]))
-                bbox_right = min(width - 1, int(dst_max[0]))
-                bbox_bottom = min(height - 1, int(dst_max[1]))
-                bbox_width = bbox_right - bbox_left + 1
-                bbox_height = bbox_bottom - bbox_top + 1
-                if bbox_width <= 1 or bbox_height <= 1:
-                    continue
-                if bbox_width * bbox_height > max_cell_bbox_area:
-                    continue
-
-                src_quad = np.asarray(
-                    [
-                        [
-                            cache.grid_x_px[row, column] * cache.source_scale_x,
-                            cache.grid_y_px[row, column] * cache.source_scale_y,
-                        ],
-                        [
-                            cache.grid_x_px[row, column + 1] * cache.source_scale_x,
-                            cache.grid_y_px[row, column + 1] * cache.source_scale_y,
-                        ],
-                        [
-                            cache.grid_x_px[row + 1, column + 1] * cache.source_scale_x,
-                            cache.grid_y_px[row + 1, column + 1] * cache.source_scale_y,
-                        ],
-                        [
-                            cache.grid_x_px[row + 1, column] * cache.source_scale_x,
-                            cache.grid_y_px[row + 1, column] * cache.source_scale_y,
-                        ],
-                    ],
-                    dtype=np.float32,
-                )
-
-                src_min = np.floor(np.min(src_quad, axis=0) - 1.0).astype(np.int64)
-                src_max = np.ceil(np.max(src_quad, axis=0) + 1.0).astype(np.int64)
-                src_left = max(0, int(src_min[0]))
-                src_top = max(0, int(src_min[1]))
-                src_right = min(source_width - 1, int(src_max[0]))
-                src_bottom = min(source_height - 1, int(src_max[1]))
-                if src_right <= src_left or src_bottom <= src_top:
-                    continue
-
-                src_crop = source_rgb[src_top : src_bottom + 1, src_left : src_right + 1]
-                src_relative = src_quad - np.asarray([src_left, src_top], dtype=np.float32)
-                dst_relative = dst_quad - np.asarray([bbox_left, bbox_top], dtype=np.float32)
-                matrix = cv2.getPerspectiveTransform(src_relative, dst_relative)
-                warped = cv2.warpPerspective(
-                    src_crop,
-                    matrix,
-                    (bbox_width, bbox_height),
-                    flags=cv2.INTER_LINEAR,
-                    borderMode=cv2.BORDER_CONSTANT,
-                    borderValue=(0, 0, 0),
-                )
-                mask = np.zeros((bbox_height, bbox_width), dtype=np.uint8)
-                cv2.fillConvexPoly(mask, np.rint(dst_relative).astype(np.int32), 255, lineType=cv2.LINE_AA)
-                target = rgba[bbox_top : bbox_bottom + 1, bbox_left : bbox_right + 1]
-                visible = mask > 0
-                target[visible, :3] = warped[visible]
-                target[visible, 3] = mask[visible]
+        warp_grid_texture_to_rgba(
+            rgba,
+            source_rgb=cache.source_rgb,
+            source_grid_x_px=cache.grid_x_px,
+            source_grid_y_px=cache.grid_y_px,
+            source_scale_x=cache.source_scale_x,
+            source_scale_y=cache.source_scale_y,
+            screen_x_px=screen_x,
+            screen_y_px=screen_y,
+            valid_points=valid_screen,
+        )
+        return rgba_array_to_qimage(rgba)
 
     def _start_cache_worker(self) -> None:
         self._set_grid_controls_enabled(False)
