@@ -905,7 +905,7 @@ class Ui_MainWindow(object):
         self.spinBoxMosaicGridPrecision = QtWidgets.QSpinBox(self.groupBoxMosaicProjection)
         self.spinBoxMosaicGridPrecision.setMinimum(12)
         self.spinBoxMosaicGridPrecision.setMaximum(180)
-        self.spinBoxMosaicGridPrecision.setProperty("value", 54)
+        self.spinBoxMosaicGridPrecision.setProperty("value", 36)
         self.spinBoxMosaicGridPrecision.setObjectName("spinBoxMosaicGridPrecision")
         self.horizontalLayoutMosaicGridPrecision.addWidget(self.spinBoxMosaicGridPrecision)
         self.pushButtonResolveMosaicGrid = QtWidgets.QPushButton(self.groupBoxMosaicProjection)

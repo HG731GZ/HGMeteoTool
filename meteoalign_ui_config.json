@@ -17,5 +17,9 @@
   "auto_match_default_constraint_mode": "soft",
   "auto_match_default_soft_weight": 0.3,
   "wheel_zoom_enabled": true,
-  "touchpad_pinch_zoom_enabled": true
+  "touchpad_pinch_zoom_enabled": true,
+  "mosaic_texture_scale_percent": 25.0,
+  "mosaic_texture_max_long_side_px": 1920,
+  "mosaic_grid_precision_default": 24,
+  "mosaic_render_fps_limit": 60
 }

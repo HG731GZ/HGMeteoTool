@@ -61,6 +61,7 @@ class MosaicSourceTextureCache:
     source_scale_y: float
     source_width_px: int
     source_height_px: int
+    texture_max_long_side_px: int
 
 
 def _parse_datetime_utc(value: object, field_name: str) -> datetime:

@@ -26,6 +26,10 @@ class StarMapUiConfig:
     auto_match_default_soft_weight: float = 0.3
     wheel_zoom_enabled: bool = True
     touchpad_pinch_zoom_enabled: bool = True
+    mosaic_texture_scale_percent: float = 25.0
+    mosaic_texture_max_long_side_px: int = 1920
+    mosaic_grid_precision_default: int = 36
+    mosaic_render_fps_limit: int = 60
 
 
 def default_config_path() -> Path:
@@ -120,4 +124,8 @@ def load_star_map_ui_config(path: Path | None = None) -> StarMapUiConfig:
         auto_match_default_soft_weight=_read_float(raw_config, "auto_match_default_soft_weight", 0.3, 0.01, 1.0),
         wheel_zoom_enabled=_read_bool(raw_config, "wheel_zoom_enabled", True),
         touchpad_pinch_zoom_enabled=_read_bool(raw_config, "touchpad_pinch_zoom_enabled", True),
+        mosaic_texture_scale_percent=_read_float(raw_config, "mosaic_texture_scale_percent", 25.0, 1.0, 100.0),
+        mosaic_texture_max_long_side_px=_read_int(raw_config, "mosaic_texture_max_long_side_px", 1920, 64, 20000),
+        mosaic_grid_precision_default=_read_int(raw_config, "mosaic_grid_precision_default", 36, 12, 180),
+        mosaic_render_fps_limit=_read_int(raw_config, "mosaic_render_fps_limit", 60, 1, 240),
     )

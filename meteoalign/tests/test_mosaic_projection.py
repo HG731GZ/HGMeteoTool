@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
+
 from meteoalign.alignment.constants import SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT
 from meteoalign.app_mosaic import MosaicProjectionMixin
+from meteoalign.config import load_star_map_ui_config
 from meteoalign.mosaic_common import (
     MOSAIC_OVERLAY_MODE_SOURCE_IMAGE,
     MOSAIC_OVERLAY_MODES,
     MOSAIC_PROJECTION_MODELS,
 )
+from meteoalign.mosaic_model_io import MosaicCoverageCache
 
 
 class _Control:
@@ -102,3 +107,75 @@ def test_mosaic_model_defaults_keep_projection_for_free_anchor_models() -> None:
 
     assert not applied
     assert window.ui.comboBoxMosaicProjection.currentIndex() == 0
+
+
+def test_mosaic_ui_config_reads_texture_and_grid_defaults(tmp_path: Path) -> None:
+    config_path = tmp_path / "meteoalign_ui_config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "mosaic_texture_scale_percent": 50.0,
+                "mosaic_texture_max_long_side_px": 1800,
+                "mosaic_grid_precision_default": 30,
+                "mosaic_render_fps_limit": 75,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_star_map_ui_config(config_path)
+
+    assert config.mosaic_texture_scale_percent == 50.0
+    assert config.mosaic_texture_max_long_side_px == 1800
+    assert config.mosaic_grid_precision_default == 30
+    assert config.mosaic_render_fps_limit == 75
+
+
+def test_mosaic_render_fps_limit_is_clamped() -> None:
+    window = MosaicProjectionMixin.__new__(MosaicProjectionMixin)
+    window.ui_config = SimpleNamespace(mosaic_render_fps_limit=500)
+
+    assert MosaicProjectionMixin._mosaic_render_fps_limit(window) == 240
+
+
+def test_mosaic_texture_long_side_uses_lower_limit_and_interaction_half() -> None:
+    window = MosaicProjectionMixin.__new__(MosaicProjectionMixin)
+    window.ui_config = SimpleNamespace(
+        mosaic_texture_scale_percent=50.0,
+        mosaic_texture_max_long_side_px=1800,
+    )
+    source_model = SimpleNamespace(image_width_px=6000, image_height_px=4000)
+
+    still_long_side = MosaicProjectionMixin._mosaic_source_texture_long_side_px(
+        window,
+        source_model,
+        interaction=False,
+    )
+    drag_long_side = MosaicProjectionMixin._mosaic_source_texture_long_side_px(
+        window,
+        source_model,
+        interaction=True,
+    )
+
+    assert still_long_side == 1800
+    assert drag_long_side == 900
+
+
+def test_mosaic_interaction_grid_reduction_keeps_image_edges() -> None:
+    values = np.arange(30, dtype=np.float64).reshape(6, 5)
+    cache = MosaicCoverageCache(
+        grid_rows=6,
+        grid_columns=5,
+        grid_x_px=values,
+        grid_y_px=values + 100.0,
+        ra_deg=values + 200.0,
+        dec_deg=values + 300.0,
+        valid=np.ones((6, 5), dtype=bool),
+    )
+
+    reduced = MosaicProjectionMixin._reduced_mosaic_coverage_cache(cache)
+
+    assert reduced.grid_rows == 4
+    assert reduced.grid_columns == 3
+    assert reduced.grid_x_px[0, 0] == cache.grid_x_px[0, 0]
+    assert reduced.grid_x_px[-1, -1] == cache.grid_x_px[-1, -1]
