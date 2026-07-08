@@ -1,5 +1,4 @@
 from __future__ import annotations
-from .app_constants import *
 
 import math
 from collections.abc import Callable
@@ -18,6 +17,14 @@ from .app_constants import (
 )
 from .app_graphics_items import LiveStarMapGraphicsItem
 from .simulator import horizontal_fov_deg, vertical_fov_deg
+from .view_gestures import (
+    ViewZoomPolicy,
+    native_gesture_zoom_factor,
+    native_gesture_zoom_value,
+    roll_after_drag,
+    sky_center_after_drag,
+    wheel_zoom_factor,
+)
 
 
 class ViewControlsMixin:
@@ -366,9 +373,9 @@ class ViewControlsMixin:
         return True
 
     def _apply_graphics_view_zoom(self, view: QGraphicsView, wheel_delta: int) -> None:
-        if wheel_delta == 0:
+        factor = wheel_zoom_factor(wheel_delta, IMAGE_VIEW_ZOOM_IN_FACTOR, IMAGE_VIEW_ZOOM_OUT_FACTOR)
+        if factor is None:
             return
-        factor = IMAGE_VIEW_ZOOM_IN_FACTOR if wheel_delta > 0 else IMAGE_VIEW_ZOOM_OUT_FACTOR
         self._apply_graphics_view_zoom_factor(view, factor)
 
     def _scale_graphics_view(
@@ -443,31 +450,21 @@ class ViewControlsMixin:
         self._sync_reference_real_view_from(view, source_center=applied_center)
 
     def _native_gesture_zoom_value(self, event) -> float:  # type: ignore[no-untyped-def]
-        if not self._touchpad_pinch_zoom_enabled():
-            return 0.0
-        if event.type() != QEvent.NativeGesture:
-            return 0.0
-
-        zoom_gesture = getattr(Qt, "ZoomNativeGesture", None)
-        if zoom_gesture is None or event.gestureType() != zoom_gesture:
-            return 0.0
-
-        try:
-            value = float(event.value())
-        except (TypeError, ValueError):
-            return 0.0
-        if not math.isfinite(value) or abs(value) <= 1e-6:
-            return 0.0
-        return value
+        value = native_gesture_zoom_value(event, self._view_zoom_policy())
+        return 0.0 if value is None else value
 
     def _native_gesture_zoom_factor(self, event) -> float:  # type: ignore[no-untyped-def]
-        value = self._native_gesture_zoom_value(event)
-        if value == 0.0:
-            return 1.0
+        factor = native_gesture_zoom_factor(event, self._view_zoom_policy())
+        return 1.0 if factor is None else factor
 
-        # macOS 触控板的原生缩放值是连续增量，用指数映射避免小幅捏合过钝或过猛。
-        factor = math.exp(value * TOUCHPAD_ZOOM_SENSITIVITY)
-        return max(TOUCHPAD_ZOOM_MIN_FACTOR, min(TOUCHPAD_ZOOM_MAX_FACTOR, factor))
+    def _view_zoom_policy(self) -> ViewZoomPolicy:
+        return ViewZoomPolicy(
+            wheel_enabled=self._wheel_zoom_enabled(),
+            pinch_enabled=self._touchpad_pinch_zoom_enabled(),
+            sensitivity=TOUCHPAD_ZOOM_SENSITIVITY,
+            min_factor=TOUCHPAD_ZOOM_MIN_FACTOR,
+            max_factor=TOUCHPAD_ZOOM_MAX_FACTOR,
+        )
 
     def _handle_graphics_view_native_zoom(self, view: QGraphicsView, event) -> bool:  # type: ignore[no-untyped-def]
         begin_gesture = getattr(Qt, "BeginNativeGesture", None)
@@ -610,10 +607,17 @@ class ViewControlsMixin:
 
     def _apply_drag_delta(self, dx: int, dy: int) -> None:
         camera = self._preview_camera_settings()
-        az_degrees_per_pixel = max(horizontal_fov_deg(camera) / max(self.ui.starMapView.viewport().width(), 1), 0.01)
-        alt_degrees_per_pixel = max(vertical_fov_deg(camera) / max(self.ui.starMapView.viewport().height(), 1), 0.01)
-        az = (self.ui.doubleSpinBoxAz.value() - dx * az_degrees_per_pixel) % 360.0
-        alt = max(-90.0, min(90.0, self.ui.doubleSpinBoxAlt.value() + dy * alt_degrees_per_pixel))
+        az, alt = sky_center_after_drag(
+            center_az_deg=self.ui.doubleSpinBoxAz.value(),
+            center_alt_deg=self.ui.doubleSpinBoxAlt.value(),
+            dx_px=dx,
+            dy_px=dy,
+            horizontal_fov_deg=horizontal_fov_deg(camera),
+            vertical_fov_deg=vertical_fov_deg(camera),
+            viewport_width_px=self.ui.starMapView.viewport().width(),
+            viewport_height_px=self.ui.starMapView.viewport().height(),
+            min_degrees_per_pixel=0.01,
+        )
         self.ui.doubleSpinBoxAz.blockSignals(True)
         self.ui.doubleSpinBoxAlt.blockSignals(True)
         self.ui.doubleSpinBoxAz.setValue(az)
@@ -623,11 +627,7 @@ class ViewControlsMixin:
         self.render_now()
 
     def _apply_roll_drag_delta(self, dx: int) -> None:
-        roll = self.ui.doubleSpinBoxRoll.value() + dx * 0.25
-        while roll > 180.0:
-            roll -= 360.0
-        while roll < -180.0:
-            roll += 360.0
+        roll = roll_after_drag(self.ui.doubleSpinBoxRoll.value(), dx, drag_sign=1.0)
         self.ui.doubleSpinBoxRoll.blockSignals(True)
         self.ui.doubleSpinBoxRoll.setValue(roll)
         self.ui.doubleSpinBoxRoll.blockSignals(False)

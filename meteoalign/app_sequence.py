@@ -63,6 +63,7 @@ from .simulator import (
 )
 from .sequence_geometry import frame_astrometric_model_from_fixed_camera
 from .source_model import SourceAstrometricModel
+from .star_pair_model import PsfFit, StarPairRecord
 from .star_fitting import FittedStarPosition, fit_star_position
 
 
@@ -913,13 +914,11 @@ class SequenceBatchMixin:
 
     def _sequence_base_templates(self) -> list[_SequencePairTemplate]:
         templates: list[_SequencePairTemplate] = []
-        for row in range(self.ui.tableWidgetStarPairs.rowCount()):
-            reference_star = self._reference_star_for_row(row)
-            fitted_position = self._fitted_position_for_row(row)
-            if reference_star is None or fitted_position is None:
+        for record in self._star_pair_record_snapshot():
+            if not record.is_valid_for_fit():
                 continue
-            if not self._is_catalog_reference_star(reference_star):
-                continue
+            reference_star = record.reference_star
+            fitted_position = record.fitted_position
             if not all(
                 math.isfinite(value)
                 for value in (
@@ -932,16 +931,14 @@ class SequenceBatchMixin:
                 )
             ):
                 continue
-            mode, fit_weight = self._star_pair_fit_constraint(row)
-            pair_origin = "auto_match" if self._is_auto_match_row(row) else "manual"
             templates.append(
                 _SequencePairTemplate(
-                    star_id=reference_star.star_id.strip(),
+                    star_id=record.star_id,
                     reference_star=reference_star,
                     fitted_position=fitted_position,
-                    fit_constraint_mode=mode,
-                    fit_weight=float(fit_weight),
-                    pair_origin=pair_origin,
+                    fit_constraint_mode=record.fit_constraint_mode,
+                    fit_weight=float(record.fit_weight),
+                    pair_origin=record.pair_origin,
                 )
             )
         if len(templates) < MIN_ALIGNMENT_PAIRS:
@@ -1643,58 +1640,46 @@ class SequenceBatchMixin:
             predicted_y = pair.predicted_y_px if pair.predicted_y_px is not None else float("nan")
             residual_dx = float(predicted_x - fitted.x)
             residual_dy = float(predicted_y - fitted.y)
-            record: dict[str, object] = {
-                "reference_index": output_index,
-                "star_id": reference_star.star_id,
-                "name": reference_star.name,
-                "display_name": reference_star.display_name,
-                "common_name": reference_star.common_name,
-                "ra_deg": float(reference_star.ra_deg),
-                "dec_deg": float(reference_star.dec_deg),
-                "mag_v": float(reference_star.mag_v),
-                "image_x_px": float(fitted.x),
-                "image_y_px": float(fitted.y),
-                "sim_x": float(reference_star.sim_x),
-                "sim_y": float(reference_star.sim_y),
+            extra_fields: dict[str, object] = {
                 "fixed_model_x_px": float(predicted_x),
                 "fixed_model_y_px": float(predicted_y),
-                "alt_deg": float(reference_star.alt_deg),
-                "az_deg": float(reference_star.az_deg),
-                "object_type": "star",
-                "pair_origin": pair.pair_origin,
-                "fit_constraint_mode": pair.fit_constraint_mode,
-                "fit_weight": float(pair.fit_weight),
-                "amplitude": float(fitted.amplitude),
-                "background": float(fitted.background),
-                "sigma_x": float(fitted.sigma_x),
-                "sigma_y": float(fitted.sigma_y),
-                "residual_dx_px": residual_dx,
-                "residual_dy_px": residual_dy,
-                "residual_px": float(np.hypot(residual_dx, residual_dy)),
             }
             if pair.predicted_x_px is not None and pair.predicted_y_px is not None:
-                record["theoretical_x_px"] = float(pair.predicted_x_px)
-                record["theoretical_y_px"] = float(pair.predicted_y_px)
-                record["psf_offset_from_theory_px"] = float(
+                extra_fields["theoretical_x_px"] = float(pair.predicted_x_px)
+                extra_fields["theoretical_y_px"] = float(pair.predicted_y_px)
+                extra_fields["psf_offset_from_theory_px"] = float(
                     np.hypot(fitted.x - pair.predicted_x_px, fitted.y - pair.predicted_y_px)
                 )
-                record["adaptive_offset_x_px"] = float(pair.adaptive_offset_x_px)
-                record["adaptive_offset_y_px"] = float(pair.adaptive_offset_y_px)
+                extra_fields["adaptive_offset_x_px"] = float(pair.adaptive_offset_x_px)
+                extra_fields["adaptive_offset_y_px"] = float(pair.adaptive_offset_y_px)
             if pair.initial_predicted_x_px is not None and pair.initial_predicted_y_px is not None:
-                record["initial_theoretical_x_px"] = float(pair.initial_predicted_x_px)
-                record["initial_theoretical_y_px"] = float(pair.initial_predicted_y_px)
-                record["psf_offset_from_initial_theory_px"] = float(
+                extra_fields["initial_theoretical_x_px"] = float(pair.initial_predicted_x_px)
+                extra_fields["initial_theoretical_y_px"] = float(pair.initial_predicted_y_px)
+                extra_fields["psf_offset_from_initial_theory_px"] = float(
                     np.hypot(fitted.x - pair.initial_predicted_x_px, fitted.y - pair.initial_predicted_y_px)
                 )
             if pair.time_delta_seconds is not None:
-                record["delta_t_seconds"] = float(pair.time_delta_seconds)
+                extra_fields["delta_t_seconds"] = float(pair.time_delta_seconds)
             if pair.search_x_px is not None and pair.search_y_px is not None:
-                record["search_x_px"] = float(pair.search_x_px)
-                record["search_y_px"] = float(pair.search_y_px)
-                record["psf_offset_from_search_px"] = float(
+                extra_fields["search_x_px"] = float(pair.search_x_px)
+                extra_fields["search_y_px"] = float(pair.search_y_px)
+                extra_fields["psf_offset_from_search_px"] = float(
                     np.hypot(fitted.x - pair.search_x_px, fitted.y - pair.search_y_px)
                 )
-            records.append(record)
+            record = StarPairRecord(
+                reference_star=reference_star,
+                image_x_px=float(fitted.x),
+                image_y_px=float(fitted.y),
+                psf=PsfFit.from_fitted_position(fitted),
+                pair_origin=pair.pair_origin,
+                fit_constraint_mode=pair.fit_constraint_mode,
+                fit_weight=float(pair.fit_weight),
+                residual_dx_px=residual_dx,
+                residual_dy_px=residual_dy,
+                residual_px=float(np.hypot(residual_dx, residual_dy)),
+                extra_fields=extra_fields,
+            )
+            records.append(record.to_json_payload(reference_index=output_index))
         return records
 
     def _sequence_image_base_payload(

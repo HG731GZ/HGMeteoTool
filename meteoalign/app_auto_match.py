@@ -428,12 +428,7 @@ class AutoMatchMixin:
         return len(remove_star_ids)
 
     def _existing_matched_positions(self) -> list[tuple[float, float]]:
-        positions: list[tuple[float, float]] = []
-        for row in range(self.ui.tableWidgetStarPairs.rowCount()):
-            position = self._parse_star_pair_position_text(row)
-            if position is not None:
-                positions.append(position)
-        return positions
+        return [record.position for record in self._star_pair_record_snapshot()]
 
     def _position_is_duplicate(self, position: tuple[float, float], accepted_positions: list[tuple[float, float]]) -> bool:
         for accepted_x, accepted_y in accepted_positions:

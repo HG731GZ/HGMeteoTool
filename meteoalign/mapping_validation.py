@@ -4,16 +4,20 @@ import math
 from dataclasses import dataclass, replace
 
 import numpy as np
-from PyQt5.QtCore import QEvent, QObject, QPoint, QThread, QTimer, Qt, pyqtSignal
+from PyQt5.QtCore import QEvent, QObject, QPoint, QTimer, Qt, pyqtSignal
 from PyQt5.QtGui import QImage
 from PyQt5.QtWidgets import QDialog, QGraphicsScene, QMessageBox, QProgressDialog
 
-from .app_constants import TOUCHPAD_ZOOM_MAX_FACTOR, TOUCHPAD_ZOOM_MIN_FACTOR, TOUCHPAD_ZOOM_SENSITIVITY
 from .app_graphics_items import GraphicsImageItem
 from .config import StarMapUiConfig
 from .fixed_camera_model import FixedCameraModel
 from .frame_astrometry import FrameAstrometricModel
+from .projected_texture_renderer import ProjectedTextureRenderer
+from .projection_grid import build_pixel_grid, grid_shape_for_long_side
+from .projection_view_state import ProjectionViewState
+from .qt_tasks import WorkerTaskHandle, create_progress_dialog, start_qt_worker_task
 from .renderer import StarMapRenderer
+from .sky_scene_service import SkyPreviewRenderService, SkyPreviewStyle, SkySceneData
 from .simulator import (
     CameraSettings,
     FISHEYE_LENS_MODELS,
@@ -22,20 +26,19 @@ from .simulator import (
     HorizontalStarCatalog,
     ObserverSettings,
     ViewSettings,
-    _project_altaz_points,
-    camera_basis_from_view,
     compute_altaz_from_radec,
     horizontal_fov_deg,
-    project_horizontal_catalog,
     vertical_fov_deg,
 )
-from .texture_projection import (
-    qimage_to_rgb_array,
-    rgba_array_to_qimage,
-    texture_projection_available,
-    warp_grid_texture_to_rgba,
-)
+from .texture_projection import qimage_to_rgb_array
 from .ui.ui_mapping_validation_dialog import Ui_MappingValidationDialog
+from .view_gestures import (
+    ViewZoomPolicy,
+    roll_after_drag,
+    sky_center_after_drag,
+    native_gesture_zoom_factor,
+    wheel_zoom_factor,
+)
 
 
 VALIDATION_PIXEL_TO_SKY_CHUNK_SIZE = 24_576
@@ -96,13 +99,7 @@ class PixelToSkyValidationWorker(QObject):
             self.failed.emit(str(exc))
 
     def _grid_shape(self, width: int, height: int) -> tuple[int, int]:
-        if width >= height:
-            columns = self.grid_precision
-            rows = max(2, int(round(self.grid_precision * height / max(float(width), 1.0))))
-        else:
-            rows = self.grid_precision
-            columns = max(2, int(round(self.grid_precision * width / max(float(height), 1.0))))
-        return rows, columns
+        return grid_shape_for_long_side(width, height, self.grid_precision, min_minor_cells=2)
 
     def _source_preview_rgb(self, width: int, height: int) -> tuple[np.ndarray, float, float]:
         scale = min(1.0, VALIDATION_SOURCE_PREVIEW_LONG_SIDE_PX / max(float(width), float(height), 1.0))
@@ -119,11 +116,9 @@ class PixelToSkyValidationWorker(QObject):
         width = self.source_image.width()
         height = self.source_image.height()
         rows, columns = self._grid_shape(width, height)
-        x_values = np.linspace(0.0, max(width - 1, 0), columns, dtype=np.float64)
-        y_values = np.linspace(0.0, max(height - 1, 0), rows, dtype=np.float64)
-        grid_x, grid_y = np.meshgrid(x_values, y_values)
-        grid_points = np.column_stack((grid_x.ravel(), grid_y.ravel()))
-        point_count = int(grid_points.shape[0])
+        pixel_grid = build_pixel_grid(width, height, rows, columns)
+        grid_points = pixel_grid.points
+        point_count = pixel_grid.point_count
 
         self.progress.emit(
             2,
@@ -156,8 +151,8 @@ class PixelToSkyValidationWorker(QObject):
             grid_rows=rows,
             grid_columns=columns,
             grid_point_count=point_count,
-            grid_x_px=grid_x.astype(np.float64),
-            grid_y_px=grid_y.astype(np.float64),
+            grid_x_px=pixel_grid.x_px,
+            grid_y_px=pixel_grid.y_px,
             alt_deg=alt_deg.reshape((rows, columns)).astype(np.float64),
             az_deg=az_deg.reshape((rows, columns)).astype(np.float64),
             valid=valid,
@@ -215,6 +210,8 @@ class MappingValidationDialog(QDialog):
         self.horizontal_milky_way = horizontal_milky_way
         self.horizontal_solar_system = horizontal_solar_system
         self.ui_config = ui_config or StarMapUiConfig()
+        self.sky_preview_renderer = SkyPreviewRenderService(renderer)
+        self.texture_renderer = ProjectedTextureRenderer()
         self.center_az_deg = float(initial_view.center_az_deg) % 360.0
         self.center_alt_deg = max(-90.0, min(90.0, float(initial_view.center_alt_deg)))
         self.fixed_roll_deg = float(initial_view.roll_deg)
@@ -222,7 +219,7 @@ class MappingValidationDialog(QDialog):
         self.fisheye_fov_deg = max(1.0, min(300.0, float(base_camera.fisheye_fov_deg)))
         self.cache: ImageSkyProjectionCache | None = None
         self.last_drag_pos: QPoint | None = None
-        self.cache_thread: QThread | None = None
+        self.cache_task: WorkerTaskHandle | None = None
         self.cache_worker: PixelToSkyValidationWorker | None = None
         self.cache_progress: QProgressDialog | None = None
         self._set_default_grid_precision()
@@ -251,7 +248,7 @@ class MappingValidationDialog(QDialog):
         QTimer.singleShot(0, self.render_now)
 
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
-        if self.cache_thread is not None:
+        if self.cache_task is not None:
             QMessageBox.information(self, "正在准备验证", "映射验证缓存仍在计算，请等待完成后再关闭窗口。")
             event.ignore()
             return
@@ -316,12 +313,7 @@ class MappingValidationDialog(QDialog):
         precision = self._grid_precision_value()
         width = max(1, self.source_image.width())
         height = max(1, self.source_image.height())
-        if width >= height:
-            columns = precision
-            rows = max(2, int(round(precision * height / float(width))))
-        else:
-            rows = precision
-            columns = max(2, int(round(precision * width / float(height))))
+        rows, columns = grid_shape_for_long_side(width, height, precision, min_minor_cells=2)
         text = f"下一次重新求解将使用 {columns} x {rows} 个精确网格点。"
         self.ui.spinBoxGridPrecision.setToolTip(text)
         self.ui.pushButtonResolveGrid.setToolTip(text)
@@ -345,34 +337,41 @@ class MappingValidationDialog(QDialog):
             fisheye_fov_deg=self.fisheye_fov_deg,
         )
 
-    def _view_for_render(self) -> ViewSettings:
-        return ViewSettings(
-            center_az_deg=self.center_az_deg,
-            center_alt_deg=self.center_alt_deg,
-            roll_deg=self.fixed_roll_deg,
+    def _view_for_render(self, camera: CameraSettings) -> ViewSettings:
+        state = ProjectionViewState.from_camera_and_view(
+            camera,
+            ViewSettings(
+                center_az_deg=self.center_az_deg,
+                center_alt_deg=self.center_alt_deg,
+                roll_deg=self.fixed_roll_deg,
+            ),
         )
+        return state.to_view_settings()
 
     def _apply_drag_delta(self, dx: int, dy: int) -> None:
         width, height = self._render_size()
         camera = self._camera_for_render(width, height)
-        az_degrees_per_pixel = max(horizontal_fov_deg(camera) / max(width, 1), 0.005)
-        alt_degrees_per_pixel = max(vertical_fov_deg(camera) / max(height, 1), 0.005)
-        self.center_az_deg = (self.center_az_deg - dx * az_degrees_per_pixel) % 360.0
-        self.center_alt_deg = max(-90.0, min(90.0, self.center_alt_deg + dy * alt_degrees_per_pixel))
+        self.center_az_deg, self.center_alt_deg = sky_center_after_drag(
+            center_az_deg=self.center_az_deg,
+            center_alt_deg=self.center_alt_deg,
+            dx_px=dx,
+            dy_px=dy,
+            horizontal_fov_deg=horizontal_fov_deg(camera),
+            vertical_fov_deg=vertical_fov_deg(camera),
+            viewport_width_px=width,
+            viewport_height_px=height,
+            min_degrees_per_pixel=0.005,
+        )
         self.schedule_render(delay_ms=10)
 
     def _apply_roll_drag_delta(self, dx: int) -> None:
-        self.fixed_roll_deg -= dx * 0.25
-        while self.fixed_roll_deg > 180.0:
-            self.fixed_roll_deg -= 360.0
-        while self.fixed_roll_deg < -180.0:
-            self.fixed_roll_deg += 360.0
+        self.fixed_roll_deg = roll_after_drag(self.fixed_roll_deg, dx, drag_sign=-1.0)
         self.schedule_render(delay_ms=10)
 
     def _apply_fov_wheel(self, wheel_delta: int) -> None:
-        if wheel_delta == 0:
+        zoom_factor = wheel_zoom_factor(wheel_delta, VALIDATION_ZOOM_FACTOR)
+        if zoom_factor is None:
             return
-        zoom_factor = VALIDATION_ZOOM_FACTOR if wheel_delta > 0 else 1.0 / VALIDATION_ZOOM_FACTOR
         self._apply_fov_zoom_factor(zoom_factor)
 
     def _apply_fov_zoom_factor(self, zoom_factor: float) -> None:
@@ -390,26 +389,18 @@ class MappingValidationDialog(QDialog):
     def _touchpad_pinch_zoom_enabled(self) -> bool:
         return bool(getattr(self.ui_config, "touchpad_pinch_zoom_enabled", True))
 
-    def _native_gesture_zoom_value(self, event) -> float:  # type: ignore[no-untyped-def]
-        if not self._touchpad_pinch_zoom_enabled():
-            return 0.0
-        zoom_gesture = getattr(Qt, "ZoomNativeGesture", None)
-        if zoom_gesture is None or event.gestureType() != zoom_gesture:
-            return 0.0
-        try:
-            value = float(event.value())
-        except (TypeError, ValueError):
-            return 0.0
-        if not np.isfinite(value) or abs(value) <= 1e-6:
-            return 0.0
-        return value
+    def _zoom_policy(self) -> ViewZoomPolicy:
+        return ViewZoomPolicy(
+            wheel_enabled=self._wheel_zoom_enabled(),
+            pinch_enabled=self._touchpad_pinch_zoom_enabled(),
+            min_fov=1.0,
+            max_fov=300.0,
+        )
 
     def _handle_native_fov_zoom(self, event) -> bool:  # type: ignore[no-untyped-def]
-        value = self._native_gesture_zoom_value(event)
-        if value == 0.0:
+        zoom_factor = native_gesture_zoom_factor(event, self._zoom_policy())
+        if zoom_factor is None:
             return False
-        zoom_factor = math.exp(value * TOUCHPAD_ZOOM_SENSITIVITY)
-        zoom_factor = max(TOUCHPAD_ZOOM_MIN_FACTOR, min(TOUCHPAD_ZOOM_MAX_FACTOR, zoom_factor))
         self._apply_fov_zoom_factor(zoom_factor)
         return True
 
@@ -431,7 +422,7 @@ class MappingValidationDialog(QDialog):
 
     def resolve_grid_again(self) -> None:
         self._update_grid_precision_tooltip()
-        if self.cache_thread is not None:
+        if self.cache_task is not None:
             QMessageBox.information(self, "正在求解网格", "当前映射验证网格仍在计算，请等待完成后再重新求解。")
             return
         self._start_cache_worker()
@@ -439,34 +430,27 @@ class MappingValidationDialog(QDialog):
     def render_now(self) -> None:
         width, height = self._render_size()
         camera = self._camera_for_render(width, height)
-        view = self._view_for_render()
-        star_map = project_horizontal_catalog(
-            horizontal_catalog=self.horizontal_catalog,
+        view = self._view_for_render(camera)
+        sky_image = self.sky_preview_renderer.render(
+            scene=SkySceneData(
+                horizontal_catalog=self.horizontal_catalog,
+                horizontal_milky_way=self.horizontal_milky_way,
+                horizontal_solar_system=self.horizontal_solar_system,
+            ),
             camera=camera,
             view=view,
             visible_mag_limit=self.visible_mag_limit,
-            horizontal_milky_way=self.horizontal_milky_way,
-            horizontal_solar_system=self.horizontal_solar_system,
-        )
-        star_map = replace(
-            star_map,
-            alpha=np.full_like(star_map.alpha, 255, dtype=np.uint8),
-            grid_lines=(),
-            direction_labels=(),
-            horizon_shadow_rects=(),
-            solar_system_objects=tuple(replace(item, alpha=255) for item in star_map.solar_system_objects),
-        )
-        sky_image = self.renderer.render(
-            star_map,
-            reference_stars=(),
-            element_scale=1.0,
-            draw_common_names=False,
-            number_reference_stars=False,
-            draw_background=True,
-            draw_horizon_shadow=False,
-            draw_grid=False,
-            draw_solar_system_labels=True,
-            draw_direction_labels=False,
+            style=SkyPreviewStyle(
+                draw_background=True,
+                draw_horizon_shadow=False,
+                draw_grid=False,
+                draw_solar_system_labels=True,
+                draw_direction_labels=False,
+                force_opaque=True,
+                clear_grid_lines=True,
+                clear_direction_labels=True,
+                clear_horizon_shadow=True,
+            ),
         )
         self.sky_item.set_image(sky_image)
         if self.ui.checkBoxOverlayEnabled.isChecked():
@@ -477,73 +461,63 @@ class MappingValidationDialog(QDialog):
     def _render_overlay_image(self, camera: CameraSettings, view: ViewSettings) -> QImage:
         width = int(camera.image_width_px)
         height = int(camera.image_height_px)
-        rgba = np.zeros((height, width, 4), dtype=np.uint8)
         cache = self.cache
-        if cache is None or cache.alt_deg.size == 0 or not texture_projection_available():
-            return rgba_array_to_qimage(rgba)
-
-        basis = camera_basis_from_view(view)
-        x_px, y_px, valid_projection = _project_altaz_points(
-            cache.alt_deg.ravel(),
-            cache.az_deg.ravel(),
+        if cache is None or cache.alt_deg.size == 0:
+            return self.texture_renderer.render_qimage(
+                width=width,
+                height=height,
+                camera=camera,
+                view=view,
+                source_rgb=np.zeros((1, 1, 3), dtype=np.uint8),
+                source_grid_x_px=np.zeros((2, 2), dtype=np.float64),
+                source_grid_y_px=np.zeros((2, 2), dtype=np.float64),
+                source_scale_x=1.0,
+                source_scale_y=1.0,
+                alt_deg=np.full((2, 2), np.nan, dtype=np.float64),
+                az_deg=np.full((2, 2), np.nan, dtype=np.float64),
+                valid_points=np.zeros((2, 2), dtype=bool),
+            )
+        return self.texture_renderer.render_qimage(
+            width=width,
+            height=height,
             camera=camera,
-            basis=basis,
-        )
-        screen_x = x_px.reshape((cache.grid_rows, cache.grid_columns))
-        screen_y = y_px.reshape((cache.grid_rows, cache.grid_columns))
-        valid_screen = (
-            valid_projection.reshape((cache.grid_rows, cache.grid_columns))
-            & cache.valid
-            & np.isfinite(screen_x)
-            & np.isfinite(screen_y)
-        )
-        warp_grid_texture_to_rgba(
-            rgba,
+            view=view,
             source_rgb=cache.source_rgb,
             source_grid_x_px=cache.grid_x_px,
             source_grid_y_px=cache.grid_y_px,
             source_scale_x=cache.source_scale_x,
             source_scale_y=cache.source_scale_y,
-            screen_x_px=screen_x,
-            screen_y_px=screen_y,
-            valid_points=valid_screen,
+            alt_deg=cache.alt_deg,
+            az_deg=cache.az_deg,
+            valid_points=cache.valid,
         )
-        return rgba_array_to_qimage(rgba)
 
     def _start_cache_worker(self) -> None:
         self._set_grid_controls_enabled(False)
-        self.cache_progress = QProgressDialog(self)
-        self.cache_progress.setWindowTitle("正在准备映射验证")
-        self.cache_progress.setLabelText("正在计算真实图像网格到天球方向的验证缓存...")
-        self.cache_progress.setRange(0, 100)
-        self.cache_progress.setValue(0)
-        self.cache_progress.setCancelButton(None)
-        self.cache_progress.setWindowModality(Qt.WindowModal)
-        self.cache_progress.setMinimumDuration(0)
-        self.cache_progress.setAutoClose(False)
-        self.cache_progress.setAutoReset(False)
-        self.cache_progress.show()
-
-        thread = QThread(self)
+        self.cache_progress = create_progress_dialog(
+            self,
+            title="正在准备映射验证",
+            label_text="正在计算真实图像网格到天球方向的验证缓存...",
+        )
         worker = PixelToSkyValidationWorker(
             self.model,
             self.source_image,
             self.observer,
             grid_precision=self._grid_precision_value(),
         )
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.progress.connect(self._handle_cache_progress)
-        worker.finished.connect(self._handle_cache_finished)
-        worker.failed.connect(self._handle_cache_failed)
-        worker.finished.connect(thread.quit)
-        worker.failed.connect(thread.quit)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._cleanup_cache_worker)
-        self.cache_thread = thread
         self.cache_worker = worker
-        thread.start()
+        self.cache_task = start_qt_worker_task(
+            parent=self,
+            worker=worker,
+            progress_signal=worker.progress,
+            finished_signal=worker.finished,
+            failed_signal=worker.failed,
+            on_progress=self._handle_cache_progress,
+            on_finished=self._handle_cache_finished,
+            on_failed=self._handle_cache_failed,
+            on_cleanup=self._cleanup_cache_worker,
+            progress_dialog=self.cache_progress,
+        )
 
     def _handle_cache_progress(self, value: int, label_text: str) -> None:
         if self.cache_progress is None:
@@ -568,7 +542,7 @@ class MappingValidationDialog(QDialog):
         QMessageBox.critical(self, "映射验证失败", error_message)
 
     def _cleanup_cache_worker(self) -> None:
-        self.cache_thread = None
+        self.cache_task = None
         self.cache_worker = None
         self.cache_progress = None
         self._set_grid_controls_enabled(True)

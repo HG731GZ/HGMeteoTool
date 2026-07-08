@@ -25,7 +25,15 @@ from .image_preview import load_image_preview, ImagePreview
 from .image_sequence import ImageSequenceItem, read_image_capture_time, sequence_item_observation_time_utc
 from .mapping_validation import MappingValidationDialog
 from .reference import build_reference_payload
-from .simulator import ObserverSettings, ReferenceStar, compute_altaz_from_radec, project_horizontal_catalog
+from .simulator import ObserverSettings, ReferenceStar, project_horizontal_catalog
+from .star_pair_model import (
+    PAIR_ORIGIN_AUTO_MATCH,
+    PAIR_ORIGIN_MANUAL,
+    PsfFit,
+    StarPairRecord,
+    reference_star_from_pair_payload,
+    star_pair_records_from_payloads,
+)
 from .alignment import MIN_ALIGNMENT_PAIRS
 
 from .app_constants import (
@@ -241,13 +249,6 @@ class StarPairIOMixin:
             observer_payload.update(observer_time_payload)
         return payload
 
-    def _record_float(self, record: dict[str, object], key: str, default_value: float = float("nan")) -> float:
-        try:
-            value = float(record[key])
-        except (KeyError, TypeError, ValueError):
-            return default_value
-        return value if math.isfinite(value) else default_value
-
     def _record_reference_star(
         self,
         record: object,
@@ -255,59 +256,7 @@ class StarPairIOMixin:
         observer: ObserverSettings | None = None,
         output_index: int = 0,
     ) -> ReferenceStar | None:
-        if not isinstance(record, dict):
-            return None
-        star_id = self._session_pair_star_id(record)
-        if not star_id:
-            return None
-        ra_deg = self._record_float(record, "ra_deg")
-        dec_deg = self._record_float(record, "dec_deg")
-        if not math.isfinite(ra_deg) or not math.isfinite(dec_deg):
-            return None
-
-        alt_deg = self._record_float(record, "alt_deg")
-        az_deg = self._record_float(record, "az_deg")
-        if observer is not None and (not math.isfinite(alt_deg) or not math.isfinite(az_deg)):
-            try:
-                alt_values, az_values = compute_altaz_from_radec(
-                    np.asarray([ra_deg], dtype=np.float64),
-                    np.asarray([dec_deg], dtype=np.float64),
-                    observer,
-                )
-                alt_deg = float(alt_values[0])
-                az_deg = float(az_values[0])
-            except Exception:  # noqa: BLE001 - 兜底参考星缺少地平坐标时不应阻断旧 JSON 导入。
-                pass
-
-        display_name = str(record.get("display_name") or "").strip()
-        common_name = str(record.get("common_name") or "").strip()
-        name = str(record.get("name") or common_name or display_name or star_id).strip()
-        sim_x = self._record_float(
-            record,
-            "sim_x",
-            self._record_float(record, "theoretical_x_px", self._record_float(record, "image_x_px")),
-        )
-        sim_y = self._record_float(
-            record,
-            "sim_y",
-            self._record_float(record, "theoretical_y_px", self._record_float(record, "image_y_px")),
-        )
-        return ReferenceStar(
-            index=output_index,
-            star_id=star_id,
-            name=name or star_id,
-            display_name=display_name or name or star_id,
-            common_name=common_name,
-            ra_deg=ra_deg,
-            dec_deg=dec_deg,
-            mag_v=self._record_float(record, "mag_v"),
-            sim_x=sim_x,
-            sim_y=sim_y,
-            alt_deg=alt_deg,
-            az_deg=az_deg,
-            object_type="star",
-            index_label=str(record.get("index_label") or ""),
-        )
+        return reference_star_from_pair_payload(record, observer=observer, output_index=output_index)
 
     def _reference_star_lookup_from_records(
         self,
@@ -319,7 +268,10 @@ class StarPairIOMixin:
         if not isinstance(records, list):
             return lookup
         for record in records:
-            star = self._record_reference_star(record, observer=observer)
+            if isinstance(record, StarPairRecord):
+                star = record.reference_star
+            else:
+                star = self._record_reference_star(record, observer=observer)
             if star is not None and star.star_id not in lookup:
                 lookup[star.star_id] = star
         return lookup
@@ -334,7 +286,7 @@ class StarPairIOMixin:
         seen_star_ids = {star.star_id.strip() for star in merged if star.star_id.strip()}
         pair_lookup = self._reference_star_lookup_from_records(pair_records, observer=observer)
         for pair_record in pair_records:
-            star_id = self._session_pair_star_id(pair_record)
+            star_id = pair_record.star_id if isinstance(pair_record, StarPairRecord) else self._session_pair_star_id(pair_record)
             if not star_id or star_id in seen_star_ids:
                 continue
             fallback_star = pair_lookup.get(star_id)
@@ -354,8 +306,8 @@ class StarPairIOMixin:
             merged_lookup.setdefault(star_id, star)
         self._imported_reference_star_by_id = merged_lookup
 
-    def _star_pair_records(self) -> list[dict[str, object]]:
-        records: list[dict[str, object]] = []
+    def _star_pair_record_snapshot(self) -> list[StarPairRecord]:
+        records: list[StarPairRecord] = []
         for row in range(self.ui.tableWidgetStarPairs.rowCount()):
             reference_star = self._reference_star_for_row(row)
             target_position = self._parse_star_pair_position_text(row)
@@ -368,45 +320,46 @@ class StarPairIOMixin:
             if not all(math.isfinite(value) for value in (image_x, image_y, reference_star.ra_deg, reference_star.dec_deg)):
                 continue
 
-            record: dict[str, object] = {
-                "reference_index": reference_star.index,
-                "star_id": reference_star.star_id,
-                "name": reference_star.name,
-                "display_name": reference_star.display_name,
-                "common_name": reference_star.common_name,
-                "ra_deg": reference_star.ra_deg,
-                "dec_deg": reference_star.dec_deg,
-                "mag_v": reference_star.mag_v,
-                "image_x_px": image_x,
-                "image_y_px": image_y,
-                "sim_x": reference_star.sim_x,
-                "sim_y": reference_star.sim_y,
-                "alt_deg": reference_star.alt_deg,
-                "az_deg": reference_star.az_deg,
-                "object_type": "star",
-                "pair_origin": "auto_match" if self._is_auto_match_row(row) else "manual",
-            }
+            pair_origin = PAIR_ORIGIN_AUTO_MATCH if self._is_auto_match_row(row) else PAIR_ORIGIN_MANUAL
+            group_id = None
+            group_name = None
             if self._is_auto_match_row(row):
                 group_id = self._row_auto_match_group_id(row) or self._auto_match_group_by_star_id.get(reference_star.star_id, "")
                 if group_id:
-                    record["auto_match_group_id"] = group_id
-                    record["auto_match_group_name"] = self._auto_match_group_label(group_id)
+                    group_name = self._auto_match_group_label(group_id)
             constraint_mode, fit_weight = self._star_pair_fit_constraint(row)
-            record["fit_constraint_mode"] = constraint_mode
-            record["fit_weight"] = fit_weight
+            psf = None
             fit_payload = self._star_pair_fit_payload(row)
             if fit_payload is not None:
-                for key in ("amplitude", "background", "sigma_x", "sigma_y"):
-                    if key in fit_payload:
-                        record[key] = fit_payload[key]
+                fitted_position = self._fitted_position_for_row(row)
+                if fitted_position is not None:
+                    psf = PsfFit.from_fitted_position(fitted_position)
             residual = self._star_pair_alignment_residual(row)
+            residual_dx = None
+            residual_dy = None
+            residual_px = None
             if residual is not None:
-                dx, dy, distance = residual
-                record["residual_dx_px"] = dx
-                record["residual_dy_px"] = dy
-                record["residual_px"] = distance
-            records.append(record)
+                residual_dx, residual_dy, residual_px = residual
+            records.append(
+                StarPairRecord(
+                    reference_star=reference_star,
+                    image_x_px=float(image_x),
+                    image_y_px=float(image_y),
+                    psf=psf,
+                    pair_origin=pair_origin,
+                    group_id=group_id or None,
+                    group_name=group_name,
+                    fit_constraint_mode=constraint_mode,
+                    fit_weight=float(fit_weight),
+                    residual_dx_px=residual_dx,
+                    residual_dy_px=residual_dy,
+                    residual_px=residual_px,
+                )
+            )
         return records
+
+    def _star_pair_records(self) -> list[dict[str, object]]:
+        return [record.to_json_payload() for record in self._star_pair_record_snapshot()]
 
     def _auto_match_constraints_payload(self) -> dict[str, dict[str, object]]:
         payload: dict[str, dict[str, object]] = {}
@@ -886,32 +839,6 @@ class StarPairIOMixin:
             return ""
         return star_id
 
-    def _session_pair_position(self, pair_payload: object) -> tuple[float, float] | None:
-        if not isinstance(pair_payload, dict):
-            return None
-        try:
-            image_x = float(pair_payload["image_x_px"])
-            image_y = float(pair_payload["image_y_px"])
-        except (KeyError, TypeError, ValueError):
-            return None
-        if not math.isfinite(image_x) or not math.isfinite(image_y):
-            return None
-        return image_x, image_y
-
-    def _session_pair_fit_payload(self, pair_payload: object) -> dict[str, float] | None:
-        if not isinstance(pair_payload, dict):
-            return None
-
-        fit_payload: dict[str, float] = {}
-        for key in ("amplitude", "background", "sigma_x", "sigma_y"):
-            try:
-                value = float(pair_payload[key])
-            except (KeyError, TypeError, ValueError):
-                continue
-            if math.isfinite(value):
-                fit_payload[key] = value
-        return fit_payload or None
-
     def _session_auto_match_star_ids(self, payload: dict[str, object], pair_payloads: list[object]) -> list[str]:
         auto_match_star_ids: list[str] = []
         raw_star_ids = payload.get("auto_match_star_ids")
@@ -1048,7 +975,7 @@ class StarPairIOMixin:
             )
         return constraints
 
-    def _ensure_pair_record_stars_visible(self, pair_payloads: list[object]) -> None:
+    def _ensure_pair_record_stars_visible(self, pair_records: list[StarPairRecord]) -> None:
         visible_star_ids = {
             self._star_pair_star_id(row)
             for row in range(self.ui.tableWidgetStarPairs.rowCount())
@@ -1056,8 +983,8 @@ class StarPairIOMixin:
         }
         auto_match_star_ids = set(self._auto_match_reference_star_ids)
         added_any = False
-        for pair_payload in pair_payloads:
-            star_id = self._session_pair_star_id(pair_payload)
+        for record in pair_records:
+            star_id = record.star_id
             if (
                 not star_id
                 or star_id in visible_star_ids
@@ -1067,9 +994,9 @@ class StarPairIOMixin:
                 continue
             if star_id in self._excluded_reference_star_ids:
                 self._excluded_reference_star_ids.remove(star_id)
-            if isinstance(pair_payload, dict) and str(pair_payload.get("pair_origin", "")).strip() == "auto_match":
+            if record.is_auto_match:
                 group_id = (
-                    self._session_auto_match_pair_group_id(pair_payload)
+                    record.group_id
                     or self._auto_match_group_by_star_id.get(star_id, "")
                     or "A"
                 )
@@ -1077,10 +1004,7 @@ class StarPairIOMixin:
                 self._auto_match_reference_star_ids.append(star_id)
                 self._auto_match_group_by_star_id[star_id] = group_id
                 auto_match_star_ids.add(star_id)
-                self._auto_match_constraint_by_star_id[star_id] = self._normalized_auto_match_constraint(
-                    pair_payload.get("fit_constraint_mode"),
-                    pair_payload.get("fit_weight", 1.0),
-                )
+                self._auto_match_constraint_by_star_id[star_id] = (record.fit_constraint_mode, record.fit_weight)
             else:
                 self._manual_reference_star_ids.append(star_id)
             visible_star_ids.add(star_id)
@@ -1088,25 +1012,17 @@ class StarPairIOMixin:
         if added_any:
             self._refresh_reference_stars_from_current_map()
 
-    def _restore_star_pair_records(self, pair_payloads: list[object], update_alignment: bool = True) -> int:
+    def _restore_star_pair_records(self, pair_records: list[StarPairRecord], update_alignment: bool = True) -> int:
         recorded_positions: dict[str, tuple[float, float]] = {}
         recorded_fit_payloads: dict[str, dict[str, float] | None] = {}
         recorded_constraints: dict[str, tuple[str, float]] = {}
-        for pair_payload in pair_payloads:
-            star_id = self._session_pair_star_id(pair_payload)
-            position = self._session_pair_position(pair_payload)
-            if star_id and position is not None:
-                recorded_positions[star_id] = position
-                fit_payload = self._session_pair_fit_payload(pair_payload)
-                if fit_payload is not None:
-                    fit_payload["x"] = position[0]
-                    fit_payload["y"] = position[1]
-                recorded_fit_payloads[star_id] = fit_payload
-                if isinstance(pair_payload, dict):
-                    recorded_constraints[star_id] = self._normalized_auto_match_constraint(
-                        pair_payload.get("fit_constraint_mode"),
-                        pair_payload.get("fit_weight", 1.0),
-                    )
+        for record in pair_records:
+            star_id = record.star_id
+            if not star_id:
+                continue
+            recorded_positions[star_id] = record.position
+            recorded_fit_payloads[star_id] = None if record.psf is None else record.psf.to_table_payload()
+            recorded_constraints[star_id] = (record.fit_constraint_mode, record.fit_weight)
 
         table = self.ui.tableWidgetStarPairs
         signals_were_blocked = table.blockSignals(True)
@@ -1202,7 +1118,8 @@ class StarPairIOMixin:
             self._apply_reference_payload(reference_payload, source_path)
             if current_tab is not None:
                 self.ui.tabWidgetMain.setCurrentWidget(current_tab)
-            self._merge_imported_reference_stars_from_pairs(pair_payloads)
+            pair_records = star_pair_records_from_payloads(pair_payloads, observer=self._observer_settings())
+            self._merge_imported_reference_stars_from_pairs(pair_records)
             self._auto_match_reference_star_ids = auto_match_star_ids
             self._auto_match_constraint_by_star_id = {
                 star_id: auto_match_constraints.get(star_id, (AUTO_MATCH_CONSTRAINT_ANCHOR, 1.0))
@@ -1214,7 +1131,7 @@ class StarPairIOMixin:
             self._auto_match_next_group_index = auto_match_next_group_index
             self._normalize_auto_match_groups()
             self._refresh_reference_stars_from_current_map()
-            self._ensure_pair_record_stars_visible(pair_payloads)
+            self._ensure_pair_record_stars_visible(pair_records)
             if preview is None:
                 preview = load_image_preview(image_path, max_long_side_px=None)
             self._apply_loaded_image_preview(
@@ -1222,7 +1139,7 @@ class StarPairIOMixin:
                 clear_existing_pairs=False,
                 switch_to_reference=switch_to_reference,
             )
-            restored_count = self._restore_star_pair_records(pair_payloads, update_alignment=False)
+            restored_count = self._restore_star_pair_records(pair_records, update_alignment=False)
         finally:
             self._suspend_alignment_updates = previous_suspend_alignment
         self._update_reference_alignment_transform()

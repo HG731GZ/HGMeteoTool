@@ -274,22 +274,18 @@ class AlignmentMixin:
         return sky_points, target_points
 
     def _matched_sky_alignment_data(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        star_lookup = self._reference_star_lookup()
         sky_points: list[tuple[float, float]] = []
         target_points: list[tuple[float, float]] = []
         point_weights: list[float] = []
         anchor_flags: list[bool] = []
-        for row in range(self.ui.tableWidgetStarPairs.rowCount()):
-            star_id = self._star_pair_star_id(row)
-            reference_star = star_lookup.get(star_id)
-            target_position = self._parse_star_pair_position_text(row)
-            if reference_star is None or target_position is None:
+        for record in self._star_pair_record_snapshot():
+            if not record.is_valid_for_fit():
                 continue
+            reference_star = record.reference_star
             sky_points.append((reference_star.ra_deg, reference_star.dec_deg))
-            target_points.append(target_position)
-            mode, fit_weight = self._star_pair_fit_constraint(row)
-            point_weights.append(fit_weight)
-            anchor_flags.append(mode != AUTO_MATCH_CONSTRAINT_SOFT)
+            target_points.append(record.position)
+            point_weights.append(float(record.fit_weight))
+            anchor_flags.append(record.fit_constraint_mode != AUTO_MATCH_CONSTRAINT_SOFT)
         return (
             np.asarray(sky_points, dtype=np.float64),
             np.asarray(target_points, dtype=np.float64),

@@ -1,5 +1,4 @@
 from __future__ import annotations
-from .app_constants import *
 
 from datetime import datetime, timedelta, timezone
 import math

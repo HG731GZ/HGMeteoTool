@@ -3,6 +3,8 @@ from __future__ import annotations
 import numpy as np
 from PyQt5.QtGui import QImage
 
+from .geometry2d import cell_crosses_angle_break, expand_polygon_radially, grid_cell_quad
+
 try:
     import cv2
 except ImportError:  # pragma: no cover - OpenCV 是项目依赖；兜底方便环境诊断。
@@ -40,33 +42,11 @@ def rgba_array_to_qimage(rgba: np.ndarray) -> QImage:
 def expand_quad_for_seamless_fill(quad: np.ndarray, padding_px: float) -> np.ndarray:
     """把目标四边形轻微外扩，盖住逐格贴片留下的接缝。"""
 
-    if padding_px <= 0.0:
-        return quad.astype(np.float32, copy=True)
-    center = np.mean(quad.astype(np.float64), axis=0).astype(np.float32)
-    vectors = quad.astype(np.float32) - center
-    lengths = np.linalg.norm(vectors, axis=1).astype(np.float32)
-    expanded = quad.astype(np.float32, copy=True)
-    valid = lengths > 1e-6
-    if np.any(valid):
-        scale = ((lengths[valid] + float(padding_px)) / lengths[valid]).astype(np.float32)
-        expanded[valid] = center + vectors[valid] * scale[:, None]
-    return expanded
+    return expand_polygon_radially(quad, padding_px).astype(np.float32)
 
 
 def _cell_crosses_longitude_break(screen_longitudes_rad: np.ndarray, row: int, column: int) -> bool:
-    cell_longitudes = np.asarray(
-        [
-            screen_longitudes_rad[row, column],
-            screen_longitudes_rad[row, column + 1],
-            screen_longitudes_rad[row + 1, column + 1],
-            screen_longitudes_rad[row + 1, column],
-        ],
-        dtype=np.float64,
-    )
-    return (
-        not np.all(np.isfinite(cell_longitudes))
-        or np.any(np.abs(np.diff(np.concatenate((cell_longitudes, cell_longitudes[:1])))) > np.pi)
-    )
+    return cell_crosses_angle_break(screen_longitudes_rad, row, column)
 
 
 def warp_grid_texture_to_rgba(
@@ -114,15 +94,7 @@ def warp_grid_texture_to_rgba(
                 continue
 
             dst_quad = expand_quad_for_seamless_fill(
-                np.asarray(
-                    [
-                        [screen_x_px[row, column], screen_y_px[row, column]],
-                        [screen_x_px[row, column + 1], screen_y_px[row, column + 1]],
-                        [screen_x_px[row + 1, column + 1], screen_y_px[row + 1, column + 1]],
-                        [screen_x_px[row + 1, column], screen_y_px[row + 1, column]],
-                    ],
-                    dtype=np.float32,
-                ),
+                grid_cell_quad(screen_x_px, screen_y_px, row, column).astype(np.float32),
                 seam_padding_px,
             )
             if abs(float(cv2.contourArea(dst_quad))) < 0.25:

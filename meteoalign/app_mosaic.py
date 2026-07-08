@@ -22,33 +22,40 @@ from .alignment import (
 from .app_constants import (
     AUTO_MATCH_CONSTRAINT_SOFT,
     SOURCE_MODEL_JSON_FILTER,
-    TOUCHPAD_ZOOM_MAX_FACTOR,
-    TOUCHPAD_ZOOM_MIN_FACTOR,
-    TOUCHPAD_ZOOM_SENSITIVITY,
 )
 from .app_graphics_items import GraphicsImageItem
 from .catalog import project_root
 from .frame_astrometry import FrameAstrometricModel
+from .geometry2d import cell_crosses_angle_break, expand_polygon_radially, grid_cell_quad
 from .image_preview import load_image_preview
+from .projected_texture_renderer import ProjectedTextureRenderer
+from .projection_grid import (
+    build_pixel_radec_grid,
+    grid_shape_for_long_side,
+    project_altaz_grid_to_screen,
+    radec_grid_to_altaz,
+)
+from .projection_view_state import ProjectionViewState
+from .sky_scene_service import SkyPreviewRenderService, SkyPreviewStyle, SkySceneData
 from .texture_projection import (
     qimage_to_rgb_array,
-    rgba_array_to_qimage,
-    texture_projection_available,
-    warp_grid_texture_to_rgba,
 )
 from .simulator import (
-    CYLINDRICAL_LENS_MODELS,
     CameraSettings,
     ObserverSettings,
     ViewSettings,
-    camera_basis_from_view,
     compute_altaz_from_radec,
     horizontal_fov_deg,
     local_vectors_from_altaz,
-    project_horizontal_catalog,
     vertical_fov_deg,
-    _camera_longitudes_from_altaz,
-    _project_altaz_points,
+)
+from .view_gestures import (
+    ViewZoomPolicy,
+    clamp_fov,
+    native_gesture_zoom_factor,
+    roll_after_drag,
+    sky_center_after_drag,
+    wheel_zoom_factor,
 )
 
 
@@ -223,14 +230,7 @@ def _payload_utc_offset_hours(payload: dict[str, object]) -> float:
 def _expanded_polygon_points(xs: np.ndarray, ys: np.ndarray, padding_px: float) -> list[QPointF]:
     """让覆盖面片相互轻微重叠，避免逐格填充时出现内部接缝。"""
 
-    points = np.column_stack((xs, ys)).astype(np.float64)
-    if padding_px > 0.0:
-        center = np.mean(points, axis=0)
-        vectors = points - center
-        lengths = np.linalg.norm(vectors, axis=1)
-        valid = lengths > 1e-6
-        if np.any(valid):
-            points[valid] = center + vectors[valid] * ((lengths[valid] + padding_px) / lengths[valid])[:, None]
+    points = expand_polygon_radially(np.column_stack((xs, ys)), padding_px)
     return [QPointF(float(x_value), float(y_value)) for x_value, y_value in points]
 
 
@@ -345,6 +345,8 @@ class MosaicProjectionMixin:
         self.mosaic_render_timer = QTimer(self)
         self.mosaic_render_timer.setSingleShot(True)
         self.mosaic_render_timer.timeout.connect(self.render_mosaic_projection_now)
+        self._mosaic_sky_preview_renderer = SkyPreviewRenderService(self.renderer)
+        self._mosaic_texture_renderer = ProjectedTextureRenderer()
         self._mosaic_source_model: MosaicSourceModel | None = None
         self._mosaic_coverage_cache: MosaicCoverageCache | None = None
         self._mosaic_source_texture_cache: MosaicSourceTextureCache | None = None
@@ -605,13 +607,7 @@ class MosaicProjectionMixin:
 
     def _mosaic_grid_shape_for_size(self, width: int, height: int) -> tuple[int, int]:
         precision = self._mosaic_grid_precision_value()
-        if width >= height:
-            columns = precision
-            rows = max(3, int(round(precision * height / float(max(width, 1)))))
-        else:
-            rows = precision
-            columns = max(3, int(round(precision * width / float(max(height, 1)))))
-        return rows, columns
+        return grid_shape_for_long_side(width, height, precision, min_minor_cells=3)
 
     def _update_mosaic_grid_precision_tooltip(self, *unused) -> None:  # type: ignore[no-untyped-def]
         if not hasattr(self.ui, "spinBoxMosaicGridPrecision"):
@@ -640,20 +636,15 @@ class MosaicProjectionMixin:
         width = max(1, int(model.image_width_px))
         height = max(1, int(model.image_height_px))
         rows, columns = self._mosaic_grid_shape_for_size(width, height)
-        x_values = np.linspace(0.0, max(width - 1, 0), columns, dtype=np.float64)
-        y_values = np.linspace(0.0, max(height - 1, 0), rows, dtype=np.float64)
-        grid_x, grid_y = np.meshgrid(x_values, y_values)
-        points = np.column_stack((grid_x.ravel(), grid_y.ravel()))
-        radec = model.pixel_to_sky_points(points)
-        valid = np.all(np.isfinite(radec), axis=1)
+        sky_grid = build_pixel_radec_grid(model, width, height, rows, columns)
         return MosaicCoverageCache(
             grid_rows=rows,
             grid_columns=columns,
-            grid_x_px=grid_x.astype(np.float64),
-            grid_y_px=grid_y.astype(np.float64),
-            ra_deg=radec[:, 0].reshape((rows, columns)).astype(np.float64),
-            dec_deg=radec[:, 1].reshape((rows, columns)).astype(np.float64),
-            valid=valid.reshape((rows, columns)).astype(bool),
+            grid_x_px=sky_grid.pixel_grid.x_px,
+            grid_y_px=sky_grid.pixel_grid.y_px,
+            ra_deg=sky_grid.first_deg,
+            dec_deg=sky_grid.second_deg,
+            valid=sky_grid.valid,
         )
 
     def resolve_mosaic_grid_again(self) -> None:
@@ -681,21 +672,7 @@ class MosaicProjectionMixin:
         cache: MosaicCoverageCache,
         observer: ObserverSettings,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        flat_ra = cache.ra_deg.ravel()
-        flat_dec = cache.dec_deg.ravel()
-        valid_input = cache.valid.ravel() & np.isfinite(flat_ra) & np.isfinite(flat_dec)
-        alt_deg = np.full(flat_ra.shape, np.nan, dtype=np.float64)
-        az_deg = np.full(flat_ra.shape, np.nan, dtype=np.float64)
-        if np.any(valid_input):
-            alt_values, az_values = compute_altaz_from_radec(flat_ra[valid_input], flat_dec[valid_input], observer)
-            alt_deg[valid_input] = alt_values
-            az_deg[valid_input] = az_values
-        valid = valid_input & np.isfinite(alt_deg) & np.isfinite(az_deg)
-        return (
-            alt_deg.reshape((cache.grid_rows, cache.grid_columns)).astype(np.float64),
-            az_deg.reshape((cache.grid_rows, cache.grid_columns)).astype(np.float64),
-            valid.reshape((cache.grid_rows, cache.grid_columns)).astype(bool),
-        )
+        return radec_grid_to_altaz(cache.ra_deg, cache.dec_deg, cache.valid, observer)
 
     def _reset_mosaic_center_from_model(self) -> None:
         source_model = self._mosaic_source_model
@@ -797,12 +774,19 @@ class MosaicProjectionMixin:
             fisheye_fov_deg=fov_deg,
         )
 
-    def _mosaic_view_settings(self) -> ViewSettings:
-        return ViewSettings(
-            center_az_deg=self._mosaic_center_az_deg,
-            center_alt_deg=self._mosaic_center_alt_deg,
-            roll_deg=self._mosaic_roll_deg,
+    def _mosaic_view_settings(self, camera: CameraSettings | None = None) -> ViewSettings:
+        if camera is None:
+            width, height = self._mosaic_render_size()
+            camera = self._mosaic_camera_for_render(width, height)
+        state = ProjectionViewState.from_camera_and_view(
+            camera,
+            ViewSettings(
+                center_az_deg=self._mosaic_center_az_deg,
+                center_alt_deg=self._mosaic_center_alt_deg,
+                roll_deg=self._mosaic_roll_deg,
+            ),
         )
+        return state.to_view_settings()
 
     def _effective_mosaic_model_and_coverage(
         self,
@@ -866,30 +850,29 @@ class MosaicProjectionMixin:
 
         try:
             camera = self._mosaic_camera_for_render(width, height)
-            view = self._mosaic_view_settings()
+            view = self._mosaic_view_settings(camera)
             mag_limit = float(self.ui.doubleSpinBoxMosaicMagLimit.value())
             horizontal_catalog = self._get_horizontal_catalog(observer, mag_limit)
             horizontal_milky_way = self._get_horizontal_milky_way(observer)
             horizontal_solar_system = self._get_horizontal_solar_system(observer)
-            star_map = project_horizontal_catalog(
-                horizontal_catalog=horizontal_catalog,
+            image = self._mosaic_sky_preview_renderer.render(
+                scene=SkySceneData(
+                    horizontal_catalog=horizontal_catalog,
+                    horizontal_milky_way=horizontal_milky_way,
+                    horizontal_solar_system=horizontal_solar_system,
+                ),
                 camera=camera,
                 view=view,
                 visible_mag_limit=mag_limit,
-                horizontal_milky_way=horizontal_milky_way,
-                horizontal_solar_system=horizontal_solar_system,
-            )
-            image = self.renderer.render(
-                star_map,
-                reference_stars=(),
-                element_scale=1.0,
-                draw_common_names=False,
-                number_reference_stars=False,
-                draw_background=True,
-                draw_horizon_shadow=True,
-                draw_grid=self.ui.checkBoxMosaicShowGrid.isChecked(),
-                draw_solar_system_labels=True,
-                draw_direction_labels=self.ui.checkBoxMosaicShowGrid.isChecked(),
+                style=SkyPreviewStyle(
+                    draw_common_names=False,
+                    number_reference_stars=False,
+                    draw_background=True,
+                    draw_horizon_shadow=True,
+                    draw_grid=self.ui.checkBoxMosaicShowGrid.isChecked(),
+                    draw_solar_system_labels=True,
+                    draw_direction_labels=self.ui.checkBoxMosaicShowGrid.isChecked(),
+                ),
             )
             if self._mosaic_overlay_enabled():
                 if self._mosaic_overlay_mode() == MOSAIC_OVERLAY_MODE_SOURCE_IMAGE:
@@ -914,28 +897,17 @@ class MosaicProjectionMixin:
         if cache is None:
             return
         cache_alt, cache_az, cache_valid = self._mosaic_coverage_altaz(cache, observer)
-        basis = camera_basis_from_view(view)
-        x_px, y_px, valid_projection = _project_altaz_points(
-            cache_alt.ravel(),
-            cache_az.ravel(),
+        screen_grid = project_altaz_grid_to_screen(
+            cache_alt,
+            cache_az,
             camera=camera,
-            basis=basis,
+            view=view,
+            valid=cache_valid,
         )
-        screen_x = x_px.reshape((cache.grid_rows, cache.grid_columns))
-        screen_y = y_px.reshape((cache.grid_rows, cache.grid_columns))
-        valid = (
-            valid_projection.reshape((cache.grid_rows, cache.grid_columns))
-            & cache_valid
-            & np.isfinite(screen_x)
-            & np.isfinite(screen_y)
-        )
-        screen_longitudes = None
-        if camera.lens_model in CYLINDRICAL_LENS_MODELS:
-            screen_longitudes = _camera_longitudes_from_altaz(
-                cache_alt.ravel(),
-                cache_az.ravel(),
-                basis,
-            ).reshape((cache.grid_rows, cache.grid_columns))
+        screen_x = screen_grid.x_px
+        screen_y = screen_grid.y_px
+        valid = screen_grid.valid
+        screen_longitudes = screen_grid.screen_longitudes_rad
         opacity = self._mosaic_overlay_opacity()
         fill_color = QColor(205, 205, 205, int(round(255.0 * opacity)))
         edge_color = QColor(245, 245, 245, int(round(220.0 * min(1.0, opacity + 0.25))))
@@ -954,40 +926,11 @@ class MosaicProjectionMixin:
                     and valid[row + 1, column]
                 ):
                     continue
-                xs = np.asarray(
-                    [
-                        screen_x[row, column],
-                        screen_x[row, column + 1],
-                        screen_x[row + 1, column + 1],
-                        screen_x[row + 1, column],
-                    ],
-                    dtype=np.float64,
-                )
-                ys = np.asarray(
-                    [
-                        screen_y[row, column],
-                        screen_y[row, column + 1],
-                        screen_y[row + 1, column + 1],
-                        screen_y[row + 1, column],
-                    ],
-                    dtype=np.float64,
-                )
-                if screen_longitudes is not None:
-                    cell_longitudes = np.asarray(
-                        [
-                            screen_longitudes[row, column],
-                            screen_longitudes[row, column + 1],
-                            screen_longitudes[row + 1, column + 1],
-                            screen_longitudes[row + 1, column],
-                        ],
-                        dtype=np.float64,
-                    )
-                    # 覆盖面片和银河面片一样，跨圆柱投影断点时不能直接闭合填充。
-                    if (
-                        not np.all(np.isfinite(cell_longitudes))
-                        or np.any(np.abs(np.diff(np.concatenate((cell_longitudes, cell_longitudes[:1])))) > np.pi)
-                    ):
-                        continue
+                quad = grid_cell_quad(screen_x, screen_y, row, column)
+                xs = quad[:, 0]
+                ys = quad[:, 1]
+                if screen_longitudes is not None and cell_crosses_angle_break(screen_longitudes, row, column):
+                    continue
                 bbox_area = max(float(np.max(xs) - np.min(xs)), 0.0) * max(float(np.max(ys) - np.min(ys)), 0.0)
                 if bbox_area <= 0.05 or bbox_area > max_cell_bbox_area:
                     continue
@@ -1040,52 +983,26 @@ class MosaicProjectionMixin:
         observer: ObserverSettings,
         source_model: MosaicSourceModel,
     ) -> None:
-        if cache is None or not texture_projection_available():
+        if cache is None:
             return
         texture = self._mosaic_source_texture(source_model)
         if texture is None:
             return
         cache_alt, cache_az, cache_valid = self._mosaic_coverage_altaz(cache, observer)
-        basis = camera_basis_from_view(view)
-        x_px, y_px, valid_projection = _project_altaz_points(
-            cache_alt.ravel(),
-            cache_az.ravel(),
+        self._mosaic_texture_renderer.paint_on_qimage(
+            image,
             camera=camera,
-            basis=basis,
-        )
-        screen_x = x_px.reshape((cache.grid_rows, cache.grid_columns))
-        screen_y = y_px.reshape((cache.grid_rows, cache.grid_columns))
-        valid = (
-            valid_projection.reshape((cache.grid_rows, cache.grid_columns))
-            & cache_valid
-            & np.isfinite(screen_x)
-            & np.isfinite(screen_y)
-        )
-        screen_longitudes = None
-        if camera.lens_model in CYLINDRICAL_LENS_MODELS:
-            screen_longitudes = _camera_longitudes_from_altaz(
-                cache_alt.ravel(),
-                cache_az.ravel(),
-                basis,
-            ).reshape((cache.grid_rows, cache.grid_columns))
-        rgba = np.zeros((image.height(), image.width(), 4), dtype=np.uint8)
-        warp_grid_texture_to_rgba(
-            rgba,
+            view=view,
             source_rgb=texture.source_rgb,
             source_grid_x_px=cache.grid_x_px,
             source_grid_y_px=cache.grid_y_px,
             source_scale_x=texture.source_scale_x,
             source_scale_y=texture.source_scale_y,
-            screen_x_px=screen_x,
-            screen_y_px=screen_y,
-            valid_points=valid,
+            alt_deg=cache_alt,
+            az_deg=cache_az,
+            valid_points=cache_valid,
             opacity=self._mosaic_overlay_opacity(),
-            screen_longitudes_rad=screen_longitudes,
         )
-        overlay = rgba_array_to_qimage(rgba)
-        painter = QPainter(image)
-        painter.drawImage(0, 0, overlay)
-        painter.end()
 
     def _paint_mosaic_coverage_boundary(
         self,
@@ -1172,28 +1089,31 @@ class MosaicProjectionMixin:
     def _apply_mosaic_center_drag_delta(self, dx: int, dy: int) -> None:
         width, height = self._mosaic_render_size()
         camera = self._mosaic_camera_for_render(width, height)
-        az_degrees_per_pixel = max(horizontal_fov_deg(camera) / max(width, 1), 0.005)
-        alt_degrees_per_pixel = max(vertical_fov_deg(camera) / max(height, 1), 0.005)
-        self._mosaic_center_az_deg = (self._mosaic_center_az_deg - dx * az_degrees_per_pixel) % 360.0
-        self._mosaic_center_alt_deg = max(-90.0, min(90.0, self._mosaic_center_alt_deg + dy * alt_degrees_per_pixel))
+        self._mosaic_center_az_deg, self._mosaic_center_alt_deg = sky_center_after_drag(
+            center_az_deg=self._mosaic_center_az_deg,
+            center_alt_deg=self._mosaic_center_alt_deg,
+            dx_px=dx,
+            dy_px=dy,
+            horizontal_fov_deg=horizontal_fov_deg(camera),
+            vertical_fov_deg=vertical_fov_deg(camera),
+            viewport_width_px=width,
+            viewport_height_px=height,
+            min_degrees_per_pixel=0.005,
+        )
         self._set_mosaic_view_controls_from_state()
         self._update_mosaic_view_label()
         self.schedule_mosaic_render(delay_ms=10)
 
     def _apply_mosaic_roll_drag_delta(self, dx: int) -> None:
-        self._mosaic_roll_deg -= dx * 0.25
-        while self._mosaic_roll_deg > 180.0:
-            self._mosaic_roll_deg -= 360.0
-        while self._mosaic_roll_deg < -180.0:
-            self._mosaic_roll_deg += 360.0
+        self._mosaic_roll_deg = roll_after_drag(self._mosaic_roll_deg, dx, drag_sign=-1.0)
         self._set_mosaic_view_controls_from_state()
         self._update_mosaic_view_label()
         self.schedule_mosaic_render(delay_ms=10)
 
     def _apply_mosaic_fov_wheel(self, wheel_delta: int) -> None:
-        if wheel_delta == 0:
+        zoom_factor = wheel_zoom_factor(wheel_delta, MOSAIC_ZOOM_FACTOR)
+        if zoom_factor is None:
             return
-        zoom_factor = MOSAIC_ZOOM_FACTOR if wheel_delta > 0 else 1.0 / MOSAIC_ZOOM_FACTOR
         self._apply_mosaic_fov_zoom_factor(zoom_factor)
         self.render_mosaic_projection_now()
 
@@ -1201,8 +1121,11 @@ class MosaicProjectionMixin:
         if not np.isfinite(zoom_factor) or zoom_factor <= 0.0 or abs(zoom_factor - 1.0) <= 1e-4:
             return
         current = float(self.ui.doubleSpinBoxMosaicFov.value())
-        target = current / zoom_factor
-        target = max(self.ui.doubleSpinBoxMosaicFov.minimum(), min(self.ui.doubleSpinBoxMosaicFov.maximum(), target))
+        target = clamp_fov(
+            current / zoom_factor,
+            self.ui.doubleSpinBoxMosaicFov.minimum(),
+            self.ui.doubleSpinBoxMosaicFov.maximum(),
+        )
         self.ui.doubleSpinBoxMosaicFov.setValue(target)
 
     def _mosaic_wheel_zoom_enabled(self) -> bool:
@@ -1211,26 +1134,20 @@ class MosaicProjectionMixin:
     def _mosaic_touchpad_pinch_zoom_enabled(self) -> bool:
         return bool(getattr(self.ui_config, "touchpad_pinch_zoom_enabled", True))
 
-    def _mosaic_native_zoom_value(self, event) -> float:  # type: ignore[no-untyped-def]
-        if not self._mosaic_touchpad_pinch_zoom_enabled():
-            return 0.0
-        zoom_gesture = getattr(Qt, "ZoomNativeGesture", None)
-        if zoom_gesture is None or event.gestureType() != zoom_gesture:
-            return 0.0
-        try:
-            value = float(event.value())
-        except (TypeError, ValueError):
-            return 0.0
-        if not np.isfinite(value) or abs(value) <= 1e-6:
-            return 0.0
-        return value
+    def _mosaic_zoom_policy(self) -> ViewZoomPolicy:
+        maximum = self.ui.doubleSpinBoxMosaicFov.maximum() if hasattr(self.ui, "doubleSpinBoxMosaicFov") else 360.0
+        minimum = self.ui.doubleSpinBoxMosaicFov.minimum() if hasattr(self.ui, "doubleSpinBoxMosaicFov") else 1.0
+        return ViewZoomPolicy(
+            wheel_enabled=self._mosaic_wheel_zoom_enabled(),
+            pinch_enabled=self._mosaic_touchpad_pinch_zoom_enabled(),
+            min_fov=float(minimum),
+            max_fov=float(maximum),
+        )
 
     def _handle_mosaic_native_fov_zoom(self, event) -> bool:  # type: ignore[no-untyped-def]
-        value = self._mosaic_native_zoom_value(event)
-        if value == 0.0:
+        zoom_factor = native_gesture_zoom_factor(event, self._mosaic_zoom_policy())
+        if zoom_factor is None:
             return False
-        zoom_factor = math.exp(value * TOUCHPAD_ZOOM_SENSITIVITY)
-        zoom_factor = max(TOUCHPAD_ZOOM_MIN_FACTOR, min(TOUCHPAD_ZOOM_MAX_FACTOR, zoom_factor))
         self._apply_mosaic_fov_zoom_factor(zoom_factor)
         self.render_mosaic_projection_now()
         return True
