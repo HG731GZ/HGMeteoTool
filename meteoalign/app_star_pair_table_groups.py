@@ -266,6 +266,11 @@ class StarPairTableGroupsMixin:
         if self._is_auto_match_row(row) and star_id:
             self._auto_match_constraint_by_star_id[star_id] = (normalized_mode, normalized_weight)
 
+        # 同步写入 StarPairStore
+        store = getattr(self, "_star_pair_store", None)
+        if store is not None and star_id:
+            store.set_constraint(star_id, normalized_mode, normalized_weight)
+
         tooltip = (
             f"投影拟合：软约束，权重 {normalized_weight:.2f}。"
             if normalized_mode == AUTO_MATCH_CONSTRAINT_SOFT

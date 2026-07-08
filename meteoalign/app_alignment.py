@@ -273,13 +273,21 @@ class AlignmentMixin:
         return sky_points, target_points
 
     def _matched_sky_alignment_data(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """收集用于天球配准的配对数据，优先从 StarPairStore 读取。"""
+        store = getattr(self, "_star_pair_store", None)
+        if store is not None and len(store) > 0:
+            records = store.valid_fit_records()
+        else:
+            records = [
+                record for record in self._star_pair_record_snapshot()
+                if record.is_valid_for_fit()
+            ]
+
         sky_points: list[tuple[float, float]] = []
         target_points: list[tuple[float, float]] = []
         point_weights: list[float] = []
         anchor_flags: list[bool] = []
-        for record in self._star_pair_record_snapshot():
-            if not record.is_valid_for_fit():
-                continue
+        for record in records:
             reference_star = record.reference_star
             sky_points.append((reference_star.ra_deg, reference_star.dec_deg))
             target_points.append(record.position)

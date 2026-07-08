@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from .app_star_pair_io_common import *  # noqa: F401, F403
+from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import QApplication, QProgressDialog
 
 class StarPairJsonTaskMixin:
     """JSON 导入后台任务与进度对话框生命周期。"""

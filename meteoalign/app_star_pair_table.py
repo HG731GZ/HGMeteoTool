@@ -5,6 +5,7 @@ from .app_star_pair_annotations import StarPairAnnotationsMixin
 from .app_star_pair_table_groups import StarPairTableGroupsMixin
 from .config import StarMapUiConfig
 from .alignment.models import SkyAlignmentTransform
+from .star_pair_store import StarPairStore
 from PyQt5.QtGui import QCursor
 
 
@@ -37,6 +38,7 @@ class StarPairTableMixin(
     _sky_alignment_transform: SkyAlignmentTransform | None
     _sky_alignment_error_message: str
     _reference_alignment_error_message: str
+    _star_pair_store: StarPairStore
     _current_star_map: object | None
     _manual_reference_star_ids: list
     _excluded_reference_star_ids: list

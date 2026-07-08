@@ -13,6 +13,12 @@ from .app_constants import (
     STAR_PAIR_ROW_TYPE_MANUAL,
 )
 from .star_fitting import FittedStarPosition
+from .star_pair_model import (
+    PAIR_ORIGIN_AUTO_MATCH,
+    PAIR_ORIGIN_MANUAL,
+    PsfFit,
+    StarPairRecord,
+)
 
 class StarPairActionsMixin:
     """星对右键菜单、拾取模式、位置编辑和删除动作。"""
@@ -245,6 +251,35 @@ class StarPairActionsMixin:
         table.selectRow(row)
         self._refresh_star_pair_row_style(row)
         self._update_auto_match_group_row_text()
+
+        # 同步写入 StarPairStore（若尚无记录则从表格数据创建）
+        store = getattr(self, "_star_pair_store", None)
+        if store is not None:
+            star_id = self._star_pair_star_id(row)
+            if star_id:
+                psf = PsfFit.from_fitted_position(fitted_position)
+                if star_id in store:
+                    store.update_position(star_id, fitted_position.x, fitted_position.y, psf=psf)
+                else:
+                    reference_star = self._reference_star_for_row(row)
+                    if reference_star is not None:
+                        pair_origin = PAIR_ORIGIN_AUTO_MATCH if self._is_auto_match_row(row) else PAIR_ORIGIN_MANUAL
+                        constraint_mode, fit_weight = self._star_pair_fit_constraint(row)
+                        group_id = self._row_auto_match_group_id(row) if self._is_auto_match_row(row) else None
+                        group_name = self._auto_match_group_label(group_id) if group_id else None
+                        record = StarPairRecord(
+                            reference_star=reference_star,
+                            image_x_px=float(fitted_position.x),
+                            image_y_px=float(fitted_position.y),
+                            psf=psf,
+                            pair_origin=pair_origin,
+                            group_id=group_id or None,
+                            group_name=group_name,
+                            fit_constraint_mode=constraint_mode,
+                            fit_weight=float(fit_weight),
+                        )
+                        store.add(record)
+
         if update_alignment:
             self._update_reference_alignment_transform()
 
@@ -277,6 +312,12 @@ class StarPairActionsMixin:
                 position_item.setData(STAR_PAIR_POSITION_ROLE, None)
                 position_item.setData(STAR_PAIR_FIT_ROLE, None)
         table.blockSignals(False)
+
+        # 同步清空 StarPairStore
+        store = getattr(self, "_star_pair_store", None)
+        if store is not None:
+            store.clear()
+
         self._clear_star_pair_annotations()
         self._refresh_star_pair_table_styles()
         self._update_auto_match_group_row_text()

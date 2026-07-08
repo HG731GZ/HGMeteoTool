@@ -4,7 +4,7 @@ import math
 from dataclasses import dataclass, replace
 
 import numpy as np
-from PyQt5.QtCore import QEvent, QObject, QPoint, QTimer, Qt, pyqtSignal
+from PyQt5.QtCore import QObject, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QImage
 from PyQt5.QtWidgets import QDialog, QGraphicsScene, QMessageBox, QProgressDialog
 
@@ -32,12 +32,11 @@ from .simulator import (
 )
 from .texture_projection import qimage_to_rgb_array
 from .ui.ui_mapping_validation_dialog import Ui_MappingValidationDialog
+from .projection_interaction_controller import ProjectionInteractionController
 from .view_gestures import (
     ViewZoomPolicy,
     roll_after_drag,
     sky_center_after_drag,
-    native_gesture_zoom_factor,
-    wheel_zoom_factor,
 )
 
 
@@ -218,7 +217,6 @@ class MappingValidationDialog(QDialog):
         self.focal_length_mm = max(float(base_camera.focal_length_mm), 1e-6)
         self.fisheye_fov_deg = max(1.0, min(300.0, float(base_camera.fisheye_fov_deg)))
         self.cache: ImageSkyProjectionCache | None = None
-        self.last_drag_pos: QPoint | None = None
         self.cache_task: WorkerTaskHandle | None = None
         self.cache_worker: PixelToSkyValidationWorker | None = None
         self.cache_progress: QProgressDialog | None = None
@@ -231,9 +229,19 @@ class MappingValidationDialog(QDialog):
         self.scene.addItem(self.sky_item)
         self.scene.addItem(self.image_overlay_item)
         self.ui.graphicsViewValidation.setScene(self.scene)
-        self.ui.graphicsViewValidation.installEventFilter(self)
-        self.ui.graphicsViewValidation.viewport().installEventFilter(self)
-        self.ui.graphicsViewValidation.viewport().setMouseTracking(True)
+
+        # 使用统一的投影视图交互控制器
+        self._interaction_controller = ProjectionInteractionController(
+            view=self.ui.graphicsViewValidation,
+            on_pan=self._handle_pan_delta,
+            on_roll=self._handle_roll_delta,
+            on_zoom=self._handle_zoom_factor,
+            on_resize=self._handle_resize_event,
+            on_interaction_end=self._handle_interaction_end_event,
+            zoom_step_factor=VALIDATION_ZOOM_FACTOR,
+            zoom_policy=self._zoom_policy(),
+            parent=self,
+        )
 
         self.render_timer = QTimer(self)
         self.render_timer.setSingleShot(True)
@@ -252,40 +260,46 @@ class MappingValidationDialog(QDialog):
             QMessageBox.information(self, "正在准备验证", "映射验证缓存仍在计算，请等待完成后再关闭窗口。")
             event.ignore()
             return
+        self._interaction_controller.detach()
         super().closeEvent(event)
 
-    def eventFilter(self, watched, event) -> bool:  # type: ignore[no-untyped-def]
-        if watched in (self.ui.graphicsViewValidation, self.ui.graphicsViewValidation.viewport()):
-            if event.type() == QEvent.NativeGesture and self._handle_native_fov_zoom(event):
-                return True
-        if watched is self.ui.graphicsViewValidation.viewport():
-            if event.type() == QEvent.Resize:
-                self.schedule_render()
-                return False
-            if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
-                self.last_drag_pos = event.pos()
-                self.ui.graphicsViewValidation.viewport().setCursor(Qt.ClosedHandCursor)
-                return True
-            if event.type() == QEvent.MouseMove and self.last_drag_pos is not None:
-                dx = event.pos().x() - self.last_drag_pos.x()
-                dy = event.pos().y() - self.last_drag_pos.y()
-                self.last_drag_pos = event.pos()
-                if event.modifiers() & Qt.ControlModifier:
-                    self._apply_roll_drag_delta(dx)
-                else:
-                    self._apply_drag_delta(dx, dy)
-                return True
-            if event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
-                self.last_drag_pos = None
-                self.ui.graphicsViewValidation.viewport().unsetCursor()
-                self.render_now()
-                return True
-            if event.type() == QEvent.Wheel:
-                if not self._wheel_zoom_enabled():
-                    return False
-                self._apply_fov_wheel(event.angleDelta().y())
-                return True
-        return super().eventFilter(watched, event)
+    # ------------------------------------------------------------------
+    # 交互回调（由 ProjectionInteractionController 驱动）
+    # ------------------------------------------------------------------
+
+    def _handle_pan_delta(self, dx: int, dy: int) -> None:
+        """处理平移拖拽。"""
+        width, height = self._render_size()
+        camera = self._camera_for_render(width, height)
+        self.center_az_deg, self.center_alt_deg = sky_center_after_drag(
+            center_az_deg=self.center_az_deg,
+            center_alt_deg=self.center_alt_deg,
+            dx_px=dx,
+            dy_px=dy,
+            horizontal_fov_deg=horizontal_fov_deg(camera),
+            vertical_fov_deg=vertical_fov_deg(camera),
+            viewport_width_px=width,
+            viewport_height_px=height,
+            min_degrees_per_pixel=0.005,
+        )
+        self.schedule_render(delay_ms=10)
+
+    def _handle_roll_delta(self, dx: int) -> None:
+        """处理滚转拖拽。"""
+        self.fixed_roll_deg = roll_after_drag(self.fixed_roll_deg, dx, drag_sign=-1.0)
+        self.schedule_render(delay_ms=10)
+
+    def _handle_zoom_factor(self, zoom_factor: float) -> None:
+        """处理缩放（滚轮或触控板）。"""
+        self._apply_fov_zoom_factor(zoom_factor)
+
+    def _handle_resize_event(self) -> None:
+        """处理视图尺寸变化。"""
+        self.schedule_render()
+
+    def _handle_interaction_end_event(self) -> None:
+        """交互结束（鼠标释放）时触发最终高质量渲染。"""
+        self.render_now()
 
     def schedule_render(self, delay_ms: int = 30) -> None:
         self.render_timer.start(delay_ms)
@@ -348,32 +362,6 @@ class MappingValidationDialog(QDialog):
         )
         return state.to_view_settings()
 
-    def _apply_drag_delta(self, dx: int, dy: int) -> None:
-        width, height = self._render_size()
-        camera = self._camera_for_render(width, height)
-        self.center_az_deg, self.center_alt_deg = sky_center_after_drag(
-            center_az_deg=self.center_az_deg,
-            center_alt_deg=self.center_alt_deg,
-            dx_px=dx,
-            dy_px=dy,
-            horizontal_fov_deg=horizontal_fov_deg(camera),
-            vertical_fov_deg=vertical_fov_deg(camera),
-            viewport_width_px=width,
-            viewport_height_px=height,
-            min_degrees_per_pixel=0.005,
-        )
-        self.schedule_render(delay_ms=10)
-
-    def _apply_roll_drag_delta(self, dx: int) -> None:
-        self.fixed_roll_deg = roll_after_drag(self.fixed_roll_deg, dx, drag_sign=-1.0)
-        self.schedule_render(delay_ms=10)
-
-    def _apply_fov_wheel(self, wheel_delta: int) -> None:
-        zoom_factor = wheel_zoom_factor(wheel_delta, VALIDATION_ZOOM_FACTOR)
-        if zoom_factor is None:
-            return
-        self._apply_fov_zoom_factor(zoom_factor)
-
     def _apply_fov_zoom_factor(self, zoom_factor: float) -> None:
         if not np.isfinite(zoom_factor) or zoom_factor <= 0.0 or abs(zoom_factor - 1.0) <= 1e-4:
             return
@@ -396,13 +384,6 @@ class MappingValidationDialog(QDialog):
             min_fov=1.0,
             max_fov=300.0,
         )
-
-    def _handle_native_fov_zoom(self, event) -> bool:  # type: ignore[no-untyped-def]
-        zoom_factor = native_gesture_zoom_factor(event, self._zoom_policy())
-        if zoom_factor is None:
-            return False
-        self._apply_fov_zoom_factor(zoom_factor)
-        return True
 
     def _update_overlay_opacity(self, *unused) -> None:  # type: ignore[no-untyped-def]
         if not self.ui.checkBoxOverlayEnabled.isChecked():

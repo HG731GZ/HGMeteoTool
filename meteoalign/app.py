@@ -72,6 +72,7 @@ from .simulator import (
     vertical_fov_deg,
 )
 from .star_fitting import FittedStarPosition, fit_star_position
+from .star_pair_store import StarPairStore
 from .ui.ui_main_window import Ui_MainWindow
 
 # ---------------------------------------------------------------------------
@@ -266,6 +267,7 @@ class MainWindow(
         self._auto_match_group_by_star_id: dict[str, str] = {}
         self._auto_match_group_expanded_by_id: dict[str, bool] = {}
         self._auto_match_next_group_index = 0
+        self._star_pair_store = StarPairStore(self)
         self._star_pair_sort_key: str | None = None
         self._star_pair_sort_descending = True
         self._excluded_reference_star_ids: list[str] = []

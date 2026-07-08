@@ -1,6 +1,19 @@
 from __future__ import annotations
 
-from .app_star_pair_io_common import *  # noqa: F401, F403
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from PyQt5.QtCore import QDateTime, QThread, QTimer, Qt
+from PyQt5.QtWidgets import QFileDialog, QMessageBox, QProgressDialog
+
+from .app_constants import (
+    LENS_MODELS,
+    RECTILINEAR_LENS_MODEL,
+    REFERENCE_LABEL_MODE_FIXED_COUNT,
+    REFERENCE_LABEL_MODES,
+)
+from .app_workers import ReferenceJsonImportWorker
+from .catalog import project_root
 
 class ReferenceJsonIOMixin:
     """参考 JSON 导入和应用。"""

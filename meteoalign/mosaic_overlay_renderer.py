@@ -1,0 +1,220 @@
+from __future__ import annotations
+
+import math
+from pathlib import Path
+
+import numpy as np
+from PyQt5.QtCore import QPointF, Qt
+from PyQt5.QtGui import QColor, QImage, QPainter, QPolygonF
+
+from .geometry2d import cell_crosses_angle_break, grid_cell_quad
+from .image_preview import load_image_preview
+from .mosaic_model_io import (
+    MosaicCoverageCache,
+    MosaicSourceModel,
+    MosaicSourceTextureCache,
+    _expanded_polygon_points,
+)
+from .projection_grid import project_altaz_grid_to_screen, radec_grid_to_altaz
+from .simulator import CameraSettings, ObserverSettings, ViewSettings
+from .texture_projection import qimage_to_rgb_array
+
+# 源图纹理长边像素上限，与 app_mosaic 保持一致
+MOSAIC_SOURCE_TEXTURE_LONG_SIDE_PX = 4096
+
+
+def coverage_altaz(
+    cache: MosaicCoverageCache,
+    observer: ObserverSettings,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """将覆盖缓存的 RA/Dec 网格转换为当前观测者的地平坐标。"""
+    return radec_grid_to_altaz(cache.ra_deg, cache.dec_deg, cache.valid, observer)
+
+
+def paint_coverage_overlay(
+    image: QImage,
+    cache: MosaicCoverageCache,
+    camera: CameraSettings,
+    view: ViewSettings,
+    observer: ObserverSettings,
+    opacity: float,
+) -> None:
+    """在已渲染的星空预览图上绘制源图覆盖范围（半透明填充+边界线）。
+
+    参数
+    ----
+    image : QImage
+        已渲染星空背景的 ARGB32 图像，覆盖范围直接绘制其上。
+    cache : MosaicCoverageCache
+        源图像素网格到天球的映射缓存。
+    camera : CameraSettings
+        当前输出投影的相机参数。
+    view : ViewSettings
+        当前取景方向。
+    observer : ObserverSettings
+        观测者位置与时间。
+    opacity : float
+        覆盖填充不透明度，0.0-1.0。
+    """
+    if cache is None:
+        return
+
+    cache_alt, cache_az, cache_valid = coverage_altaz(cache, observer)
+    screen_grid = project_altaz_grid_to_screen(
+        cache_alt, cache_az, camera=camera, view=view, valid=cache_valid,
+    )
+    screen_x = screen_grid.x_px
+    screen_y = screen_grid.y_px
+    valid = screen_grid.valid
+    screen_longitudes = screen_grid.screen_longitudes_rad
+    fill_color = QColor(205, 205, 205, int(round(255.0 * opacity)))
+    edge_color = QColor(245, 245, 245, int(round(220.0 * min(1.0, opacity + 0.25))))
+    max_cell_bbox_area = max(256.0, image.width() * image.height() * 0.35)
+
+    painter = QPainter(image)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(fill_color)
+
+    for row in range(cache.grid_rows - 1):
+        for column in range(cache.grid_columns - 1):
+            if not bool(
+                valid[row, column]
+                and valid[row, column + 1]
+                and valid[row + 1, column + 1]
+                and valid[row + 1, column]
+            ):
+                continue
+            quad = grid_cell_quad(screen_x, screen_y, row, column)
+            xs = quad[:, 0]
+            ys = quad[:, 1]
+            if screen_longitudes is not None and cell_crosses_angle_break(screen_longitudes, row, column):
+                continue
+            bbox_area = max(float(np.max(xs) - np.min(xs)), 0.0) * max(float(np.max(ys) - np.min(ys)), 0.0)
+            if bbox_area <= 0.05 or bbox_area > max_cell_bbox_area:
+                continue
+            polygon = QPolygonF(_expanded_polygon_points(xs, ys, 0.75))
+            painter.drawPolygon(polygon)
+
+    painter.setPen(edge_color)
+    painter.setBrush(Qt.NoBrush)
+    _paint_coverage_boundary(painter, screen_x, screen_y, valid)
+    painter.end()
+
+
+def _paint_coverage_boundary(
+    painter: QPainter,
+    screen_x: np.ndarray,
+    screen_y: np.ndarray,
+    valid: np.ndarray,
+) -> None:
+    """沿覆盖网格的四条外边绘制边界折线，跳过无效点和跨越过大的断点。"""
+    edge_indices = [
+        [(0, column) for column in range(screen_x.shape[1])],
+        [(row, screen_x.shape[1] - 1) for row in range(screen_x.shape[0])],
+        [(screen_x.shape[0] - 1, column) for column in range(screen_x.shape[1] - 1, -1, -1)],
+        [(row, 0) for row in range(screen_x.shape[0] - 1, -1, -1)],
+    ]
+    for edge in edge_indices:
+        current = QPolygonF()
+        previous_x: float | None = None
+        previous_y: float | None = None
+        for row, column in edge:
+            if not bool(valid[row, column]):
+                if len(current) >= 2:
+                    painter.drawPolyline(current)
+                current = QPolygonF()
+                previous_x = None
+                previous_y = None
+                continue
+            x_value = float(screen_x[row, column])
+            y_value = float(screen_y[row, column])
+            if previous_x is not None and math.hypot(x_value - previous_x, y_value - previous_y) > 240.0:
+                if len(current) >= 2:
+                    painter.drawPolyline(current)
+                current = QPolygonF()
+            current.append(QPointF(x_value, y_value))
+            previous_x = x_value
+            previous_y = y_value
+        if len(current) >= 2:
+            painter.drawPolyline(current)
+
+
+def load_source_texture(
+    source_model: MosaicSourceModel,
+    existing_cache: MosaicSourceTextureCache | None = None,
+) -> MosaicSourceTextureCache | None:
+    """加载或复用源图纹理缓存。
+
+    参数
+    ----
+    source_model : MosaicSourceModel
+        包含源图路径和尺寸信息的模型。
+    existing_cache : MosaicSourceTextureCache | None
+        已有的缓存，若路径匹配则直接返回。
+
+    返回
+    ----
+    MosaicSourceTextureCache | None
+        纹理缓存，加载失败时返回 None。
+    """
+    image_path = source_model.source_image_path
+    if image_path is None:
+        return None
+    try:
+        resolved_path = image_path.expanduser().resolve()
+    except OSError:
+        resolved_path = image_path.expanduser()
+    if existing_cache is not None and existing_cache.source_image_path == resolved_path:
+        return existing_cache
+    if not resolved_path.exists():
+        return None
+    try:
+        preview = load_image_preview(resolved_path, max_long_side_px=MOSAIC_SOURCE_TEXTURE_LONG_SIDE_PX)
+        source_rgb = qimage_to_rgb_array(preview.image)
+    except Exception:
+        return None
+    return MosaicSourceTextureCache(
+        source_image_path=resolved_path,
+        source_rgb=source_rgb.astype(np.uint8),
+        source_scale_x=source_rgb.shape[1] / max(float(source_model.image_width_px), 1.0),
+        source_scale_y=source_rgb.shape[0] / max(float(source_model.image_height_px), 1.0),
+        source_width_px=int(source_model.image_width_px),
+        source_height_px=int(source_model.image_height_px),
+    )
+
+
+def paint_source_image_overlay(
+    image: QImage,
+    texture_renderer,
+    cache: MosaicCoverageCache,
+    camera: CameraSettings,
+    view: ViewSettings,
+    observer: ObserverSettings,
+    texture: MosaicSourceTextureCache,
+    opacity: float,
+) -> None:
+    """将源图纹理按天球网格重投影并叠加到输出图像上。"""
+    cache_alt, cache_az, cache_valid = coverage_altaz(cache, observer)
+    texture_renderer.paint_on_qimage(
+        image,
+        camera=camera,
+        view=view,
+        source_rgb=texture.source_rgb,
+        source_grid_x_px=cache.grid_x_px,
+        source_grid_y_px=cache.grid_y_px,
+        source_scale_x=texture.source_scale_x,
+        source_scale_y=texture.source_scale_y,
+        alt_deg=cache_alt,
+        az_deg=cache_az,
+        valid_points=cache_valid,
+        opacity=opacity,
+    )
+
+
+__all__ = [
+    "coverage_altaz",
+    "load_source_texture",
+    "paint_coverage_overlay",
+    "paint_source_image_overlay",
+]

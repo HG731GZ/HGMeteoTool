@@ -399,6 +399,12 @@ class AutoMatchMixin:
             self._auto_match_reference_star_ids.append(star_id)
             self._auto_match_group_by_star_id[star_id] = group_id
             self._auto_match_constraint_by_star_id[star_id] = (constraint_mode, fit_weight)
+
+            # 同步写入 StarPairStore（若已有记录则更新约束，否则暂不创建空记录）
+            store = getattr(self, "_star_pair_store", None)
+            if store is not None and star_id in store:
+                store.set_constraint(star_id, constraint_mode, fit_weight)
+
             candidate_auto_star_ids.add(star_id)
             visible_star_ids.add(star_id)
             added_any = True

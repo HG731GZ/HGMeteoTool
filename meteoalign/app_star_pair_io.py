@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from .app_reference_json_io import ReferenceJsonIOMixin
 from .app_source_model_export import SourceModelExportMixin
-from .app_star_pair_io_common import *  # noqa: F401, F403
 from .app_star_pair_json_task import StarPairJsonTaskMixin
 from .app_star_pair_reference_payload import StarPairReferencePayloadMixin
 from .app_star_pair_session import StarPairSessionMixin
+from .star_pair_store import StarPairStore
+
+# 从 app_constants 重新导出公共常量（向后兼容）
+from .app_constants import *  # noqa: F401, F403
 
 
 class StarPairIOMixin(
@@ -19,6 +22,7 @@ class StarPairIOMixin(
 
 
     ui: object
+    _star_pair_store: StarPairStore
     _json_import_thread: QThread | None
     _json_import_worker: object | None
     _json_import_progress: QProgressDialog | None

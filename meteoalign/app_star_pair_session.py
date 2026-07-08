@@ -1,11 +1,52 @@
 from __future__ import annotations
 
-from .app_star_pair_io_common import *  # noqa: F401, F403
+import json
+import math
+from datetime import datetime, timezone
+from pathlib import Path
+
+from PyQt5.QtCore import Qt, QThread, QTimer
+from PyQt5.QtWidgets import (
+    QFileDialog, QInputDialog, QMessageBox, QProgressDialog, QTableWidgetItem,
+)
+
+from .app_constants import (
+    AUTO_MATCH_CONSTRAINT_ANCHOR,
+    AUTO_MATCH_CONSTRAINT_MODES,
+    AUTO_MATCH_CONSTRAINT_SOFT,
+    STAR_PAIR_FIT_ROLE,
+    STAR_PAIR_POSITION_COLUMN,
+    STAR_PAIR_POSITION_ROLE,
+    STAR_PAIR_SESSION_FORMAT,
+    STAR_PAIR_SESSION_JSON_FILTER,
+    STAR_PAIR_SESSION_VERSION,
+)
+from .app_utils import _relative_image_path_for_session, _resolve_star_pair_session_real_image_path
+from .app_workers import StarPairSessionImportWorker
+from .catalog import project_root
+from .image_preview import load_image_preview, ImagePreview
+from .star_pair_model import (
+    PAIR_ORIGIN_AUTO_MATCH,
+    PAIR_ORIGIN_MANUAL,
+    PsfFit,
+    StarPairRecord,
+    star_pair_records_from_payloads,
+)
 
 class StarPairSessionMixin:
     """星对会话导入导出、记录快照和恢复。"""
 
     def _star_pair_record_snapshot(self) -> list[StarPairRecord]:
+        """返回星点配对记录快照，优先从 StarPairStore 读取。
+
+        若 Store 中有数据则直接返回 Store 快照；
+        否则回退到从表格反向解析（向后兼容过渡期）。
+        """
+        store = getattr(self, "_star_pair_store", None)
+        if store is not None and len(store) > 0:
+            return store.snapshot()
+
+        # 过渡期：从表格反向解析
         records: list[StarPairRecord] = []
         for row in range(self.ui.tableWidgetStarPairs.rowCount()):
             reference_star = self._reference_star_for_row(row)
@@ -462,6 +503,11 @@ class StarPairSessionMixin:
             self._refresh_reference_stars_from_current_map()
 
     def _restore_star_pair_records(self, pair_records: list[StarPairRecord], update_alignment: bool = True) -> int:
+        # 将记录写入 StarPairStore
+        store = getattr(self, "_star_pair_store", None)
+        if store is not None:
+            store.add_records(pair_records)
+
         recorded_positions: dict[str, tuple[float, float]] = {}
         recorded_fit_payloads: dict[str, dict[str, float] | None] = {}
         recorded_constraints: dict[str, tuple[str, float]] = {}
