@@ -6,6 +6,7 @@ from typing import Any
 
 import numpy as np
 from scipy.optimize import least_squares
+from scipy.spatial.transform import Rotation
 
 from .alignment import (
     AnchorInterpolation2D,
@@ -27,6 +28,8 @@ from .coordinates import (
 )
 from .camera_calibration import CameraCalibrationProfile
 from .frame_astrometry import (
+    FRAME_LOCAL_RESIDUAL_DEFAULT_PADDING_PX,
+    FRAME_LOCAL_RESIDUAL_PIXEL_TPS,
     FrameAstrometricModel,
     FrameLocalResidual,
     FramePose,
@@ -44,6 +47,8 @@ INVERSE_SOLVER_TOLERANCE_PX = 1e-5
 INVERSE_SOLVER_FINITE_DIFF_STEP_DEG = 1e-5
 INVERSE_SOLVER_MAX_STEP_DEG = 2.0
 INVERSE_SOLVER_SCALAR_FALLBACK_LIMIT = 8
+FIXED_PROFILE_POSE_SOLVER_INVALID_RESIDUAL_PX = 1e6
+FIXED_PROFILE_POSE_SOLVER_MAX_NFEV = 180
 
 
 def _finite_point_mask(*arrays: np.ndarray) -> np.ndarray:
@@ -449,6 +454,264 @@ class SourceAstrometricModel:
             reference_payload=reference_payload,
             generated_at_utc=datetime.now(timezone.utc).isoformat(),
         )
+
+
+@dataclass(frozen=True)
+class FixedProfilePoseSourceModel:
+    """导入并冻结 CameraCalibrationProfile 后，只求当前帧姿态的源图模型。"""
+
+    image_width_px: int
+    image_height_px: int
+    pair_count: int
+    frame_model: FrameAstrometricModel
+    rms_px: float
+    median_residual_px: float
+    max_residual_px: float
+    inverse_fit_rms_arcsec: float
+    inverse_fit_median_arcsec: float
+    inverse_fit_max_arcsec: float
+    inverse_roundtrip_rms_px: float
+    inverse_roundtrip_median_px: float
+    inverse_roundtrip_max_px: float
+    profile_source_path: str = ""
+    solve_mode: str = "imported_profile_pose_only"
+
+    @property
+    def model_type(self) -> str:
+        return self.solve_mode
+
+    def direction_to_pixel_points(self, ra_dec_points: np.ndarray) -> np.ndarray:
+        return self.frame_model.sky_to_pixel_points(ra_dec_points)
+
+    def pixel_to_radec_points(self, pixel_points: np.ndarray) -> np.ndarray:
+        return self.frame_model.pixel_to_sky_points(pixel_points)
+
+    def pixel_to_radec(self, x_px: float, y_px: float) -> tuple[float, float]:
+        return self.frame_model.pixel_to_sky(x_px, y_px)
+
+    def to_frame_astrometric_model(
+        self,
+        *,
+        fit_metadata: dict[str, Any] | None = None,
+        diagnostics: dict[str, Any] | None = None,
+    ) -> FrameAstrometricModel:
+        metadata = dict(self.frame_model.fit_metadata)
+        if fit_metadata is not None:
+            metadata.update(fit_metadata)
+        model_diagnostics = dict(self.frame_model.diagnostics)
+        if diagnostics is not None:
+            model_diagnostics.update(diagnostics)
+        return FrameAstrometricModel(
+            image_width_px=int(self.image_width_px),
+            image_height_px=int(self.image_height_px),
+            frame_pose=self.frame_model.frame_pose,
+            camera_calibration_profile=self.frame_model.camera_calibration_profile,
+            frame_local_residual=self.frame_model.frame_local_residual,
+            fit_metadata=metadata,
+            diagnostics=model_diagnostics,
+        )
+
+
+def fit_source_astrometric_model_with_fixed_profile(
+    ra_dec_points: np.ndarray,
+    pixel_points: np.ndarray,
+    image_size: tuple[int, int],
+    camera_calibration_profile: CameraCalibrationProfile,
+    *,
+    initial_rotation_matrix: np.ndarray | None = None,
+    point_weights: np.ndarray | None = None,
+    residual_anchor_mask: np.ndarray | None = None,
+    profile_source_path: str = "",
+    solve_mode: str = "imported_profile_pose_only",
+) -> FixedProfilePoseSourceModel:
+    """冻结导入的相机 Profile，只用星点配对求 ICRS -> Camera 姿态。"""
+    sky_radec = np.asarray(ra_dec_points, dtype=np.float64)
+    pixels = np.asarray(pixel_points, dtype=np.float64)
+    if sky_radec.ndim != 2 or sky_radec.shape[1] != 2:
+        raise ValueError("固定 Profile 求解需要 Nx2 的 RA/Dec 点。")
+    if pixels.ndim != 2 or pixels.shape[1] != 2:
+        raise ValueError("固定 Profile 求解需要 Nx2 的像素点。")
+    if sky_radec.shape[0] != pixels.shape[0]:
+        raise ValueError("固定 Profile 求解的 RA/Dec 点与像素点数量不一致。")
+
+    raw_point_weights = _fit_point_weights(sky_radec.shape[0], point_weights)
+    finite_mask = _finite_point_mask(sky_radec, pixels)
+    sky_radec = sky_radec[finite_mask]
+    pixels = pixels[finite_mask]
+    fit_weights = raw_point_weights[finite_mask]
+    local_residual_anchor_mask = _fit_anchor_mask(raw_point_weights.shape[0], residual_anchor_mask)[finite_mask]
+    pair_count = int(sky_radec.shape[0])
+    if pair_count < MIN_ALIGNMENT_PAIRS:
+        raise ValueError(f"至少需要 {MIN_ALIGNMENT_PAIRS} 对星点才能用导入 Profile 求姿态。")
+
+    image_width = int(image_size[0])
+    image_height = int(image_size[1])
+    if image_width <= 0 or image_height <= 0:
+        raise ValueError("源图尺寸无效，无法用导入 Profile 求姿态。")
+
+    world_vectors = radec_to_unit_vectors(sky_radec[:, 0], sky_radec[:, 1])
+    if initial_rotation_matrix is None:
+        base_rotation = np.eye(3, dtype=np.float64)
+    else:
+        base_rotation = FramePose(np.asarray(initial_rotation_matrix, dtype=np.float64)).icrs_to_camera
+    sqrt_weights = np.sqrt(np.clip(fit_weights, FIT_WEIGHT_MIN, FIT_WEIGHT_MAX))
+
+    def model_pixels(delta_rotvec: np.ndarray) -> np.ndarray:
+        delta_rotation = Rotation.from_rotvec(np.asarray(delta_rotvec, dtype=np.float64)).as_matrix()
+        rotation_matrix = delta_rotation @ base_rotation
+        camera_vectors = world_vectors @ rotation_matrix.T
+        return camera_calibration_profile.camera_ray_to_pixel_points(camera_vectors)
+
+    def residual_function(delta_rotvec: np.ndarray) -> np.ndarray:
+        predicted = model_pixels(delta_rotvec)
+        residual = predicted - pixels
+        finite = np.all(np.isfinite(residual), axis=1)
+        safe_residual = np.full_like(residual, FIXED_PROFILE_POSE_SOLVER_INVALID_RESIDUAL_PX)
+        safe_residual[finite] = residual[finite]
+        return (safe_residual * sqrt_weights[:, None]).ravel()
+
+    result = least_squares(
+        residual_function,
+        np.zeros(3, dtype=np.float64),
+        max_nfev=FIXED_PROFILE_POSE_SOLVER_MAX_NFEV,
+        xtol=1e-10,
+        ftol=1e-10,
+        gtol=1e-10,
+    )
+    if not result.success and not np.all(np.isfinite(result.x)):
+        raise ValueError(f"导入 Profile 姿态求解失败：{result.message}")
+
+    best_delta = np.asarray(result.x, dtype=np.float64)
+    best_rotation = Rotation.from_rotvec(best_delta).as_matrix() @ base_rotation
+    frame_model = FrameAstrometricModel(
+        image_width_px=image_width,
+        image_height_px=image_height,
+        frame_pose=FramePose(best_rotation),
+        camera_calibration_profile=camera_calibration_profile,
+        frame_local_residual=FrameLocalResidual(),
+        fit_metadata={
+            "model_type": solve_mode,
+            "control_point_count": pair_count,
+            "camera_profile_reuse": {
+                "mode": solve_mode,
+                "profile_source_path": profile_source_path,
+                "profile_frozen": True,
+                "frame_local_residual_enabled": solve_mode == "imported_profile_pose_local_residual",
+                "automatic_equipment_check": False,
+            },
+        },
+        diagnostics={},
+    )
+
+    predicted_pixels = frame_model.sky_to_pixel_points(sky_radec)
+    if solve_mode == "imported_profile_pose_local_residual":
+        finite_local = _finite_point_mask(predicted_pixels, pixels)
+        if np.count_nonzero(finite_local) < MIN_ALIGNMENT_PAIRS:
+            raise ValueError("Pose + 局部残差至少需要 4 个有效基础投影点。")
+        base_points = predicted_pixels[finite_local]
+        corrected_points = pixels[finite_local]
+        local_weights = fit_weights[finite_local]
+        local_anchor_mask = local_residual_anchor_mask[finite_local]
+        base_to_corrected = fit_anchor_interpolation(
+            base_points,
+            corrected_points,
+            anchor_mask=local_anchor_mask,
+            point_weights=local_weights,
+        )
+        corrected_to_base = fit_anchor_interpolation(
+            corrected_points,
+            base_points,
+            anchor_mask=local_anchor_mask,
+            point_weights=local_weights,
+        )
+
+        def _bbox_payload(points: np.ndarray) -> dict[str, float]:
+            point_array = np.asarray(points, dtype=np.float64)
+            return {
+                "min_x_px": float(np.nanmin(point_array[:, 0])),
+                "max_x_px": float(np.nanmax(point_array[:, 0])),
+                "min_y_px": float(np.nanmin(point_array[:, 1])),
+                "max_y_px": float(np.nanmax(point_array[:, 1])),
+            }
+
+        frame_model = FrameAstrometricModel(
+            image_width_px=image_width,
+            image_height_px=image_height,
+            frame_pose=frame_model.frame_pose,
+            camera_calibration_profile=frame_model.camera_calibration_profile,
+            frame_local_residual=FrameLocalResidual(
+                enabled=True,
+                residual_type=FRAME_LOCAL_RESIDUAL_PIXEL_TPS,
+                parameters={
+                    "anchor_count": int(np.count_nonzero(finite_local)),
+                    "hard_anchor_count": int(np.count_nonzero(local_anchor_mask)),
+                    "soft_constraint_count": int(np.count_nonzero(~local_anchor_mask)),
+                    "coverage_padding_px": FRAME_LOCAL_RESIDUAL_DEFAULT_PADDING_PX,
+                    "base_coverage_bbox_px": _bbox_payload(base_points),
+                    "corrected_coverage_bbox_px": _bbox_payload(corrected_points),
+                    "extrapolation_policy": "identity_outside_anchor_bbox_padding",
+                },
+                base_to_corrected_interpolation=base_to_corrected,
+                corrected_to_base_interpolation=corrected_to_base,
+            ),
+            fit_metadata=frame_model.fit_metadata,
+            diagnostics=frame_model.diagnostics,
+        )
+        predicted_pixels = frame_model.sky_to_pixel_points(sky_radec)
+    rms_px, median_px, max_px = _residual_summary(predicted_pixels - pixels)
+    inverse_radec = frame_model.pixel_to_sky_points(pixels)
+    inverse_rms_arcsec, inverse_median_arcsec, inverse_max_arcsec = _angular_residual_summary_arcsec(
+        sky_radec,
+        inverse_radec,
+    )
+    inverse_pixels = frame_model.sky_to_pixel_points(inverse_radec)
+    roundtrip_rms_px, roundtrip_median_px, roundtrip_max_px = _residual_summary(inverse_pixels - pixels)
+    diagnostics = {
+        "pair_count": pair_count,
+        "rms_px": float(rms_px),
+        "median_residual_px": float(median_px),
+        "max_residual_px": float(max_px),
+        "sky_to_pixel_rms_px": float(rms_px),
+        "sky_to_pixel_median_px": float(median_px),
+        "sky_to_pixel_max_px": float(max_px),
+        "pixel_to_sky_rms_arcsec": float(inverse_rms_arcsec),
+        "pixel_to_sky_median_arcsec": float(inverse_median_arcsec),
+        "pixel_to_sky_max_arcsec": float(inverse_max_arcsec),
+        "round_trip_rms_px": float(roundtrip_rms_px),
+        "round_trip_median_px": float(roundtrip_median_px),
+        "round_trip_max_px": float(roundtrip_max_px),
+        "fixed_profile_pose_solver_cost": float(result.cost),
+        "fixed_profile_pose_solver_nfev": int(result.nfev),
+        "frame_local_residual_enabled": bool(frame_model.frame_local_residual.enabled),
+        "profile_image_width_px": int(camera_calibration_profile.image_width_px),
+        "profile_image_height_px": int(camera_calibration_profile.image_height_px),
+    }
+    frame_model = FrameAstrometricModel(
+        image_width_px=image_width,
+        image_height_px=image_height,
+        frame_pose=frame_model.frame_pose,
+        camera_calibration_profile=frame_model.camera_calibration_profile,
+        frame_local_residual=frame_model.frame_local_residual,
+        fit_metadata=frame_model.fit_metadata,
+        diagnostics=diagnostics,
+    )
+    return FixedProfilePoseSourceModel(
+        image_width_px=image_width,
+        image_height_px=image_height,
+        pair_count=pair_count,
+        frame_model=frame_model,
+        rms_px=float(rms_px),
+        median_residual_px=float(median_px),
+        max_residual_px=float(max_px),
+        inverse_fit_rms_arcsec=float(inverse_rms_arcsec),
+        inverse_fit_median_arcsec=float(inverse_median_arcsec),
+        inverse_fit_max_arcsec=float(inverse_max_arcsec),
+        inverse_roundtrip_rms_px=float(roundtrip_rms_px),
+        inverse_roundtrip_median_px=float(roundtrip_median_px),
+        inverse_roundtrip_max_px=float(roundtrip_max_px),
+        profile_source_path=profile_source_path,
+        solve_mode=solve_mode,
+    )
 
 
 def fit_source_astrometric_model(

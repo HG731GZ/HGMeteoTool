@@ -20,7 +20,8 @@ from meteoalign.alignment import (
 from meteoalign.coordinates import normalize_vector, radec_to_unit_vectors, sky_plane_to_radec
 from meteoalign.frame_astrometry import FrameAstrometricModel
 from meteoalign.simulator import ViewSettings, camera_basis_from_view, local_vectors_from_altaz
-from meteoalign.source_model import fit_source_astrometric_model
+from meteoalign.camera_calibration import CameraCalibrationProfile
+from meteoalign.source_model import fit_source_astrometric_model, fit_source_astrometric_model_with_fixed_profile
 
 
 KNOWN_PROJECTION_MODELS = (
@@ -163,6 +164,72 @@ def test_source_model_exports_known_projection_payload() -> None:
     restored_pixels = restored.sky_to_pixel_points(radec)
     assert np.max(np.linalg.norm(restored_pixels - pixels, axis=1)) < 1e-5
     restored_radec = restored.pixel_to_sky_points(pixels)
+    expected_vectors = radec_to_unit_vectors(radec[:, 0], radec[:, 1])
+    actual_vectors = radec_to_unit_vectors(restored_radec[:, 0], restored_radec[:, 1])
+    assert np.max(np.linalg.norm(actual_vectors - expected_vectors, axis=1)) < 1e-6
+
+
+def test_fixed_profile_pose_solver_reuses_embedded_profile_without_refitting_intrinsics() -> None:
+    radec, pixels = _projection_fixture(SKY_MATCHING_MODEL_RECTILINEAR)
+    transform = fit_sky_alignment(
+        radec,
+        pixels,
+        matching_model=SKY_MATCHING_MODEL_RECTILINEAR,
+        image_size=(1000, 800),
+    )
+    profile = CameraCalibrationProfile.from_projection_transform(transform)
+
+    imported_profile_model = fit_source_astrometric_model_with_fixed_profile(
+        radec,
+        pixels,
+        image_size=(1000, 800),
+        camera_calibration_profile=profile,
+        initial_rotation_matrix=transform.rotation_matrix,
+        profile_source_path="synthetic_model.json",
+    )
+    frame_model = imported_profile_model.to_frame_astrometric_model()
+    predicted = frame_model.sky_to_pixel_points(radec)
+
+    assert frame_model.camera_calibration_profile.to_json_payload() == profile.to_json_payload()
+    assert frame_model.fit_metadata["camera_profile_reuse"]["profile_frozen"] is True
+    assert frame_model.fit_metadata["camera_profile_reuse"]["automatic_equipment_check"] is False
+    assert np.max(np.linalg.norm(predicted - pixels, axis=1)) < 1e-5
+
+
+def test_fixed_profile_pose_local_residual_round_trips_from_json() -> None:
+    radec, pixels = _projection_fixture(SKY_MATCHING_MODEL_RECTILINEAR)
+    transform = fit_sky_alignment(
+        radec,
+        pixels,
+        matching_model=SKY_MATCHING_MODEL_RECTILINEAR,
+        image_size=(1000, 800),
+    )
+    profile = CameraCalibrationProfile.from_projection_transform(transform)
+    warped_pixels = pixels + np.column_stack(
+        (
+            0.02 * (pixels[:, 0] - 500.0),
+            -0.015 * (pixels[:, 1] - 400.0),
+        )
+    )
+
+    imported_profile_model = fit_source_astrometric_model_with_fixed_profile(
+        radec,
+        warped_pixels,
+        image_size=(1000, 800),
+        camera_calibration_profile=profile,
+        initial_rotation_matrix=transform.rotation_matrix,
+        solve_mode="imported_profile_pose_local_residual",
+    )
+    frame_model = imported_profile_model.to_frame_astrometric_model()
+    restored = FrameAstrometricModel.from_json_payload(frame_model.to_json_payload())
+    predicted = restored.sky_to_pixel_points(radec)
+    restored_radec = restored.pixel_to_sky_points(warped_pixels)
+
+    assert restored.frame_local_residual.enabled is True
+    assert restored.frame_local_residual.to_json_payload()["parameters"]["extrapolation_policy"] == (
+        "identity_outside_anchor_bbox_padding"
+    )
+    assert np.max(np.linalg.norm(predicted - warped_pixels, axis=1)) < 1e-5
     expected_vectors = radec_to_unit_vectors(radec[:, 0], radec[:, 1])
     actual_vectors = radec_to_unit_vectors(restored_radec[:, 0], restored_radec[:, 1])
     assert np.max(np.linalg.norm(actual_vectors - expected_vectors, axis=1)) < 1e-6

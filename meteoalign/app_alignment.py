@@ -1,17 +1,21 @@
 from __future__ import annotations
 from .app_constants import *
 
+import json
 import math
+from pathlib import Path
 import numpy as np
 from PyQt5.QtCore import QPointF, QRectF, Qt
 from PyQt5.QtGui import QColor
-from PyQt5.QtWidgets import QTableWidgetItem, QGraphicsView
+from PyQt5.QtWidgets import QFileDialog, QTableWidgetItem, QGraphicsView, QMessageBox
 
 from .alignment import (
     MIN_ALIGNMENT_PAIRS, SkyAlignmentTransform, fit_sky_alignment,
     SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION, SKY_MATCHING_MODELS,
 )
+from .camera_calibration import CameraCalibrationProfile
 from .coordinates import radec_to_unit_vectors
+from .frame_astrometry import FrameAstrometricModel
 from .simulator import (
     ReferenceStar, camera_basis_from_view, local_vectors_from_altaz, ViewSettings,
 )
@@ -25,8 +29,24 @@ from .app_constants import (
     ALIGNMENT_STATUS_MAX_CHARS, SKY_ALIGNMENT_MODELS,
     SKY_ALIGNMENT_MODEL_ALIASES, SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION as _ANCHOR,
     AUTO_MATCH_CONSTRAINT_SOFT, AUTO_MATCH_CONSTRAINT_MODES,
+    SOURCE_MODEL_JSON_FILTER,
 )
-from .source_model import SourceAstrometricModel, fit_source_astrometric_model
+from .source_model import (
+    FixedProfilePoseSourceModel,
+    SourceAstrometricModel,
+    fit_source_astrometric_model,
+    fit_source_astrometric_model_with_fixed_profile,
+)
+
+
+PROFILE_SOLVE_NOT_USED = "profile_not_used"
+PROFILE_SOLVE_IMPORTED_PROFILE_POSE_ONLY = "imported_profile_pose_only"
+PROFILE_SOLVE_IMPORTED_PROFILE_POSE_LOCAL_RESIDUAL = "imported_profile_pose_local_residual"
+PROFILE_SOLVE_MODES = (
+    PROFILE_SOLVE_NOT_USED,
+    PROFILE_SOLVE_IMPORTED_PROFILE_POSE_ONLY,
+    PROFILE_SOLVE_IMPORTED_PROFILE_POSE_LOCAL_RESIDUAL,
+)
 
 
 class AlignmentMixin:
@@ -34,7 +54,9 @@ class AlignmentMixin:
 
     ui: object
     _sky_alignment_transform: SkyAlignmentTransform | None
-    _source_astrometric_model: SourceAstrometricModel | None
+    _source_astrometric_model: SourceAstrometricModel | FixedProfilePoseSourceModel | None
+    _imported_camera_calibration_profile: CameraCalibrationProfile | None
+    _imported_camera_calibration_profile_path: Path | None
     _reference_alignment_error_message: str
     _sky_alignment_error_message: str
     _source_model_error_message: str
@@ -87,6 +109,98 @@ class AlignmentMixin:
         self.ui.comboBoxSkyAlignmentModel.setCurrentIndex(SKY_ALIGNMENT_MODELS.index(model_text))
 
     def _handle_alignment_model_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        self._update_reference_alignment_transform()
+
+    def _profile_reuse_enabled(self) -> bool:
+        return (
+            self._profile_reuse_solve_mode() != PROFILE_SOLVE_NOT_USED
+            and getattr(self, "_imported_camera_calibration_profile", None) is not None
+        )
+
+    def _profile_reuse_solve_mode(self) -> str:
+        if not hasattr(self.ui, "comboBoxProfileSolveMode"):
+            return PROFILE_SOLVE_NOT_USED
+        index = self.ui.comboBoxProfileSolveMode.currentIndex()
+        if index < 0 or index >= len(PROFILE_SOLVE_MODES):
+            return PROFILE_SOLVE_NOT_USED
+        return PROFILE_SOLVE_MODES[index]
+
+    def _imported_profile_label_text(self) -> tuple[str, str]:
+        profile = getattr(self, "_imported_camera_calibration_profile", None)
+        profile_path = getattr(self, "_imported_camera_calibration_profile_path", None)
+        if profile is None:
+            return "未导入", ""
+        path_text = "" if profile_path is None else str(profile_path)
+        projection_text = str(profile.base_projection_type)
+        return (
+            f"{projection_text}  {profile.image_width_px} x {profile.image_height_px}",
+            path_text,
+        )
+
+    def _update_camera_profile_controls(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        if not hasattr(self.ui, "pushButtonImportCameraProfile"):
+            return
+        profile = getattr(self, "_imported_camera_calibration_profile", None)
+        has_profile = profile is not None
+        if hasattr(self.ui, "labelImportedCameraProfile"):
+            label_text, tooltip = self._imported_profile_label_text()
+            self._set_elided_label_text(self.ui.labelImportedCameraProfile, label_text, tooltip)
+        if hasattr(self.ui, "pushButtonClearCameraProfile"):
+            self.ui.pushButtonClearCameraProfile.setEnabled(has_profile)
+        if hasattr(self.ui, "comboBoxProfileSolveMode"):
+            self.ui.comboBoxProfileSolveMode.setEnabled(has_profile)
+
+    def _load_camera_profile_from_json_payload(self, payload: object) -> CameraCalibrationProfile:
+        if not isinstance(payload, dict):
+            raise ValueError("Profile JSON 根对象必须是对象。")
+        if str(payload.get("schema", "")) == "hgmeteo_source_astrometric_model":
+            frame_model = FrameAstrometricModel.from_json_payload(payload)
+            return frame_model.camera_calibration_profile
+        if isinstance(payload.get("camera_calibration_profile"), dict):
+            return CameraCalibrationProfile.from_json_payload(payload["camera_calibration_profile"])
+        return CameraCalibrationProfile.from_json_payload(payload)
+
+    def import_camera_calibration_profile(self) -> None:
+        default_dir = Path.cwd()
+        profile_path = getattr(self, "_imported_camera_calibration_profile_path", None)
+        if profile_path is not None:
+            default_dir = profile_path.parent
+        elif self.current_image_preview is not None:
+            default_dir = Path(self.current_image_preview.path).expanduser().resolve().parent
+        file_path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "从模型 JSON 导入 Camera Profile",
+            str(default_dir),
+            SOURCE_MODEL_JSON_FILTER,
+        )
+        if not file_path:
+            return
+        try:
+            json_path = Path(file_path).expanduser().resolve()
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            profile = self._load_camera_profile_from_json_payload(payload)
+        except Exception as exc:  # noqa: BLE001 - 导入入口需要把 JSON/Profile 错误直接反馈给用户。
+            QMessageBox.critical(self, "导入 Camera Profile 失败", str(exc))
+            self.ui.statusbar.showMessage(f"导入 Camera Profile 失败: {exc}")
+            return
+
+        self._imported_camera_calibration_profile = profile
+        self._imported_camera_calibration_profile_path = json_path
+        if hasattr(self.ui, "comboBoxProfileSolveMode"):
+            self.ui.comboBoxProfileSolveMode.setCurrentIndex(1)
+        self._update_camera_profile_controls()
+        self._update_reference_alignment_transform()
+        self.ui.statusbar.showMessage(f"已导入 Camera Profile: {json_path}")
+
+    def clear_camera_calibration_profile(self) -> None:
+        self._imported_camera_calibration_profile = None
+        self._imported_camera_calibration_profile_path = None
+        self._update_camera_profile_controls()
+        self._update_reference_alignment_transform()
+        self.ui.statusbar.showMessage("已清除导入的 Camera Profile。")
+
+    def _handle_profile_reuse_options_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        self._update_camera_profile_controls()
         self._update_reference_alignment_transform()
 
     def _update_auto_match_controls(self, *unused) -> None:  # type: ignore[no-untyped-def]
@@ -348,16 +462,32 @@ class AlignmentMixin:
             try:
                 image = self.current_image_preview.image
                 initial_rotation_matrix = self._initial_projection_rotation_matrix()
-                self._source_astrometric_model = fit_source_astrometric_model(
-                    ra_dec_points=sky_points,
-                    pixel_points=sky_target_points,
-                    image_size=(image.width(), image.height()),
-                    matching_model=self._alignment_model(),
-                    fisheye_fov_deg=source_projection_fov_deg,
-                    initial_rotation_matrix=initial_rotation_matrix,
-                    point_weights=fit_weights,
-                    residual_anchor_mask=anchor_mask,
-                )
+                imported_profile = getattr(self, "_imported_camera_calibration_profile", None)
+                if self._profile_reuse_enabled():
+                    if imported_profile is None:
+                        raise ValueError("已选择使用 Profile，但尚未导入 Camera Profile。")
+                    self._source_astrometric_model = fit_source_astrometric_model_with_fixed_profile(
+                        ra_dec_points=sky_points,
+                        pixel_points=sky_target_points,
+                        image_size=(image.width(), image.height()),
+                        camera_calibration_profile=imported_profile,
+                        initial_rotation_matrix=initial_rotation_matrix,
+                        point_weights=fit_weights,
+                        residual_anchor_mask=anchor_mask,
+                        profile_source_path=str(getattr(self, "_imported_camera_calibration_profile_path", "") or ""),
+                        solve_mode=self._profile_reuse_solve_mode(),
+                    )
+                else:
+                    self._source_astrometric_model = fit_source_astrometric_model(
+                        ra_dec_points=sky_points,
+                        pixel_points=sky_target_points,
+                        image_size=(image.width(), image.height()),
+                        matching_model=self._alignment_model(),
+                        fisheye_fov_deg=source_projection_fov_deg,
+                        initial_rotation_matrix=initial_rotation_matrix,
+                        point_weights=fit_weights,
+                        residual_anchor_mask=anchor_mask,
+                    )
             except Exception as exc:  # noqa: BLE001 - 源图模型错误要保留给导出按钮和状态栏。
                 self._source_model_error_message = str(exc)
         self._update_star_pair_residual_columns()
@@ -413,7 +543,7 @@ class AlignmentMixin:
     def _update_reference_alignment_controls(self) -> None:
         has_alignment = self._sky_alignment_transform is not None and self.current_image_preview is not None
         has_source_model = self._source_astrometric_model is not None and self.current_image_preview is not None
-        has_export_model = has_alignment
+        has_export_model = has_source_model
         self.ui.checkBoxOverlayReferenceMap.setEnabled(has_alignment)
         self.ui.labelReferenceOverlayOpacityTitle.setEnabled(True)
         self.ui.doubleSpinBoxReferenceOverlayOpacity.setEnabled(True)
@@ -434,6 +564,7 @@ class AlignmentMixin:
         self.ui.pushButtonAutoMatchFieldStars.setEnabled(has_alignment)
         self.ui.pushButtonValidateMapping.setEnabled(has_export_model)
         self.ui.pushButtonExportSourceModel.setEnabled(has_export_model)
+        self._update_camera_profile_controls()
         if not has_alignment and self.ui.checkBoxSyncReferenceAndRealView.isChecked():
             self.ui.checkBoxSyncReferenceAndRealView.blockSignals(True)
             self.ui.checkBoxSyncReferenceAndRealView.setChecked(False)

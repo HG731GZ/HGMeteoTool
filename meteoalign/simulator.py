@@ -771,12 +771,13 @@ def _project_altaz_points_cylindrical(
     return x_px.astype(np.float64), y_px.astype(np.float64), valid.astype(bool)
 
 
-def _alt_from_image_points(
+def image_points_to_local_vectors(
     x_px: np.ndarray,
     y_px: np.ndarray,
     camera: CameraSettings,
     basis: tuple[np.ndarray, np.ndarray, np.ndarray],
 ) -> tuple[np.ndarray, np.ndarray]:
+    """把目标画布像素反解为本地 ENU 单位方向。"""
     right, up, forward = basis
     if camera.lens_model == RECTILINEAR_LENS_MODEL:
         x_mm = (x_px - camera.image_width_px * 0.5) * camera.sensor_width_mm / camera.image_width_px
@@ -825,8 +826,45 @@ def _alt_from_image_points(
     local_y = cam_x * right[1] + cam_y * up[1] + cam_z * forward[1]
     local_z = cam_x * right[2] + cam_y * up[2] + cam_z * forward[2]
     norm = np.sqrt(local_x * local_x + local_y * local_y + local_z * local_z)
-    alt_deg = np.rad2deg(np.arcsin(np.divide(local_z, norm, out=np.zeros_like(local_z), where=norm > 1e-12)))
     valid &= norm > 1e-12
+    vectors = np.column_stack(
+        (
+            np.divide(local_x, norm, out=np.full_like(local_x, np.nan), where=norm > 1e-12),
+            np.divide(local_y, norm, out=np.full_like(local_y, np.nan), where=norm > 1e-12),
+            np.divide(local_z, norm, out=np.full_like(local_z, np.nan), where=norm > 1e-12),
+        )
+    )
+    vectors[~valid] = np.nan
+    return vectors.astype(np.float64), valid.astype(bool)
+
+
+def local_vectors_to_altaz(vectors: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """把本地 ENU 单位方向转为高度角和方位角。"""
+    vector_array = np.asarray(vectors, dtype=np.float64)
+    if vector_array.ndim == 1:
+        vector_array = vector_array.reshape(1, 3)
+    if vector_array.ndim != 2 or vector_array.shape[1] != 3:
+        raise ValueError("本地 ENU 方向必须是 Nx3 数组。")
+    norm = np.linalg.norm(vector_array, axis=1)
+    valid = np.all(np.isfinite(vector_array), axis=1) & np.isfinite(norm) & (norm > 1e-12)
+    unit = np.full_like(vector_array, np.nan, dtype=np.float64)
+    unit[valid] = vector_array[valid] / norm[valid, None]
+    alt_deg = np.rad2deg(np.arcsin(np.clip(unit[:, 2], -1.0, 1.0)))
+    az_deg = np.rad2deg(np.arctan2(unit[:, 0], unit[:, 1])) % 360.0
+    alt_deg[~valid] = np.nan
+    az_deg[~valid] = np.nan
+    return alt_deg.astype(np.float64), az_deg.astype(np.float64), valid.astype(bool)
+
+
+def _alt_from_image_points(
+    x_px: np.ndarray,
+    y_px: np.ndarray,
+    camera: CameraSettings,
+    basis: tuple[np.ndarray, np.ndarray, np.ndarray],
+) -> tuple[np.ndarray, np.ndarray]:
+    vectors, valid = image_points_to_local_vectors(x_px, y_px, camera, basis)
+    alt_deg, _az_deg, valid_altaz = local_vectors_to_altaz(vectors)
+    valid &= valid_altaz
     return alt_deg.astype(np.float64), valid
 
 

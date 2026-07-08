@@ -6,12 +6,15 @@ from typing import Any
 
 import numpy as np
 
-from .camera_calibration import CameraCalibrationProfile
+from .alignment import AnchorInterpolation2D
+from .camera_calibration import CameraCalibrationProfile, _interpolation_from_payload, _interpolation_payload
 from .coordinates import radec_to_unit_vectors, unit_vectors_to_radec
 
 
 SOURCE_MODEL_SCHEMA = "hgmeteo_source_astrometric_model"
 SOURCE_MODEL_VERSION = 3
+FRAME_LOCAL_RESIDUAL_PIXEL_TPS = "pixel_tps_bidirectional"
+FRAME_LOCAL_RESIDUAL_DEFAULT_PADDING_PX = 96.0
 
 
 def _as_float_list(values: np.ndarray) -> list[float]:
@@ -115,17 +118,105 @@ class FramePose:
 
 @dataclass(frozen=True)
 class FrameLocalResidual:
-    """当前帧局部残差。阶段 1-3 先显式建模，默认禁用。"""
+    """当前帧局部残差，用于在冻结 Profile 后吸收少量局部误差。"""
 
     enabled: bool = False
     residual_type: str | None = None
     parameters: dict[str, Any] = field(default_factory=dict)
+    base_to_corrected_interpolation: AnchorInterpolation2D | None = None
+    corrected_to_base_interpolation: AnchorInterpolation2D | None = None
+
+    def apply_forward(self, pixel_points: np.ndarray) -> np.ndarray:
+        pixels = np.asarray(pixel_points, dtype=np.float64)
+        if not self.enabled:
+            return pixels
+        if self.residual_type != FRAME_LOCAL_RESIDUAL_PIXEL_TPS or self.base_to_corrected_interpolation is None:
+            raise NotImplementedError("当前 frame_local_residual 类型尚未实现正向修正。")
+        corrected = self.base_to_corrected_interpolation.evaluate_points(pixels)
+        return self._blend_outside_coverage(
+            input_pixels=pixels,
+            corrected_pixels=corrected,
+            bbox_key="base_coverage_bbox_px",
+        )
+
+    def apply_inverse(self, pixel_points: np.ndarray) -> np.ndarray:
+        pixels = np.asarray(pixel_points, dtype=np.float64)
+        if not self.enabled:
+            return pixels
+        if self.residual_type != FRAME_LOCAL_RESIDUAL_PIXEL_TPS or self.corrected_to_base_interpolation is None:
+            raise NotImplementedError("当前 frame_local_residual 类型尚未实现反向修正。")
+        corrected = self.corrected_to_base_interpolation.evaluate_points(pixels)
+        return self._blend_outside_coverage(
+            input_pixels=pixels,
+            corrected_pixels=corrected,
+            bbox_key="corrected_coverage_bbox_px",
+        )
+
+    def _blend_outside_coverage(
+        self,
+        *,
+        input_pixels: np.ndarray,
+        corrected_pixels: np.ndarray,
+        bbox_key: str,
+    ) -> np.ndarray:
+        result = np.asarray(corrected_pixels, dtype=np.float64).copy()
+        finite_result = np.all(np.isfinite(result), axis=1)
+        inside = self._inside_coverage_bbox(input_pixels, bbox_key)
+        fallback = (~inside) | (~finite_result)
+        result[fallback] = input_pixels[fallback]
+        return result.astype(np.float64)
+
+    def _inside_coverage_bbox(self, pixel_points: np.ndarray, bbox_key: str) -> np.ndarray:
+        bbox = self.parameters.get(bbox_key)
+        points = np.asarray(pixel_points, dtype=np.float64)
+        if points.ndim == 1:
+            points = points.reshape(1, 2)
+        if not isinstance(bbox, dict):
+            return np.all(np.isfinite(points), axis=1)
+        min_x = float(bbox.get("min_x_px", -np.inf))
+        max_x = float(bbox.get("max_x_px", np.inf))
+        min_y = float(bbox.get("min_y_px", -np.inf))
+        max_y = float(bbox.get("max_y_px", np.inf))
+        padding = float(self.parameters.get("coverage_padding_px", FRAME_LOCAL_RESIDUAL_DEFAULT_PADDING_PX))
+        return (
+            np.all(np.isfinite(points), axis=1)
+            & (points[:, 0] >= min_x - padding)
+            & (points[:, 0] <= max_x + padding)
+            & (points[:, 1] >= min_y - padding)
+            & (points[:, 1] <= max_y + padding)
+        )
 
     def to_json_payload(self) -> dict[str, Any]:
+        parameters = dict(self.parameters)
+        if self.enabled and self.residual_type == FRAME_LOCAL_RESIDUAL_PIXEL_TPS:
+            if self.base_to_corrected_interpolation is None or self.corrected_to_base_interpolation is None:
+                raise ValueError("frame_local_residual 缺少双向插值数据。")
+            parameters.update(
+                {
+                    "base_to_corrected": _interpolation_payload(
+                        self.base_to_corrected_interpolation,
+                        input_units="px before frame local residual",
+                        output_units="px after frame local residual",
+                        input_axis_order=["x_px", "y_px"],
+                        output_axis_order=["x_px", "y_px"],
+                        weight_names=("tps_weights_x_px", "tps_weights_y_px"),
+                        affine_names=("tps_affine_x_px", "tps_affine_y_px"),
+                    ),
+                    "corrected_to_base": _interpolation_payload(
+                        self.corrected_to_base_interpolation,
+                        input_units="px after frame local residual",
+                        output_units="px before frame local residual",
+                        input_axis_order=["x_px", "y_px"],
+                        output_axis_order=["x_px", "y_px"],
+                        weight_names=("tps_weights_x_px", "tps_weights_y_px"),
+                        affine_names=("tps_affine_x_px", "tps_affine_y_px"),
+                    ),
+                }
+            )
         return {
             "enabled": bool(self.enabled),
             "type": self.residual_type,
-            "parameters": dict(self.parameters),
+            "parameters": parameters,
         }
 
     @classmethod
@@ -134,11 +225,28 @@ class FrameLocalResidual:
             return cls()
         if not isinstance(payload, dict):
             raise ValueError("frame_local_residual JSON 必须是对象。")
-        return cls(
-            enabled=bool(payload.get("enabled", False)),
-            residual_type=None if payload.get("type") is None else str(payload.get("type")),
-            parameters=dict(payload.get("parameters")) if isinstance(payload.get("parameters"), dict) else {},
-        )
+        enabled = bool(payload.get("enabled", False))
+        residual_type = None if payload.get("type") is None else str(payload.get("type"))
+        parameters = dict(payload.get("parameters")) if isinstance(payload.get("parameters"), dict) else {}
+        if enabled and residual_type == FRAME_LOCAL_RESIDUAL_PIXEL_TPS:
+            return cls(
+                enabled=True,
+                residual_type=residual_type,
+                parameters=parameters,
+                base_to_corrected_interpolation=_interpolation_from_payload(
+                    _json_mapping(parameters.get("base_to_corrected"), "frame_local_residual.parameters.base_to_corrected"),
+                    "frame_local_residual.parameters.base_to_corrected",
+                    weight_names=("tps_weights_x_px", "tps_weights_y_px"),
+                    affine_names=("tps_affine_x_px", "tps_affine_y_px"),
+                ),
+                corrected_to_base_interpolation=_interpolation_from_payload(
+                    _json_mapping(parameters.get("corrected_to_base"), "frame_local_residual.parameters.corrected_to_base"),
+                    "frame_local_residual.parameters.corrected_to_base",
+                    weight_names=("tps_weights_x_px", "tps_weights_y_px"),
+                    affine_names=("tps_affine_x_px", "tps_affine_y_px"),
+                ),
+            )
+        return cls(enabled=enabled, residual_type=residual_type, parameters=parameters)
 
 
 @dataclass(frozen=True)
@@ -197,14 +305,10 @@ class FrameAstrometricModel:
         return float(radec[0]), float(radec[1])
 
     def _apply_frame_local_residual_forward(self, pixel_points: np.ndarray) -> np.ndarray:
-        if self.frame_local_residual.enabled:
-            raise NotImplementedError("当前阶段尚未启用 frame_local_residual 正向修正。")
-        return np.asarray(pixel_points, dtype=np.float64)
+        return self.frame_local_residual.apply_forward(pixel_points)
 
     def _apply_frame_local_residual_inverse(self, pixel_points: np.ndarray) -> np.ndarray:
-        if self.frame_local_residual.enabled:
-            raise NotImplementedError("当前阶段尚未启用 frame_local_residual 反向修正。")
-        return np.asarray(pixel_points, dtype=np.float64)
+        return self.frame_local_residual.apply_inverse(pixel_points)
 
     def to_json_payload(
         self,

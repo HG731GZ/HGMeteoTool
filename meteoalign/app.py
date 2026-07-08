@@ -41,6 +41,7 @@ from .alignment import (
 )
 from .catalog_download import ensure_catalogs_ready_or_handle
 from .catalog import load_default_catalog, project_root
+from .camera_calibration import CameraCalibrationProfile
 from .config import StarMapUiConfig, load_star_map_ui_config
 from .coordinates import radec_to_unit_vectors
 from .image_preview import IMAGE_FILE_FILTER, ImagePreview, load_image_preview
@@ -248,6 +249,8 @@ class MainWindow(
         self._current_reference_stars: tuple[ReferenceStar, ...] = ()
         self._sky_alignment_transform: SkyAlignmentTransform | None = None
         self._source_astrometric_model: SourceAstrometricModel | None = None
+        self._imported_camera_calibration_profile: CameraCalibrationProfile | None = None
+        self._imported_camera_calibration_profile_path: Path | None = None
         self._reference_alignment_error_message = ""
         self._sky_alignment_error_message = ""
         self._source_model_error_message = ""
@@ -315,6 +318,8 @@ class MainWindow(
         self.ui.spinBoxReferenceStarCount.setValue(12)
         self.ui.doubleSpinBoxReferenceMagLimit.setValue(3.0)
         self.ui.comboBoxSkyAlignmentModel.setCurrentIndex(0)
+        if hasattr(self.ui, "comboBoxProfileSolveMode"):
+            self.ui.comboBoxProfileSolveMode.setCurrentIndex(1)
         self.ui.spinBoxAutoMatchCount.setValue(self.ui_config.auto_match_default_new_count)
         constraint_index = (
             AUTO_MATCH_CONSTRAINT_MODES.index(self.ui_config.auto_match_default_constraint_mode)
@@ -331,6 +336,7 @@ class MainWindow(
         self._update_auto_match_controls()
         self._update_lens_model_controls()
         self._update_reference_overlay_opacity_label()
+        self._update_camera_profile_controls()
         self._update_reference_alignment_controls()
 
     def _connect_inputs(self) -> None:
@@ -380,6 +386,12 @@ class MainWindow(
         self.ui.pushButtonClearSkyMask.clicked.connect(self.clear_sky_mask)
         self.ui.checkBoxShowSkyMask.toggled.connect(self._refresh_real_image_display_for_mask)
         self.ui.comboBoxSkyAlignmentModel.currentIndexChanged.connect(self._handle_alignment_model_changed)
+        if hasattr(self.ui, "pushButtonImportCameraProfile"):
+            self.ui.pushButtonImportCameraProfile.clicked.connect(self.import_camera_calibration_profile)
+        if hasattr(self.ui, "pushButtonClearCameraProfile"):
+            self.ui.pushButtonClearCameraProfile.clicked.connect(self.clear_camera_calibration_profile)
+        if hasattr(self.ui, "comboBoxProfileSolveMode"):
+            self.ui.comboBoxProfileSolveMode.currentIndexChanged.connect(self._handle_profile_reuse_options_changed)
         self.ui.comboBoxAutoMatchConstraintMode.currentIndexChanged.connect(self._update_auto_match_controls)
         self.ui.pushButtonAutoMatchFieldStars.clicked.connect(self.auto_match_field_stars)
         self.ui.pushButtonValidateMapping.clicked.connect(self.show_mapping_validation_dialog)
