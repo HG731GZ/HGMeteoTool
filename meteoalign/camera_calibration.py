@@ -5,16 +5,16 @@ from typing import Any
 
 import numpy as np
 
-from .alignment import (
-    AnchorInterpolation2D,
-    ProjectionSkyAlignmentTransform,
+from .alignment.constants import (
     RESIDUAL_CORRECTION_TPS,
     SKY_KNOWN_PROJECTION_CODES,
     SKY_KNOWN_PROJECTION_DISPLAY_NAMES,
     SKY_KNOWN_PROJECTION_MODELS,
-    _apply_residual_correction,
-    _project_unit_vectors_with_known_projection,
 )
+from .alignment.interpolation import AnchorInterpolation2D
+from .alignment.models import ProjectionSkyAlignmentTransform
+from .alignment.projections import _project_unit_vectors_with_known_projection
+from .alignment.residuals import _apply_residual_correction
 
 
 CAMERA_CALIBRATION_PROFILE_VERSION = 1

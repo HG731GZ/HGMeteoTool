@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from .app_sequence_common import *  # noqa: F401, F403
+from pathlib import Path
+
+from PyQt5.QtCore import Qt
+from PyQt5.QtWidgets import QApplication, QMessageBox, QProgressDialog
+
+from .image_preview import load_image_preview
 
 class SequenceProcessingMixin:
     """图像序列批处理主流程编排。"""

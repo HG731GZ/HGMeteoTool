@@ -1,6 +1,15 @@
 from __future__ import annotations
 
-from .app_sequence_common import *  # noqa: F401, F403
+from pathlib import Path
+
+from PyQt5.QtWidgets import QApplication, QFileDialog, QMessageBox
+
+from .alignment.constants import MIN_ALIGNMENT_PAIRS
+from .app_workers import ImageSequenceCollectWorker
+from .image_preview import IMAGE_FILE_FILTER
+from .image_sequence import ImageSequenceItem, RejectedSequenceImage, sequence_item_time_delta_seconds
+from .qt_tasks import create_progress_dialog, start_qt_worker_task
+from .sequence_constants import IMAGE_SEQUENCE_IMPORT_PROGRESS_MIN_VISIBLE_MS
 
 class SequenceImportMixin:
     """图像序列导入、首帧准备和导入状态管理。"""
@@ -37,18 +46,13 @@ class SequenceImportMixin:
         self._set_image_import_controls_enabled(False)
         self.ui.statusbar.showMessage(f"正在导入序列图像并读取 EXIF: {len(file_paths)} 张")
 
-        progress = QProgressDialog(self)
-        progress.setWindowTitle("正在导入序列图像")
-        progress.setLabelText(
-            "正在读取序列图像 EXIF 拍摄时间...\n已选择 {count} 张图像".format(count=len(file_paths))
+        progress = create_progress_dialog(
+            self,
+            title="正在导入序列图像",
+            label_text="正在读取序列图像 EXIF 拍摄时间...\n已选择 {count} 张图像".format(count=len(file_paths)),
+            minimum=0,
+            maximum=0,
         )
-        progress.setRange(0, 0)
-        progress.setCancelButton(None)
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.setAutoClose(False)
-        progress.setAutoReset(False)
-        progress.show()
         progress.setValue(0)
         force_show = getattr(progress, "forceShow", None)
         if callable(force_show):
@@ -59,51 +63,23 @@ class SequenceImportMixin:
         progress.repaint()
         QApplication.processEvents()
 
-        thread = QThread(self)
         worker = ImageSequenceCollectWorker(file_paths)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.finished.connect(self._queue_image_sequence_import_finished)
-        worker.failed.connect(self._queue_image_sequence_import_failed)
-        worker.finished.connect(worker.deleteLater)
-        worker.failed.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._cleanup_image_sequence_import)
+        task = start_qt_worker_task(
+            parent=self,
+            worker=worker,
+            finished_signal=worker.finished,
+            failed_signal=worker.failed,
+            on_finished=self._handle_image_sequence_import_finished,
+            on_failed=self._handle_image_sequence_import_failed,
+            on_cleanup=self._cleanup_image_sequence_import,
+            progress_dialog=progress,
+            start_delay_ms=50,
+            minimum_visible_ms=IMAGE_SEQUENCE_IMPORT_PROGRESS_MIN_VISIBLE_MS,
+        )
 
-        self._sequence_import_thread = thread
-        self._sequence_import_worker = worker
+        self._sequence_import_thread = task.thread
+        self._sequence_import_worker = task.worker
         self._sequence_import_progress = progress
-        self._sequence_import_progress_shown_at = monotonic()
-        QTimer.singleShot(50, thread.start)
-
-    def _remaining_sequence_import_dialog_delay_ms(self) -> int:
-        shown_at = getattr(self, "_sequence_import_progress_shown_at", None)
-        if shown_at is None:
-            return 0
-        elapsed_ms = int((monotonic() - shown_at) * 1000)
-        return max(0, IMAGE_SEQUENCE_IMPORT_PROGRESS_MIN_VISIBLE_MS - elapsed_ms)
-
-    def _queue_image_sequence_import_finished(self, result: object) -> None:
-        delay_ms = self._remaining_sequence_import_dialog_delay_ms()
-        if delay_ms > 0:
-            QTimer.singleShot(delay_ms, lambda result=result: self._handle_image_sequence_import_finished(result))
-            return
-        self._handle_image_sequence_import_finished(result)
-
-    def _queue_image_sequence_import_failed(self, error_message: str) -> None:
-        delay_ms = self._remaining_sequence_import_dialog_delay_ms()
-        if delay_ms > 0:
-            QTimer.singleShot(
-                delay_ms,
-                lambda error_message=error_message: self._handle_image_sequence_import_failed(error_message),
-            )
-            return
-        self._handle_image_sequence_import_failed(error_message)
-
-    def _quit_image_sequence_import_thread(self) -> None:
-        thread = getattr(self, "_sequence_import_thread", None)
-        if thread is not None and thread.isRunning():
-            thread.quit()
 
     def _set_sequence_import_progress_label(self, text: str) -> None:
         progress = getattr(self, "_sequence_import_progress", None)
@@ -122,19 +98,10 @@ class SequenceImportMixin:
         except Exception as exc:  # noqa: BLE001 - 主线程恢复序列状态时要把错误反馈给用户。
             self.ui.statusbar.showMessage(f"序列导入失败: {exc}")
             QMessageBox.critical(self, "序列导入失败", str(exc))
-        finally:
-            if self._sequence_import_progress is not None:
-                self._sequence_import_progress.close()
-            self._quit_image_sequence_import_thread()
 
     def _handle_image_sequence_import_failed(self, error_message: str) -> None:
-        try:
-            if self._sequence_import_progress is not None:
-                self._sequence_import_progress.close()
-            self.ui.statusbar.showMessage(f"序列导入失败: {error_message}")
-            QMessageBox.critical(self, "序列导入失败", error_message)
-        finally:
-            self._quit_image_sequence_import_thread()
+        self.ui.statusbar.showMessage(f"序列导入失败: {error_message}")
+        QMessageBox.critical(self, "序列导入失败", error_message)
 
     def _cleanup_image_sequence_import(self) -> None:
         if self._sequence_import_progress is not None:
@@ -142,7 +109,6 @@ class SequenceImportMixin:
         self._sequence_import_thread = None
         self._sequence_import_worker = None
         self._sequence_import_progress = None
-        self._sequence_import_progress_shown_at = None
         self._set_image_import_controls_enabled(getattr(self, "_image_import_thread", None) is None)
         self._update_image_sequence_controls()
 
@@ -249,4 +215,3 @@ class SequenceImportMixin:
             self._update_reference_alignment_transform()
         if self._source_astrometric_model is None:
             raise ValueError(self._source_model_error_message or "第一张图的源图映射尚未就绪。")
-

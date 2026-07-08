@@ -1,6 +1,31 @@
 from __future__ import annotations
 
-from .app_star_pair_table_common import *  # noqa: F401, F403
+import math
+
+from PyQt5.QtCore import QPoint, QPointF, Qt
+from PyQt5.QtGui import QBrush, QColor, QCursor, QFont, QPainter, QPen, QPixmap
+from PyQt5.QtWidgets import (
+    QGraphicsEllipseItem,
+    QGraphicsItem,
+    QGraphicsScene,
+    QGraphicsSimpleTextItem,
+    QGraphicsView,
+)
+
+from .app_constants import (
+    MIN_PSF_RADIUS_PX,
+    STAR_ANNOTATION_FALLBACK_RADIUS_PX,
+    STAR_ANNOTATION_MAX_RADIUS_PX,
+    STAR_ANNOTATION_MIN_RADIUS_PX,
+    STAR_ANNOTATION_PSF_SIGMA_SCALE,
+    STAR_PAIR_FOCUS_MARKER_RADIUS_PX,
+    STAR_PAIR_FOCUS_MIN_MATCHED_COUNT,
+    STAR_PAIR_FOCUS_ZOOM_FIT_SCALE,
+    STAR_PAIR_INDEX_COLUMN,
+    STAR_PICK_CIRCLE_STEP_PX,
+)
+from .simulator import ReferenceStar
+from .star_fitting import FittedStarPosition
 
 class StarPairAnnotationsMixin:
     """星对图像标注、视图聚焦和拾取光标。"""
@@ -361,4 +386,3 @@ class StarPairAnnotationsMixin:
         self.ui.statusbar.showMessage(
             f"已聚焦理论位置: x={predicted_x:.2f}, y={predicted_y:.2f}。切换标注选项可重置蓝圈。"
         )
-

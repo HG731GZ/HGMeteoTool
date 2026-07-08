@@ -8,18 +8,17 @@ import numpy as np
 from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation
 
-from .alignment import (
-    AnchorInterpolation2D,
+from .alignment.constants import (
     FIT_WEIGHT_MAX,
     FIT_WEIGHT_MIN,
     MIN_ALIGNMENT_PAIRS,
-    ProjectionSkyAlignmentTransform,
     SKY_KNOWN_PROJECTION_MODELS,
     SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION,
     SKY_MATCHING_MODELS,
-    fit_anchor_interpolation,
-    fit_projection_sky_alignment,
 )
+from .alignment.fitting import fit_projection_sky_alignment
+from .alignment.interpolation import AnchorInterpolation2D, fit_anchor_interpolation
+from .alignment.models import ProjectionSkyAlignmentTransform
 from .coordinates import (
     project_radec_to_sky_plane,
     radec_to_unit_vectors,

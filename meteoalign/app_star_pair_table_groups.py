@@ -1,6 +1,38 @@
 from __future__ import annotations
 
-from .app_star_pair_table_common import *  # noqa: F401, F403
+import math
+
+import numpy as np
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QBrush, QColor, QFont
+from PyQt5.QtWidgets import QHeaderView, QTableWidgetItem
+
+from .app_constants import (
+    AUTO_MATCH_CONSTRAINT_ANCHOR,
+    AUTO_MATCH_CONSTRAINT_MODES,
+    AUTO_MATCH_CONSTRAINT_SOFT,
+    STAR_PAIR_AUTO_GROUP_ROLE,
+    STAR_PAIR_CONSTRAINT_MODE_ROLE,
+    STAR_PAIR_FIT_ROLE,
+    STAR_PAIR_FIT_WEIGHT_ROLE,
+    STAR_PAIR_INDEX_COLUMN,
+    STAR_PAIR_MANUAL_GROUP_LABEL,
+    STAR_PAIR_NAME_COLUMN,
+    STAR_PAIR_POSITION_COLUMN,
+    STAR_PAIR_POSITION_ROLE,
+    STAR_PAIR_RESIDUAL_COLUMN,
+    STAR_PAIR_RESIDUAL_WIDTH_SAMPLE,
+    STAR_PAIR_ROW_TYPE_AUTO_GROUP,
+    STAR_PAIR_ROW_TYPE_AUTO_MATCH,
+    STAR_PAIR_ROW_TYPE_MANUAL,
+    STAR_PAIR_ROW_TYPE_MANUAL_GROUP,
+    STAR_PAIR_ROW_TYPE_ROLE,
+    STAR_PAIR_SORTABLE_COLUMNS,
+    STAR_PAIR_SORT_KEY_INDEX,
+    STAR_PAIR_SORT_KEY_RESIDUAL,
+)
+from .simulator import ReferenceStar
+from .star_fitting import FittedStarPosition
 
 class StarPairTableGroupsMixin:
     """星对表格列、分组、排序和约束显示。"""
@@ -838,4 +870,3 @@ class StarPairTableGroupsMixin:
         table.blockSignals(signals_were_blocked)
 
     # ---- 选星光标与 PSF ----
-

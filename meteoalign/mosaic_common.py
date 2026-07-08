@@ -11,7 +11,7 @@ from PyQt5.QtCore import QDateTime, QEvent, QPoint, QPointF, QTimer, Qt
 from PyQt5.QtGui import QColor, QImage, QPainter, QPolygonF
 from PyQt5.QtWidgets import QApplication, QFileDialog, QGraphicsScene, QMessageBox
 
-from .alignment import (
+from .alignment.constants import (
     SKY_KNOWN_PROJECTION_DISPLAY_NAMES,
     SKY_MATCHING_MODEL_CYLINDRICAL_EQUIDISTANT,
     SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT,

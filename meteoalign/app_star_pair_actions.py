@@ -1,6 +1,18 @@
 from __future__ import annotations
 
-from .app_star_pair_table_common import *  # noqa: F401, F403
+from PyQt5.QtCore import QEvent, QPoint, Qt
+from PyQt5.QtWidgets import QApplication, QInputDialog, QMenu, QMessageBox, QTableWidgetItem
+
+from .app_constants import (
+    AUTO_MATCH_CONSTRAINT_ANCHOR,
+    AUTO_MATCH_CONSTRAINT_SOFT,
+    STAR_PAIR_FIT_ROLE,
+    STAR_PAIR_NAME_COLUMN,
+    STAR_PAIR_POSITION_COLUMN,
+    STAR_PAIR_POSITION_ROLE,
+    STAR_PAIR_ROW_TYPE_MANUAL,
+)
+from .star_fitting import FittedStarPosition
 
 class StarPairActionsMixin:
     """星对右键菜单、拾取模式、位置编辑和删除动作。"""

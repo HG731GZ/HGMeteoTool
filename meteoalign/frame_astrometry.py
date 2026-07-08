@@ -6,7 +6,7 @@ from typing import Any
 
 import numpy as np
 
-from .alignment import AnchorInterpolation2D
+from .alignment.interpolation import AnchorInterpolation2D
 from .camera_calibration import CameraCalibrationProfile, _interpolation_from_payload, _interpolation_payload
 from .coordinates import radec_to_unit_vectors, unit_vectors_to_radec
 

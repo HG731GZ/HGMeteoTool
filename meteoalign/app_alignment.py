@@ -9,10 +9,9 @@ from PyQt5.QtCore import QPointF, QRectF, Qt
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import QFileDialog, QTableWidgetItem, QGraphicsView, QMessageBox
 
-from .alignment import (
-    MIN_ALIGNMENT_PAIRS, SkyAlignmentTransform, fit_sky_alignment,
-    SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION, SKY_MATCHING_MODELS,
-)
+from .alignment.constants import MIN_ALIGNMENT_PAIRS, SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION, SKY_MATCHING_MODELS
+from .alignment.fitting import fit_sky_alignment
+from .alignment.models import SkyAlignmentTransform
 from .camera_calibration import CameraCalibrationProfile
 from .coordinates import radec_to_unit_vectors
 from .frame_astrometry import FrameAstrometricModel

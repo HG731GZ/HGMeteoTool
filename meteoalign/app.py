@@ -29,16 +29,16 @@ from PyQt5.QtWidgets import (
     QTableWidgetItem,
 )
 
-from .alignment import (
+from .alignment.constants import (
     MIN_ALIGNMENT_PAIRS,
     SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION,
     SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT,
     SKY_MATCHING_MODEL_FISHEYE_EQUISOLID,
     SKY_MATCHING_MODEL_POLYNOMIAL,
     SKY_MATCHING_MODEL_RECTILINEAR,
-    SkyAlignmentTransform,
-    fit_sky_alignment,
 )
+from .alignment.fitting import fit_sky_alignment
+from .alignment.models import SkyAlignmentTransform
 from .catalog_download import ensure_catalogs_ready_or_handle
 from .catalog import load_default_catalog, project_root
 from .camera_calibration import CameraCalibrationProfile
@@ -225,7 +225,6 @@ class MainWindow(
         self._sequence_import_thread: QThread | None = None
         self._sequence_import_worker: ImageSequenceCollectWorker | None = None
         self._sequence_import_progress: QProgressDialog | None = None
-        self._sequence_import_progress_shown_at: float | None = None
         self._json_import_thread: QThread | None = None
         self._json_import_worker: QObject | None = None
         self._json_import_progress: QProgressDialog | None = None

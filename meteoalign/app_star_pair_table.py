@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from .app_star_pair_actions import StarPairActionsMixin
 from .app_star_pair_annotations import StarPairAnnotationsMixin
-from .app_star_pair_table_common import *  # noqa: F401, F403
 from .app_star_pair_table_groups import StarPairTableGroupsMixin
+from .config import StarMapUiConfig
+from .alignment.models import SkyAlignmentTransform
+from PyQt5.QtGui import QCursor
 
 
 class StarPairTableMixin(
@@ -68,7 +70,4 @@ class StarPairTableMixin(
     _restore_star_pair_annotations_from_table: object  # 方法
     _remove_star_pair_annotation: object  # 方法
 
-    # ---- 表格列配置 ----
-
-
-__all__ = [name for name in globals() if not name.startswith("__")]
+__all__ = ["StarPairTableMixin"]

@@ -1,6 +1,55 @@
 from __future__ import annotations
 
-from .app_sequence_common import *  # noqa: F401, F403
+import math
+from dataclasses import replace
+from datetime import datetime, timedelta
+
+import numpy as np
+
+from .alignment.constants import (
+    MIN_ALIGNMENT_PAIRS,
+    SKY_KNOWN_PROJECTION_MODELS,
+    SKY_MATCHING_MODEL_FISHEYE_EQUISOLID,
+    SKY_MATCHING_MODEL_RECTILINEAR,
+)
+from .app_auto_match import AUTO_MATCH_MIN_ALTITUDE_DEG
+from .app_constants import (
+    AUTO_MATCH_CONSTRAINT_SOFT,
+    AUTO_MATCH_DUPLICATE_MIN_DISTANCE_PX,
+    AUTO_MATCH_MIN_AMPLITUDE,
+    AUTO_MATCH_SEARCH_MAG_LIMIT,
+)
+from .fixed_camera_model import (
+    FixedCameraModel,
+    FixedCameraTimeFitResult,
+    estimate_frame_time_correction,
+    fit_fixed_camera_model,
+)
+from .image_preview import ImagePreview
+from .image_sequence import ImageSequenceItem, sequence_item_observation_time_utc
+from .sequence_constants import (
+    SEQUENCE_FILL_GRID_COLUMNS,
+    SEQUENCE_FILL_GRID_ROWS,
+    SEQUENCE_MIN_PAIR_FRACTION,
+    SEQUENCE_SUPPLEMENTAL_FIT_WEIGHT,
+    SEQUENCE_SUPPLEMENTAL_PAIR_ORIGIN,
+)
+from .sequence_types import (
+    _SequenceCandidate,
+    _SequenceFitPlan,
+    _SequenceMatchedPair,
+    _SequencePairTemplate,
+)
+from .simulator import (
+    FISHEYE_EQUISOLID,
+    ObserverSettings,
+    ProjectedStarMap,
+    ReferenceStar,
+    camera_basis_from_view,
+    local_vectors_from_altaz,
+    project_horizontal_catalog,
+)
+from .star_fitting import fit_star_position
 
 class SequenceMatchingMixin:
     """序列批处理中的星点模板、候选匹配和固定相机求解。"""
@@ -720,4 +769,3 @@ class SequenceMatchingMixin:
         if len(updated_pairs) < MIN_ALIGNMENT_PAIRS:
             raise ValueError(f"时间修正后可靠配对只有 {len(updated_pairs)} 个，至少需要 {MIN_ALIGNMENT_PAIRS} 个。")
         return updated_pairs
-

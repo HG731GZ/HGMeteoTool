@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from time import monotonic
 from typing import Callable
 
-from PyQt5.QtCore import QObject, QThread, Qt
+from PyQt5.QtCore import QObject, QThread, QTimer, Qt
 from PyQt5.QtWidgets import QProgressDialog
 
 
@@ -53,21 +54,41 @@ def start_qt_worker_task(
     on_cleanup: Callable[[], None] | None = None,
     progress_dialog: QProgressDialog | None = None,
     run_slot: Callable[[], None] | None = None,
+    start_delay_ms: int = 0,
+    minimum_visible_ms: int = 0,
 ) -> WorkerTaskHandle:
     """启动 QThread worker，并统一处理成功、失败和清理路径。"""
 
     thread = QThread(parent)
+    started_at = monotonic()
+
+    def dispatch_after_minimum_visible(callback: Callable, *args) -> None:
+        delay_ms = 0
+        if minimum_visible_ms > 0:
+            elapsed_ms = int((monotonic() - started_at) * 1000)
+            delay_ms = max(0, int(minimum_visible_ms) - elapsed_ms)
+
+        def run_callback() -> None:
+            callback(*args)
+            thread.quit()
+
+        if delay_ms > 0:
+            QTimer.singleShot(delay_ms, run_callback)
+        else:
+            run_callback()
+
     worker.moveToThread(thread)
     thread.started.connect(run_slot or getattr(worker, "run"))
     if progress_signal is not None and on_progress is not None:
         progress_signal.connect(on_progress)
-    finished_signal.connect(on_finished)
-    failed_signal.connect(on_failed)
-    finished_signal.connect(thread.quit)
-    failed_signal.connect(thread.quit)
+    finished_signal.connect(lambda *args: dispatch_after_minimum_visible(on_finished, *args))
+    failed_signal.connect(lambda error_message: dispatch_after_minimum_visible(on_failed, error_message))
     thread.finished.connect(worker.deleteLater)
     thread.finished.connect(thread.deleteLater)
     if on_cleanup is not None:
         thread.finished.connect(on_cleanup)
-    thread.start()
+    if start_delay_ms > 0:
+        QTimer.singleShot(int(start_delay_ms), thread.start)
+    else:
+        thread.start()
     return WorkerTaskHandle(thread=thread, worker=worker, progress=progress_dialog)

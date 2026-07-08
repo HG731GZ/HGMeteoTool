@@ -34,7 +34,7 @@ from .star_pair_model import (
     reference_star_from_pair_payload,
     star_pair_records_from_payloads,
 )
-from .alignment import MIN_ALIGNMENT_PAIRS
+from .alignment.constants import MIN_ALIGNMENT_PAIRS
 
 from .app_constants import (
     STAR_PAIR_SESSION_FORMAT, STAR_PAIR_SESSION_VERSION,

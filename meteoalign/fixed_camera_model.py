@@ -6,10 +6,9 @@ from typing import Any
 
 import numpy as np
 
-from .alignment import (
+from .alignment.constants import (
     FIT_WEIGHT_MAX,
     FIT_WEIGHT_MIN,
-    ProjectionSkyAlignmentTransform,
     SKY_KNOWN_PROJECTION_CODES,
     SKY_KNOWN_PROJECTION_DISPLAY_NAMES,
     SKY_KNOWN_PROJECTION_MODELS,
@@ -18,10 +17,11 @@ from .alignment import (
     SKY_MATCHING_MODEL_FISHEYE_EQUISOLID,
     SKY_MATCHING_MODEL_MERCATOR,
     SKY_MATCHING_MODEL_RECTILINEAR,
-    _apply_residual_correction,
-    _project_unit_vectors_with_known_projection,
-    fit_projection_sky_alignment,
 )
+from .alignment.fitting import fit_projection_sky_alignment
+from .alignment.models import ProjectionSkyAlignmentTransform
+from .alignment.projections import _project_unit_vectors_with_known_projection
+from .alignment.residuals import _apply_residual_correction
 from .coordinates import unit_vectors_to_radec
 from .simulator import ObserverSettings, compute_altaz_from_radec, local_vectors_from_altaz
 

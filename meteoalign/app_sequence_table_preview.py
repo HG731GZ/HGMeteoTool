@@ -1,6 +1,38 @@
 from __future__ import annotations
 
-from .app_sequence_common import *  # noqa: F401, F403
+import json
+import math
+from collections import OrderedDict
+from pathlib import Path
+
+import numpy as np
+from PyQt5.QtCore import QDateTime, Qt, QTimer
+from PyQt5.QtGui import QBrush, QColor, QImage
+from PyQt5.QtWidgets import QAbstractItemView, QHeaderView, QTableWidgetItem
+
+from .app_constants import RESIDUAL_WARNING_MIN_PX
+from .app_utils import _image_with_binary_mask
+from .image_preview import ImagePreview, load_image_preview
+from .image_sequence import (
+    ImageSequenceItem,
+    RejectedSequenceImage,
+    sequence_item_local_datetime,
+    sequence_item_observation_time_utc,
+    sequence_item_time_delta_seconds,
+)
+from .sequence_constants import (
+    IMAGE_SEQUENCE_INDEX_COLUMN,
+    IMAGE_SEQUENCE_INDEX_ROLE,
+    IMAGE_SEQUENCE_MASK_CACHE_LIMIT,
+    IMAGE_SEQUENCE_NAME_COLUMN,
+    IMAGE_SEQUENCE_PATH_ROLE,
+    IMAGE_SEQUENCE_PREVIEW_CACHE_LIMIT,
+    IMAGE_SEQUENCE_RMS_COLUMN,
+    IMAGE_SEQUENCE_RMS_ROLE,
+    IMAGE_SEQUENCE_SORTABLE_COLUMNS,
+    IMAGE_SEQUENCE_SORT_KEY_INDEX,
+    IMAGE_SEQUENCE_SORT_KEY_RMS,
+)
 
 class SequenceTablePreviewMixin:
     """图像序列表格、状态和预览显示。"""
@@ -515,4 +547,3 @@ class SequenceTablePreviewMixin:
             self.ui.dateTimeEditObservation.blockSignals(was_blocked)
         if emit_signal:
             self.schedule_render(delay_ms=0)
-

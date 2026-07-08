@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PyQt5.QtCore import Qt
 
-from .alignment import (
+from .alignment.constants import (
     SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION,
     SKY_MATCHING_MODEL_CYLINDRICAL_EQUIDISTANT,
     SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT,

@@ -7,7 +7,8 @@ import numpy as np
 from PyQt5.QtCore import QPoint, Qt
 from PyQt5.QtWidgets import QApplication, QGraphicsView, QMessageBox, QProgressDialog
 
-from .alignment import MIN_ALIGNMENT_PAIRS, SkyAlignmentTransform
+from .alignment.constants import MIN_ALIGNMENT_PAIRS
+from .alignment.models import SkyAlignmentTransform
 from .app_constants import (
     AUTO_MATCH_ANNOTATION_LIMIT,
     AUTO_MATCH_DUPLICATE_MIN_DISTANCE_PX,
