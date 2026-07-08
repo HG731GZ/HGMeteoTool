@@ -1566,3 +1566,6 @@ def fit_projection_sky_alignment(
         projection_rms_px=float(projection_rms),
         rms_px=rms_px,
     )
+
+
+__all__ = [name for name in globals() if not name.startswith("__")]

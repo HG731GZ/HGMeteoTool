@@ -1,0 +1,257 @@
+from __future__ import annotations
+
+from .app_star_pair_io_common import *  # noqa: F401, F403
+
+class SourceModelExportMixin:
+    """单图源模型 JSON 导出和映射验证入口。"""
+
+    def _default_source_model_path(self) -> Path:
+        if self.current_image_preview is not None:
+            return self._source_model_path_for_image(Path(self.current_image_preview.path))
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return project_root() / "outputs" / f"source_model_{timestamp}.json"
+
+    def _source_image_payload(self, json_path: Path) -> dict[str, object]:
+        if self.current_image_preview is None:
+            raise ValueError("请先导入真实图像。")
+        preview = self.current_image_preview
+        image_path = Path(preview.path).expanduser().resolve()
+        payload = {
+            "path": str(image_path),
+            "relative_path": _relative_image_path_for_session(image_path, json_path),
+            "file_name": image_path.name,
+            "original_width_px": preview.original_width,
+            "original_height_px": preview.original_height,
+            "model_width_px": preview.image.width(),
+            "model_height_px": preview.image.height(),
+        }
+        payload.update(self._current_real_image_capture_payload())
+        return payload
+
+    def _sky_mask_payload(self, json_path: Path) -> dict[str, object]:
+        if self.current_sky_mask is None:
+            return {"active": False}
+        mask_height, mask_width = self.current_sky_mask.shape
+        payload: dict[str, object] = {}
+        if self.current_sky_mask_path is not None:
+            mask_path = self.current_sky_mask_path.expanduser().resolve()
+            payload["path"] = str(mask_path)
+            payload["relative_path"] = _relative_image_path_for_session(mask_path, json_path)
+        payload.update(
+            {
+                "active": True,
+                "width_px": int(mask_width),
+                "height_px": int(mask_height),
+                "valid_fraction": float(np.count_nonzero(self.current_sky_mask))
+                / max(float(self.current_sky_mask.size), 1.0),
+                "zero_pixels_excluded": True,
+            }
+        )
+        return payload
+
+    def _auto_match_settings_payload(self) -> dict[str, object]:
+        return {
+            "sky_alignment_model": self._alignment_model(),
+            "new_star_count": int(self.ui.spinBoxAutoMatchCount.value()),
+            "new_constraint_mode": self._auto_match_constraint_mode(),
+            "soft_constraint_weight": float(self.ui.doubleSpinBoxAutoMatchSoftWeight.value()),
+            "search_radius_px": int(self.ui.spinBoxAutoMatchRadius.value()),
+            "mask_enabled": self.current_sky_mask is not None,
+        }
+
+    def _current_source_model(self) -> SourceAstrometricModel:
+        if self._source_astrometric_model is None:
+            self._update_reference_alignment_transform()
+        if self._source_astrometric_model is None:
+            raise ValueError(self._source_model_error_message or f"至少需要 {MIN_ALIGNMENT_PAIRS} 对星点才能导出映射。")
+        return self._source_astrometric_model
+
+    def _single_image_time_fit_for_pairs(
+        self,
+        pairs: list[object],
+        fixed_model: FixedCameraModel,
+        observer: ObserverSettings,
+    ) -> FixedCameraTimeFitResult:
+        ra_dec_points, pixel_points, point_weights = self._sequence_pair_fit_arrays(pairs)
+        return estimate_frame_time_correction(
+            fixed_model=fixed_model,
+            ra_dec_points=ra_dec_points,
+            observed_pixels=pixel_points,
+            nominal_time_utc=observer.observation_time_utc,
+            latitude_deg=observer.latitude_deg,
+            longitude_deg=observer.longitude_deg,
+            elevation_m=observer.elevation_m,
+            initial_delta_seconds=0.0,
+            point_weights=point_weights,
+            max_iterations=0,
+        )
+
+    def _single_image_dynamic_sky_payload(
+        self,
+        observer: ObserverSettings,
+        observer_time_payload: dict[str, object],
+    ) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "observation_time_utc": observer.observation_time_utc.astimezone(timezone.utc).isoformat(),
+            "latitude_deg": observer.latitude_deg,
+            "longitude_deg": observer.longitude_deg,
+            "elevation_m": observer.elevation_m,
+            "utc_offset_hours": self.ui.doubleSpinBoxUtcOffset.value(),
+        }
+        payload.update(observer_time_payload)
+        return payload
+
+    def _single_image_fixed_camera_diagnostics(
+        self,
+        records: list[dict[str, object]],
+        time_fit: FixedCameraTimeFitResult,
+    ) -> dict[str, object]:
+        return {
+            "pair_count": len(records),
+            "accepted_count": time_fit.accepted_count,
+            "inlier_ratio": float(time_fit.inlier_ratio),
+            "rms_px": float(time_fit.rms_px),
+            "median_residual_px": float(time_fit.median_residual_px),
+            "max_residual_px": float(time_fit.max_residual_px),
+            "projected_motion_px_per_s_median": float(time_fit.projected_motion_px_per_s_median),
+        }
+
+    def _single_image_fixed_camera_export_bundle(self) -> dict[str, object]:
+        if self.current_image_preview is None:
+            raise ValueError("请先导入真实图像。")
+        if self._sky_alignment_transform is None:
+            self._update_reference_alignment_transform()
+        if self._sky_alignment_transform is None:
+            raise ValueError(
+                self._sky_alignment_error_message
+                or self._reference_alignment_error_message
+                or f"至少需要 {MIN_ALIGNMENT_PAIRS} 对星点才能导出映射。"
+            )
+
+        preview = self.current_image_preview
+        templates = self._sequence_base_templates()
+        target_size = (preview.image.width(), preview.image.height())
+        fixed_model = self._fit_sequence_fixed_camera_model(templates, target_size)
+        observer, observer_time_payload = self._reference_payload_observer()
+        pairs = self._first_frame_matched_pairs(templates)
+        time_fit = self._single_image_time_fit_for_pairs(pairs, fixed_model, observer)
+        pairs = self._apply_sequence_time_fit(pairs, time_fit, require_accepted=False)
+        pairs = [replace(pair, time_delta_seconds=None) for pair in pairs]
+        fit_pairs = self._sequence_pair_records(pairs)
+        reference_payload = self._build_reference_payload_for_records(fit_pairs)
+        return {
+            "fixed_model": fixed_model,
+            "time_fit": time_fit,
+            "fit_pairs": fit_pairs,
+            "reference_payload": reference_payload,
+            "observer": observer,
+            "observer_time_payload": observer_time_payload,
+        }
+
+    def _build_source_model_payload(self, json_path: Path) -> dict[str, object]:
+        if self.current_image_preview is None:
+            raise ValueError("请先导入真实图像。")
+        source_model = self._current_source_model()
+        fit_pairs = self._star_pair_records()
+        reference_payload = self._build_reference_payload_for_records(fit_pairs)
+        observer, observer_time_payload = self._reference_payload_observer()
+        frame_model = source_model.to_frame_astrometric_model(
+            fit_metadata={
+                "scene_observer_hint": {
+                    "observation_time_utc": observer.observation_time_utc.astimezone(timezone.utc).isoformat(),
+                    "latitude_deg": float(observer.latitude_deg),
+                    "longitude_deg": float(observer.longitude_deg),
+                    "elevation_m": float(observer.elevation_m),
+                    "utc_offset_hours": float(self.ui.doubleSpinBoxUtcOffset.value()),
+                    **observer_time_payload,
+                },
+                "scene_observer_hint_role": "metadata_only_not_required_for_pixel_icrs_model",
+            }
+        )
+        return frame_model.to_json_payload(
+            source_image=self._source_image_payload(json_path),
+            mask=self._sky_mask_payload(json_path),
+            matching=self._auto_match_settings_payload(),
+            fit_pairs=fit_pairs,
+            reference_payload=reference_payload,
+            generated_at_utc=datetime.now(timezone.utc).isoformat(),
+        )
+
+    def export_source_model_json(self) -> None:
+        if self.current_image_preview is None:
+            QMessageBox.information(self, "尚未导入图像", "请先导入真实图像，再导出 xy→RA/Dec 映射 JSON。")
+            return
+
+        default_path = self._default_source_model_path()
+        default_path.parent.mkdir(parents=True, exist_ok=True)
+        json_path = default_path
+        try:
+            payload = self._build_source_model_payload(json_path)
+            diagnostics = payload.get("diagnostics", {})
+            pair_count = int(diagnostics.get("pair_count", 0)) if isinstance(diagnostics, dict) else 0
+            rms_px = float(diagnostics.get("rms_px", float("nan"))) if isinstance(diagnostics, dict) else float("nan")
+            if not self._confirm_overwrite_if_existing_has_more_pairs(json_path, pair_count, model_json=True):
+                self.ui.statusbar.showMessage("已取消导出 xy→RA/Dec 映射 JSON。")
+                return
+            json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            self.ui.statusbar.showMessage(
+                f"已导出 xy→RA/Dec 映射 JSON: {json_path}  配对数: {pair_count}  RMS: {rms_px:.2f}px"
+            )
+            QMessageBox.information(
+                self,
+                "映射 JSON 已导出",
+                f"JSON：{json_path}\n配对数：{pair_count}\nRMS：{rms_px:.2f} px",
+            )
+        except Exception as exc:  # noqa: BLE001 - 导出入口需要把模型生成与文件错误直接反馈给用户。
+            self.ui.statusbar.showMessage(f"导出 xy→RA/Dec 映射 JSON 失败: {exc}")
+            QMessageBox.critical(self, "导出 xy→RA/Dec 映射 JSON 失败", str(exc))
+
+    def show_mapping_validation_dialog(self) -> None:
+        if self.current_image_preview is None:
+            QMessageBox.information(self, "尚未导入图像", "请先导入真实图像，再进行映射验证。")
+            return
+
+        try:
+            model = self._current_source_model().to_frame_astrometric_model()
+        except Exception as exc:  # noqa: BLE001 - 验证入口需要把模型未就绪原因直接反馈给用户。
+            QMessageBox.information(self, "映射尚未就绪", str(exc))
+            return
+
+        old_dialog = getattr(self, "_mapping_validation_dialog", None)
+        if old_dialog is not None:
+            try:
+                if old_dialog.isVisible():
+                    old_dialog.raise_()
+                    old_dialog.activateWindow()
+                    return
+            except RuntimeError:
+                pass
+
+        observer = self._observer_settings()
+        base_camera = self._output_camera_settings()
+        initial_view = self._view_settings()
+        visible_mag_limit = float(self.ui.doubleSpinBoxMagLimit.value())
+        dialog = MappingValidationDialog(
+            parent=self,
+            renderer=self.renderer,
+            model=model,
+            source_image=self.current_image_preview.image,
+            observer=observer,
+            base_camera=base_camera,
+            initial_view=initial_view,
+            visible_mag_limit=visible_mag_limit,
+            horizontal_catalog=self._get_horizontal_catalog(observer, visible_mag_limit),
+            horizontal_milky_way=self._get_horizontal_milky_way(observer),
+            horizontal_solar_system=self._get_horizontal_solar_system(observer),
+            ui_config=self.ui_config,
+        )
+        dialog.setAttribute(Qt.WA_DeleteOnClose, True)
+        dialog.destroyed.connect(lambda _obj=None: setattr(self, "_mapping_validation_dialog", None))
+        parent_size = self.size()
+        dialog.resize(max(720, int(parent_size.width() * 0.88)), max(520, int(parent_size.height() * 0.88)))
+        dialog_geometry = dialog.frameGeometry()
+        dialog_geometry.moveCenter(self.geometry().center())
+        dialog.move(dialog_geometry.topLeft())
+        self._mapping_validation_dialog = dialog
+        dialog.show()
+
