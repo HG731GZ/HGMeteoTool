@@ -1801,11 +1801,22 @@
                 </layout>
                </item>
                <item>
-                <widget class="QPushButton" name="pushButtonImportMosaicModel">
-                 <property name="text">
-                  <string>导入模型 JSON</string>
-                 </property>
-                </widget>
+                <layout class="QHBoxLayout" name="horizontalLayoutMosaicModelImport">
+                 <item>
+                  <widget class="QPushButton" name="pushButtonImportMosaicModel">
+                   <property name="text">
+                    <string>导入单张模型</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QPushButton" name="pushButtonImportMosaicModels">
+                   <property name="text">
+                    <string>导入多张模型</string>
+                   </property>
+                  </widget>
+                 </item>
+                </layout>
                </item>
              </layout>
              </widget>
@@ -2513,6 +2524,22 @@
                </property>
              </widget>
             </item>
+             <item>
+              <widget class="QLabel" name="labelMosaicDisplayModel">
+               <property name="text">
+                <string>选择显示单张图像</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QComboBox" name="comboBoxMosaicDisplayModel">
+               <item>
+                <property name="text">
+                 <string>显示全部</string>
+                </property>
+               </item>
+              </widget>
+             </item>
              <item>
               <widget class="QCheckBox" name="checkBoxMosaicSkyOnly">
                <property name="text">

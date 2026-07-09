@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -62,7 +63,6 @@ from .mosaic_model_io import (
 from .mosaic_overlay_renderer import (
     load_source_texture,
     paint_coverage_overlay,
-    paint_source_image_overlay,
 )
 from .projected_texture_renderer import ProjectedTextureRenderer
 from .projection_grid import grid_shape_for_long_side
@@ -73,9 +73,11 @@ from .simulator import (
     ObserverSettings,
     ViewSettings,
     horizontal_fov_deg,
+    local_vectors_from_altaz,
     vertical_fov_deg,
 )
 from .sky_scene_service import SkyPreviewRenderService, SkyPreviewStyle, SkySceneData
+from .texture_projection import rgba_array_to_qimage
 from .view_gestures import (
     ViewZoomPolicy,
     clamp_fov,
@@ -85,6 +87,26 @@ from .view_gestures import (
 
 
 MOSAIC_FRAMING_JSON_FILTER = "自由投影取景 JSON (*.json);;JSON 文件 (*.json);;所有文件 (*)"
+
+
+@dataclass
+class MosaicSourceItem:
+    """自由拼图里一张已导入源图及其预计算缓存。"""
+
+    source_model: MosaicSourceModel
+    coverage_cache: MosaicCoverageCache
+    source_texture_cache: MosaicSourceTextureCache | None = None
+    interaction_source_texture_cache: MosaicSourceTextureCache | None = None
+    interaction_coverage_cache: MosaicCoverageCache | None = None
+    interaction_coverage_source_id: int | None = None
+    rendered_overlay_key: tuple[object, ...] | None = None
+    rendered_overlay_rgba: np.ndarray | None = None
+
+    def clear_render_cache(self) -> None:
+        """清除依赖当前视角、观察者和透明度的贴图结果。"""
+
+        self.rendered_overlay_key = None
+        self.rendered_overlay_rgba = None
 
 
 class MosaicProjectionMixin:
@@ -135,11 +157,9 @@ class MosaicProjectionMixin:
         self._mosaic_sky_preview_renderer = SkyPreviewRenderService(self.renderer)
         self._mosaic_texture_renderer = ProjectedTextureRenderer()
         self._mosaic_source_model: MosaicSourceModel | None = None
+        self._mosaic_source_items: list[MosaicSourceItem] = []
+        self._mosaic_multi_model_mode = False
         self._mosaic_coverage_cache: MosaicCoverageCache | None = None
-        self._mosaic_source_texture_cache: MosaicSourceTextureCache | None = None
-        self._mosaic_interaction_source_texture_cache: MosaicSourceTextureCache | None = None
-        self._mosaic_interaction_coverage_cache: MosaicCoverageCache | None = None
-        self._mosaic_interaction_coverage_source_id: int | None = None
         self._mosaic_interaction_active = False
         self._mosaic_center_az_deg = 0.0
         self._mosaic_center_alt_deg = 20.0
@@ -147,6 +167,8 @@ class MosaicProjectionMixin:
         self._mosaic_output_boundary_width_px = 0
         self._mosaic_output_boundary_height_px = 0
         self._mosaic_resolution_estimate: MosaicResolutionEstimate | None = None
+        self._mosaic_model_observer: ObserverSettings | None = None
+        self._mosaic_model_utc_offset_hours = 0.0
         self._mosaic_framing_observer: ObserverSettings | None = None
         self._mosaic_framing_utc_offset_hours = 0.0
         self._mosaic_framing_json_path: Path | None = None
@@ -184,6 +206,7 @@ class MosaicProjectionMixin:
         self._update_mosaic_output_labels()
         self._update_mosaic_crop_control_limits()
         self._update_mosaic_model_labels()
+        self._update_mosaic_display_model_combo()
         self._update_mosaic_view_label()
         self._update_mosaic_framing_label()
         self._update_mosaic_export_button_state()
@@ -205,6 +228,8 @@ class MosaicProjectionMixin:
         if not hasattr(self.ui, "pushButtonImportMosaicModel"):
             return
         self.ui.pushButtonImportMosaicModel.clicked.connect(self.import_mosaic_model_json)
+        if hasattr(self.ui, "pushButtonImportMosaicModels"):
+            self.ui.pushButtonImportMosaicModels.clicked.connect(self.import_mosaic_models_json)
         self.ui.comboBoxMosaicProjection.currentIndexChanged.connect(self._handle_mosaic_projection_changed)
         self.ui.doubleSpinBoxMosaicFov.valueChanged.connect(self._handle_mosaic_fov_changed)
         if hasattr(self.ui, "doubleSpinBoxMosaicAz"):
@@ -225,6 +250,8 @@ class MosaicProjectionMixin:
             self.ui.doubleSpinBoxMosaicOverlayOpacity.valueChanged.connect(self.schedule_mosaic_render)
         elif hasattr(self.ui, "doubleSpinBoxMosaicCoverageOpacity"):
             self.ui.doubleSpinBoxMosaicCoverageOpacity.valueChanged.connect(self.schedule_mosaic_render)
+        if hasattr(self.ui, "comboBoxMosaicDisplayModel"):
+            self.ui.comboBoxMosaicDisplayModel.currentIndexChanged.connect(self.schedule_mosaic_render)
         if hasattr(self.ui, "spinBoxMosaicGridPrecision"):
             self.ui.spinBoxMosaicGridPrecision.valueChanged.connect(self._update_mosaic_grid_precision_tooltip)
         if hasattr(self.ui, "pushButtonResolveMosaicGrid"):
@@ -327,6 +354,76 @@ class MosaicProjectionMixin:
             max(0, int(getattr(self, "_mosaic_output_boundary_height_px", 0))),
         )
 
+    def _mosaic_is_multi_model_mode(self) -> bool:
+        return bool(getattr(self, "_mosaic_multi_model_mode", False))
+
+    def _mosaic_single_model_available(self) -> bool:
+        return getattr(self, "_mosaic_source_model", None) is not None and not self._mosaic_is_multi_model_mode()
+
+    def _mosaic_current_source_items(self) -> list[MosaicSourceItem]:
+        return list(getattr(self, "_mosaic_source_items", []))
+
+    def _mosaic_single_source_item(self) -> MosaicSourceItem | None:
+        items = self._mosaic_current_source_items()
+        if len(items) == 1 and self._mosaic_source_model is not None:
+            return items[0]
+        return None
+
+    def _mosaic_display_model_index(self) -> int:
+        if not hasattr(self.ui, "comboBoxMosaicDisplayModel"):
+            return 0
+        return max(0, int(self.ui.comboBoxMosaicDisplayModel.currentIndex()))
+
+    def _selected_mosaic_source_items(self) -> list[MosaicSourceItem]:
+        items = self._mosaic_current_source_items()
+        if not items:
+            return []
+        display_index = self._mosaic_display_model_index()
+        if display_index <= 0:
+            return items
+        item_index = display_index - 1
+        if 0 <= item_index < len(items):
+            return [items[item_index]]
+        return items
+
+    def _mosaic_source_item_display_name(self, index: int, item: MosaicSourceItem) -> str:
+        source_model = item.source_model
+        image_text = str(source_model.source_image_text or "").strip()
+        if image_text and image_text != "未记录源图路径":
+            base_name = image_text
+        elif source_model.source_image_path is not None:
+            base_name = source_model.source_image_path.name
+        else:
+            base_name = source_model.json_path.name
+        return f"{index + 1}. {base_name}"
+
+    def _update_mosaic_display_model_combo(self) -> None:
+        if not hasattr(self.ui, "comboBoxMosaicDisplayModel"):
+            return
+        combo = self.ui.comboBoxMosaicDisplayModel
+        previous_index = max(0, int(combo.currentIndex()))
+        items = self._mosaic_current_source_items()
+        was_blocked = combo.blockSignals(True)
+        try:
+            combo.clear()
+            combo.addItem("显示全部")
+            for index, item in enumerate(items):
+                combo.addItem(self._mosaic_source_item_display_name(index, item))
+            target_index = previous_index if previous_index <= len(items) else 0
+            combo.setCurrentIndex(target_index)
+            combo.setEnabled(len(items) > 1)
+        finally:
+            combo.blockSignals(was_blocked)
+
+    def _update_mosaic_model_mode_button_state(self) -> None:
+        single_enabled = self._mosaic_single_model_available()
+        for control_name in (
+            "pushButtonResetMosaicView",
+            "pushButtonCalculateMosaicResolution",
+        ):
+            if hasattr(self.ui, control_name):
+                getattr(self.ui, control_name).setEnabled(single_enabled)
+
     def _mosaic_export_block_rows(self) -> int:
         return mosaic_export_block_rows(getattr(self, "ui_config", object()))
 
@@ -420,9 +517,10 @@ class MosaicProjectionMixin:
         self._set_elided_label_text(self.ui.labelMosaicFramingPath, json_path.name, str(json_path))
 
     def _update_mosaic_export_button_state(self) -> None:
+        self._update_mosaic_model_mode_button_state()
         if not hasattr(self.ui, "pushButtonExportMosaicProjectedImage"):
             return
-        enabled = self._mosaic_imported_framing_ready() and self._mosaic_source_model is not None
+        enabled = self._mosaic_imported_framing_ready() and self._mosaic_single_model_available()
         self.ui.pushButtonExportMosaicProjectedImage.setEnabled(bool(enabled))
 
     def _update_mosaic_crop_control_limits(self) -> None:
@@ -662,6 +760,8 @@ class MosaicProjectionMixin:
         default_dir = project_root() / "outputs"
         if self._mosaic_source_model is not None:
             default_dir = self._mosaic_source_model.json_path.parent
+        elif self._mosaic_current_source_items():
+            default_dir = self._mosaic_current_source_items()[-1].source_model.json_path.parent
         if not default_dir.exists():
             default_dir = project_root()
         file_path, _selected_filter = QFileDialog.getSaveFileName(
@@ -853,6 +953,8 @@ class MosaicProjectionMixin:
         default_dir = project_root() / "outputs"
         if self._mosaic_source_model is not None:
             default_dir = self._mosaic_source_model.json_path.parent
+        elif self._mosaic_current_source_items():
+            default_dir = self._mosaic_current_source_items()[-1].source_model.json_path.parent
         if not default_dir.exists():
             default_dir = project_root()
         file_path, _selected_filter = QFileDialog.getOpenFileName(
@@ -973,10 +1075,81 @@ class MosaicProjectionMixin:
         self._update_mosaic_view_label()
         self.schedule_mosaic_render(delay_ms=0)
 
+    def _build_mosaic_source_item(self, json_path: Path) -> MosaicSourceItem:
+        """读取模型 JSON，并预先缓存天球覆盖网格与源图贴图。"""
+
+        source_model = _load_mosaic_source_model(json_path)
+        coverage_cache = self._build_mosaic_coverage_cache(source_model.model)
+        texture_long_side = self._mosaic_source_texture_long_side_px(source_model, interaction=False)
+        source_texture_cache = load_source_texture(
+            source_model,
+            None,
+            max_long_side_px=texture_long_side,
+        )
+        return MosaicSourceItem(
+            source_model=source_model,
+            coverage_cache=coverage_cache,
+            source_texture_cache=source_texture_cache,
+        )
+
+    def _earliest_mosaic_source_item(self, items: list[MosaicSourceItem]) -> MosaicSourceItem | None:
+        if not items:
+            return None
+        return min(
+            items,
+            key=lambda item: item.source_model.observer.observation_time_utc,
+        )
+
+    def _set_mosaic_model_observer_from_item(self, item: MosaicSourceItem | None) -> None:
+        if item is None:
+            self._mosaic_model_observer = None
+            self._mosaic_model_utc_offset_hours = 0.0
+            return
+        self._mosaic_model_observer = item.source_model.observer
+        self._mosaic_model_utc_offset_hours = item.source_model.utc_offset_hours
+
+    def _set_mosaic_overlay_defaults_for_source_items(self, items: list[MosaicSourceItem]) -> None:
+        if not items:
+            return
+        representative = next(
+            (item.source_model for item in items if item.source_model.source_image_path is not None),
+            items[0].source_model,
+        )
+        self._set_mosaic_overlay_defaults_for_model(representative)
+
+    def _clear_mosaic_interaction_caches(self) -> None:
+        for item in self._mosaic_current_source_items():
+            item.interaction_source_texture_cache = None
+            item.interaction_coverage_cache = None
+            item.interaction_coverage_source_id = None
+            item.clear_render_cache()
+
+    def _activate_single_mosaic_source_item(self, item: MosaicSourceItem) -> None:
+        """切换到单张模型模式，保留已导入取景。"""
+
+        self._mosaic_multi_model_mode = False
+        self._mosaic_source_items = [item]
+        self._mosaic_source_model = item.source_model
+        self._mosaic_coverage_cache = item.coverage_cache
+        self._set_mosaic_model_observer_from_item(item)
+        self._clear_mosaic_interaction_caches()
+
+    def _activate_multi_mosaic_source_items(self, items: list[MosaicSourceItem]) -> None:
+        """切换到多张模型模式，保留已导入取景。"""
+
+        self._mosaic_multi_model_mode = True
+        self._mosaic_source_items = list(items)
+        self._mosaic_source_model = None
+        self._mosaic_coverage_cache = None
+        self._set_mosaic_model_observer_from_item(self._earliest_mosaic_source_item(items))
+        self._clear_mosaic_interaction_caches()
+
     def import_mosaic_model_json(self) -> None:
         default_dir = project_root() / "outputs"
         if self._mosaic_source_model is not None:
             default_dir = self._mosaic_source_model.json_path.parent
+        elif self._mosaic_current_source_items():
+            default_dir = self._mosaic_current_source_items()[-1].source_model.json_path.parent
         elif not default_dir.exists():
             default_dir = project_root()
         file_path, _selected_filter = QFileDialog.getOpenFileName(
@@ -989,12 +1162,28 @@ class MosaicProjectionMixin:
             return
         self.load_mosaic_model_json(file_path)
 
+    def import_mosaic_models_json(self) -> None:
+        default_dir = project_root() / "outputs"
+        current_items = self._mosaic_current_source_items()
+        if current_items:
+            default_dir = current_items[-1].source_model.json_path.parent
+        elif not default_dir.exists():
+            default_dir = project_root()
+        file_paths, _selected_filter = QFileDialog.getOpenFileNames(
+            self,
+            "导入多张源图模型 JSON",
+            str(default_dir),
+            SOURCE_MODEL_JSON_FILTER,
+        )
+        if not file_paths:
+            return
+        self.load_mosaic_models_json(file_paths)
+
     def load_mosaic_model_json(self, file_path: str | Path, *, quiet: bool = False) -> bool:
         json_path = Path(file_path).expanduser()
         try:
             QApplication.setOverrideCursor(Qt.WaitCursor)
-            source_model = _load_mosaic_source_model(json_path)
-            coverage_cache = self._build_mosaic_coverage_cache(source_model.model)
+            item = self._build_mosaic_source_item(json_path)
         except Exception as exc:  # noqa: BLE001 - 导入入口需要把 JSON 和模型错误直接反馈到界面。
             if not quiet:
                 QMessageBox.critical(self, "导入源图模型失败", str(exc))
@@ -1003,12 +1192,8 @@ class MosaicProjectionMixin:
         finally:
             QApplication.restoreOverrideCursor()
 
-        self._mosaic_source_model = source_model
-        self._mosaic_coverage_cache = coverage_cache
-        self._mosaic_source_texture_cache = None
-        self._mosaic_interaction_source_texture_cache = None
-        self._mosaic_interaction_coverage_cache = None
-        self._mosaic_interaction_coverage_source_id = None
+        source_model = item.source_model
+        self._activate_single_mosaic_source_item(item)
         keep_imported_framing = self._mosaic_imported_framing_ready()
         if not keep_imported_framing:
             self._set_mosaic_projection_from_source_model(source_model)
@@ -1022,11 +1207,65 @@ class MosaicProjectionMixin:
             self._update_mosaic_view_label()
         else:
             self._reset_mosaic_center_from_model()
+        self._update_mosaic_display_model_combo()
         self._update_mosaic_model_labels()
         self._update_mosaic_export_button_state()
         self.schedule_mosaic_render(delay_ms=0)
         if not quiet:
             self.ui.statusbar.showMessage(f"已导入源图模型: {source_model.json_path}")
+        return True
+
+    def load_mosaic_models_json(self, file_paths: list[str] | tuple[str, ...]) -> bool:
+        json_paths = [Path(file_path).expanduser() for file_path in file_paths]
+        if not json_paths:
+            return False
+        progress = QProgressDialog("正在导入多张模型...", "取消", 0, len(json_paths), self)
+        progress.setWindowTitle("导入多张模型")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.show()
+        items: list[MosaicSourceItem] = []
+        try:
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            for index, json_path in enumerate(json_paths):
+                progress.setLabelText(f"正在导入 {json_path.name}...")
+                progress.setValue(index)
+                QApplication.processEvents()
+                if progress.wasCanceled():
+                    self.ui.statusbar.showMessage("已取消导入多张模型。")
+                    return False
+                items.append(self._build_mosaic_source_item(json_path))
+            progress.setValue(len(json_paths))
+        except Exception as exc:  # noqa: BLE001 - 批量导入入口需要指出失败文件或模型错误。
+            QMessageBox.critical(self, "导入多张源图模型失败", str(exc))
+            self.ui.statusbar.showMessage(f"导入多张源图模型失败: {exc}")
+            return False
+        finally:
+            QApplication.restoreOverrideCursor()
+            progress.close()
+
+        self._activate_multi_mosaic_source_items(items)
+        keep_imported_framing = self._mosaic_imported_framing_ready()
+        if not keep_imported_framing:
+            if items:
+                self._set_mosaic_projection_from_source_model(items[0].source_model)
+            earliest = self._earliest_mosaic_source_item(items)
+            if earliest is not None:
+                self._set_mosaic_observer_controls_from_source_model(earliest.source_model)
+            self._reset_mosaic_center_from_source_items()
+        else:
+            self._update_mosaic_view_label()
+        self._set_mosaic_overlay_defaults_for_source_items(items)
+        self._set_mosaic_observer_controls_enabled(True)
+        self._set_mosaic_grid_controls_enabled(False)
+        self._update_mosaic_grid_precision_tooltip()
+        self._update_mosaic_display_model_combo()
+        self._update_mosaic_model_labels()
+        self._update_mosaic_export_button_state()
+        self.schedule_mosaic_render(delay_ms=0)
+        self.ui.statusbar.showMessage(f"已导入 {len(items)} 张源图模型。")
         return True
 
     def _set_mosaic_projection_from_source_model(self, source_model: MosaicSourceModel) -> bool:
@@ -1133,12 +1372,12 @@ class MosaicProjectionMixin:
         self._clear_mosaic_imported_framing()
         source_model = self._mosaic_source_model
         if source_model is None:
-            observer = getattr(self, "_mosaic_framing_observer", None)
+            observer = getattr(self, "_mosaic_model_observer", None) or getattr(self, "_mosaic_framing_observer", None)
             if observer is None:
                 return
             self._set_mosaic_observer_controls_from_values(
                 observer,
-                getattr(self, "_mosaic_framing_utc_offset_hours", 0.0),
+                getattr(self, "_mosaic_model_utc_offset_hours", getattr(self, "_mosaic_framing_utc_offset_hours", 0.0)),
             )
             self.schedule_mosaic_render(delay_ms=0)
             return
@@ -1151,7 +1390,9 @@ class MosaicProjectionMixin:
         source_model = self._mosaic_source_model
         if source_model is not None:
             return float(source_model.utc_offset_hours)
-        return float(getattr(self, "_mosaic_framing_utc_offset_hours", 0.0))
+        if self._mosaic_imported_framing_ready():
+            return float(getattr(self, "_mosaic_framing_utc_offset_hours", 0.0))
+        return float(getattr(self, "_mosaic_model_utc_offset_hours", getattr(self, "_mosaic_framing_utc_offset_hours", 0.0)))
 
     def _mosaic_observer_from_control_values(self) -> ObserverSettings | None:
         if not hasattr(self.ui, "dateTimeEditMosaicObservation"):
@@ -1171,8 +1412,12 @@ class MosaicProjectionMixin:
 
     def _mosaic_observer_from_controls(self) -> ObserverSettings | None:
         fallback_observer = None
-        if self._mosaic_source_model is not None:
+        if self._mosaic_imported_framing_ready() and getattr(self, "_mosaic_framing_observer", None) is not None:
+            fallback_observer = self._mosaic_framing_observer
+        elif self._mosaic_source_model is not None:
             fallback_observer = self._mosaic_source_model.observer
+        elif getattr(self, "_mosaic_model_observer", None) is not None:
+            fallback_observer = self._mosaic_model_observer
         elif getattr(self, "_mosaic_framing_observer", None) is not None:
             fallback_observer = self._mosaic_framing_observer
         if fallback_observer is None:
@@ -1251,9 +1496,14 @@ class MosaicProjectionMixin:
             return
         try:
             QApplication.setOverrideCursor(Qt.WaitCursor)
-            self._mosaic_coverage_cache = self._build_mosaic_coverage_cache(source_model.model)
-            self._mosaic_interaction_coverage_cache = None
-            self._mosaic_interaction_coverage_source_id = None
+            coverage_cache = self._build_mosaic_coverage_cache(source_model.model)
+            self._mosaic_coverage_cache = coverage_cache
+            item = self._mosaic_single_source_item()
+            if item is not None:
+                item.coverage_cache = coverage_cache
+                item.interaction_coverage_cache = None
+                item.interaction_coverage_source_id = None
+                item.clear_render_cache()
         except Exception as exc:  # noqa: BLE001 - 手动重算入口需要把模型错误直接反馈到界面。
             QMessageBox.critical(self, "重新求解自由投影网格失败", str(exc))
             self.ui.statusbar.showMessage(f"重新求解自由投影网格失败: {exc}")
@@ -1292,6 +1542,55 @@ class MosaicProjectionMixin:
         )
         self._mosaic_roll_deg = 0.0
         self._set_mosaic_fov_from_coverage(cache)
+        self._set_mosaic_view_controls_from_state()
+        self._update_mosaic_view_label()
+
+    def _reset_mosaic_center_from_source_items(self) -> None:
+        """从多张源图覆盖网格估算初始全景视图。"""
+
+        items = self._mosaic_current_source_items()
+        observer = self._mosaic_observer_from_controls()
+        if not items or observer is None:
+            self._mosaic_center_az_deg = 0.0
+            self._mosaic_center_alt_deg = 20.0
+            self._mosaic_roll_deg = 0.0
+            self._set_mosaic_view_controls_from_state()
+            self._update_mosaic_view_label()
+            return
+
+        vectors: list[np.ndarray] = []
+        for item in items:
+            cache_alt, cache_az, cache_valid = self._mosaic_coverage_altaz(item.coverage_cache, observer)
+            valid = cache_valid & np.isfinite(cache_alt) & np.isfinite(cache_az)
+            if np.any(valid):
+                vectors.append(local_vectors_from_altaz(cache_alt[valid], cache_az[valid]))
+        if not vectors:
+            self._mosaic_center_az_deg = 0.0
+            self._mosaic_center_alt_deg = 20.0
+            self._mosaic_roll_deg = 0.0
+            self._set_mosaic_view_controls_from_state()
+            self._update_mosaic_view_label()
+            return
+
+        all_vectors = np.vstack(vectors)
+        mean_vector = np.mean(all_vectors, axis=0)
+        norm = float(np.linalg.norm(mean_vector))
+        if norm <= 1e-12:
+            mean_vector = all_vectors[0]
+            norm = float(np.linalg.norm(mean_vector))
+        mean_vector = mean_vector / max(norm, 1e-12)
+        self._mosaic_center_alt_deg = float(np.rad2deg(np.arcsin(np.clip(mean_vector[2], -1.0, 1.0))))
+        self._mosaic_center_az_deg = float(np.rad2deg(np.arctan2(mean_vector[0], mean_vector[1]))) % 360.0
+        self._mosaic_roll_deg = 0.0
+
+        dots = np.clip(np.sum(all_vectors * mean_vector[None, :], axis=1), -1.0, 1.0)
+        angles_deg = np.rad2deg(np.arccos(dots))
+        if angles_deg.size > 0:
+            suggested = float(np.percentile(angles_deg, 98.0) * 2.35)
+            suggested = max(25.0, min(float(self.ui.doubleSpinBoxMosaicFov.maximum()), suggested))
+            was_blocked = self.ui.doubleSpinBoxMosaicFov.blockSignals(True)
+            self.ui.doubleSpinBoxMosaicFov.setValue(suggested)
+            self.ui.doubleSpinBoxMosaicFov.blockSignals(was_blocked)
         self._set_mosaic_view_controls_from_state()
         self._update_mosaic_view_label()
 
@@ -1410,18 +1709,16 @@ class MosaicProjectionMixin:
             return bool(self.ui.checkBoxMosaicShowCoverage.isChecked())
         return True
 
-    def _mosaic_render_coverage_cache(self, cache: MosaicCoverageCache) -> MosaicCoverageCache:
-        """交互拖动时使用降采样网格，静止时使用完整网格。"""
+    def _mosaic_render_item_coverage_cache(self, item: MosaicSourceItem) -> MosaicCoverageCache:
+        """按当前交互状态获取某一张图的覆盖网格缓存。"""
 
         if not bool(getattr(self, "_mosaic_interaction_active", False)):
-            return cache
-        source_id = id(cache)
-        interaction_cache = getattr(self, "_mosaic_interaction_coverage_cache", None)
-        if interaction_cache is None or getattr(self, "_mosaic_interaction_coverage_source_id", None) != source_id:
-            interaction_cache = self._reduced_mosaic_coverage_cache(cache)
-            self._mosaic_interaction_coverage_cache = interaction_cache
-            self._mosaic_interaction_coverage_source_id = source_id
-        return interaction_cache
+            return item.coverage_cache
+        source_id = id(item.coverage_cache)
+        if item.interaction_coverage_cache is None or item.interaction_coverage_source_id != source_id:
+            item.interaction_coverage_cache = self._reduced_mosaic_coverage_cache(item.coverage_cache)
+            item.interaction_coverage_source_id = source_id
+        return item.interaction_coverage_cache
 
     @staticmethod
     def _reduced_mosaic_coverage_cache(cache: MosaicCoverageCache) -> MosaicCoverageCache:
@@ -1476,8 +1773,7 @@ class MosaicProjectionMixin:
         if hasattr(self, "_mosaic_render_clock") and self._mosaic_render_clock.isValid():
             self._mosaic_last_render_msecs = int(self._mosaic_render_clock.elapsed())
         width, height = self._mosaic_render_size()
-        source_model = self._mosaic_source_model
-        effective_model, coverage_cache, observer = self._effective_mosaic_model_and_coverage()
+        observer = self._mosaic_observer_from_controls()
         if observer is None:
             image = QImage(width, height, QImage.Format_ARGB32_Premultiplied)
             image.fill(QColor(0, 0, 0))
@@ -1513,17 +1809,14 @@ class MosaicProjectionMixin:
                     draw_direction_labels=self.ui.checkBoxMosaicShowGrid.isChecked(),
                 ),
             )
-            if (
-                source_model is not None
-                and effective_model is not None
-                and coverage_cache is not None
-                and self._mosaic_overlay_enabled()
-            ):
-                render_cache = self._mosaic_render_coverage_cache(coverage_cache)
+            source_items = self._selected_mosaic_source_items()
+            if source_items and self._mosaic_overlay_enabled():
                 if self._mosaic_overlay_mode() == MOSAIC_OVERLAY_MODE_SOURCE_IMAGE:
-                    self._paint_mosaic_source_image(image, camera, view, render_cache, observer, source_model)
+                    self._paint_mosaic_source_items(image, camera, view, source_items, observer)
                 else:
-                    self._paint_mosaic_coverage(image, camera, view, render_cache, observer)
+                    for item in source_items:
+                        render_cache = self._mosaic_render_item_coverage_cache(item)
+                        self._paint_mosaic_coverage(image, camera, view, render_cache, observer)
             self._paint_mosaic_crop_rect(image)
             self.mosaic_image_item.set_image(image)
             self.mosaic_scene.setSceneRect(0.0, 0.0, float(width), float(height))
@@ -1577,11 +1870,16 @@ class MosaicProjectionMixin:
             return
         paint_coverage_overlay(image, cache, camera, view, observer, self._mosaic_overlay_opacity())
 
-    def _mosaic_source_texture(self, source_model: MosaicSourceModel) -> MosaicSourceTextureCache | None:
-        """委托 mosaic_overlay_renderer 加载源图纹理。"""
+    def _mosaic_source_texture_for_item(self, item: MosaicSourceItem) -> MosaicSourceTextureCache | None:
+        """加载或复用某一张图的预览贴图缓存。"""
+
+        source_model = item.source_model
         interaction = bool(getattr(self, "_mosaic_interaction_active", False))
         texture_long_side = self._mosaic_source_texture_long_side_px(source_model, interaction=interaction)
-        existing_cache = self._mosaic_existing_texture_cache_for_render(interaction=interaction)
+        if interaction:
+            existing_cache = item.interaction_source_texture_cache or item.source_texture_cache
+        else:
+            existing_cache = item.source_texture_cache
         texture = load_source_texture(
             source_model,
             existing_cache,
@@ -1590,19 +1888,92 @@ class MosaicProjectionMixin:
         if texture is None:
             self._show_mosaic_source_texture_error(source_model)
             return None
-        if texture is not None:
-            if interaction:
-                self._mosaic_interaction_source_texture_cache = texture
-            else:
-                self._mosaic_source_texture_cache = texture
+        if interaction:
+            item.interaction_source_texture_cache = texture
+        else:
+            item.source_texture_cache = texture
         return texture
 
-    def _mosaic_existing_texture_cache_for_render(self, *, interaction: bool) -> MosaicSourceTextureCache | None:
-        """按当前渲染质量选择可复用的贴图缓存。"""
+    def _mosaic_source_overlay_key(
+        self,
+        *,
+        item: MosaicSourceItem,
+        cache: MosaicCoverageCache,
+        texture: MosaicSourceTextureCache,
+        width: int,
+        height: int,
+        camera: CameraSettings,
+        observer: ObserverSettings,
+    ) -> tuple[object, ...]:
+        """生成源图覆盖层缓存键。"""
 
-        if interaction:
-            return self._mosaic_interaction_source_texture_cache or self._mosaic_source_texture_cache
-        return self._mosaic_source_texture_cache
+        return (
+            int(width),
+            int(height),
+            str(camera.lens_model),
+            round(float(camera.focal_length_mm), 8),
+            round(float(camera.fisheye_fov_deg), 8),
+            round(float(self._mosaic_center_az_deg), 8),
+            round(float(self._mosaic_center_alt_deg), 8),
+            round(float(self._mosaic_roll_deg), 8),
+            observer.observation_time_utc.astimezone(timezone.utc).isoformat(),
+            round(float(observer.latitude_deg), 8),
+            round(float(observer.longitude_deg), 8),
+            round(float(observer.elevation_m), 4),
+            round(float(self._mosaic_overlay_opacity()), 4),
+            bool(getattr(self, "_mosaic_interaction_active", False)),
+            id(cache),
+            id(texture),
+            str(item.source_model.json_path),
+        )
+
+    def _mosaic_source_item_overlay_rgba(
+        self,
+        item: MosaicSourceItem,
+        *,
+        width: int,
+        height: int,
+        camera: CameraSettings,
+        view: ViewSettings,
+        observer: ObserverSettings,
+    ) -> np.ndarray | None:
+        """渲染或复用某一张图投到当前预览画布后的 RGBA 覆盖层。"""
+
+        cache = self._mosaic_render_item_coverage_cache(item)
+        texture = self._mosaic_source_texture_for_item(item)
+        if texture is None:
+            return None
+        overlay_key = self._mosaic_source_overlay_key(
+            item=item,
+            cache=cache,
+            texture=texture,
+            width=width,
+            height=height,
+            camera=camera,
+            observer=observer,
+        )
+        if item.rendered_overlay_key == overlay_key and item.rendered_overlay_rgba is not None:
+            return item.rendered_overlay_rgba
+
+        cache_alt, cache_az, cache_valid = self._mosaic_coverage_altaz(cache, observer)
+        rgba = self._mosaic_texture_renderer.render_rgba(
+            width=width,
+            height=height,
+            camera=camera,
+            view=view,
+            source_rgb=texture.source_rgb,
+            source_grid_x_px=cache.grid_x_px,
+            source_grid_y_px=cache.grid_y_px,
+            source_scale_x=texture.source_scale_x,
+            source_scale_y=texture.source_scale_y,
+            alt_deg=cache_alt,
+            az_deg=cache_az,
+            valid_points=cache_valid,
+            opacity=self._mosaic_overlay_opacity(),
+        )
+        item.rendered_overlay_key = overlay_key
+        item.rendered_overlay_rgba = rgba
+        return rgba
 
     def _mosaic_source_texture_long_side_px(
         self,
@@ -1644,26 +2015,43 @@ class MosaicProjectionMixin:
         else:
             self.ui.statusbar.showMessage(f"源图读取失败，无法显示原图: {resolved}")
 
-    def _paint_mosaic_source_image(
+    def _paint_mosaic_source_items(
         self,
         image: QImage,
         camera: CameraSettings,
         view: ViewSettings,
-        cache: MosaicCoverageCache | None,
+        items: list[MosaicSourceItem],
         observer: ObserverSettings,
-        source_model: MosaicSourceModel,
     ) -> None:
-        """委托 mosaic_overlay_renderer 将源图纹理重投影叠加到输出图像。"""
-        if cache is None:
+        """把多张源图按导入顺序贴到预览图，后面的图覆盖前面的图。"""
+
+        if not items:
             return
-        texture = self._mosaic_source_texture(source_model)
-        if texture is None:
+        width = int(image.width())
+        height = int(image.height())
+        combined_rgba = np.zeros((height, width, 4), dtype=np.uint8)
+        has_visible_overlay = False
+        for item in items:
+            overlay_rgba = self._mosaic_source_item_overlay_rgba(
+                item,
+                width=width,
+                height=height,
+                camera=camera,
+                view=view,
+                observer=observer,
+            )
+            if overlay_rgba is None:
+                continue
+            visible = overlay_rgba[:, :, 3] > 0
+            if not np.any(visible):
+                continue
+            combined_rgba[visible] = overlay_rgba[visible]
+            has_visible_overlay = True
+        if not has_visible_overlay:
             return
-        paint_source_image_overlay(
-            image, self._mosaic_texture_renderer,
-            cache, camera, view, observer, texture,
-            self._mosaic_overlay_opacity(),
-        )
+        painter = QPainter(image)
+        painter.drawImage(0, 0, rgba_array_to_qimage(combined_rgba))
+        painter.end()
 
     def _handle_mosaic_event_filter(self, watched, event) -> bool:  # type: ignore[no-untyped-def]
         """处理 mosaic 页面特有的标签省略号事件。
@@ -1770,6 +2158,21 @@ class MosaicProjectionMixin:
         if not hasattr(self.ui, "labelMosaicModelPath"):
             return
         source_model = self._mosaic_source_model
+        items = self._mosaic_current_source_items()
+        if self._mosaic_is_multi_model_mode() and items:
+            count = len(items)
+            tooltip = "\n".join(str(item.source_model.json_path) for item in items)
+            self._set_elided_label_text(self.ui.labelMosaicModelPath, f"{count} 个模型", tooltip)
+            image_count = sum(1 for item in items if item.source_model.source_image_path is not None)
+            self._set_elided_label_text(self.ui.labelMosaicSourceImage, f"{image_count}/{count} 张图像记录路径")
+            earliest = self._earliest_mosaic_source_item(items)
+            if earliest is None:
+                info_text = f"{count} 张模型"
+            else:
+                observer_time = earliest.source_model.observer.observation_time_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+                info_text = f"{count} 张模型  拍摄信息来自 {earliest.source_model.json_path.name}  {observer_time}"
+            self._set_elided_label_text(self.ui.labelMosaicModelInfo, info_text)
+            return
         if source_model is None:
             self._set_elided_label_text(self.ui.labelMosaicModelPath, "未导入")
             self._set_elided_label_text(self.ui.labelMosaicSourceImage, "未导入")

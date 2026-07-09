@@ -6,10 +6,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+from PyQt5.QtGui import QColor, QImage
 
 from meteoalign.alignment.constants import SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT
 from meteoalign.app_reference_json_io import ReferenceJsonIOMixin
-from meteoalign.app_mosaic import MosaicProjectionMixin
+from meteoalign.app_mosaic import MosaicProjectionMixin, MosaicSourceItem
 from meteoalign.config import load_star_map_ui_config
 from meteoalign.mosaic_framing import MOSAIC_FRAMING_SCHEMA
 from meteoalign.mosaic_common import (
@@ -34,11 +35,35 @@ class _Control:
 
 
 class _ComboBox(_Control):
+    def __init__(self, value=0) -> None:  # type: ignore[no-untyped-def]
+        super().__init__(value)
+        self._items: list[str] = []
+        self._enabled = True
+
     def currentIndex(self) -> int:  # noqa: N802 - Qt 控件接口命名
         return int(self._value)
 
     def setCurrentIndex(self, value: int) -> None:  # noqa: N802 - Qt 控件接口命名
         self._value = int(value)
+
+    def clear(self) -> None:
+        self._items.clear()
+        self._value = 0
+
+    def addItem(self, text: str) -> None:  # noqa: N802 - Qt 控件接口命名
+        self._items.append(str(text))
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def itemText(self, index: int) -> str:  # noqa: N802 - Qt 控件接口命名
+        return self._items[index]
+
+    def setEnabled(self, value: bool) -> None:  # noqa: N802 - Qt 控件接口命名
+        self._enabled = bool(value)
+
+    def isEnabled(self) -> bool:  # noqa: N802 - Qt 控件接口命名
+        return bool(self._enabled)
 
 
 class _SpinBox(_Control):
@@ -234,6 +259,139 @@ def test_mosaic_interaction_grid_reduction_keeps_image_edges() -> None:
     assert reduced.grid_columns == 3
     assert reduced.grid_x_px[0, 0] == cache.grid_x_px[0, 0]
     assert reduced.grid_x_px[-1, -1] == cache.grid_x_px[-1, -1]
+
+
+def _mosaic_source_item(
+    name: str,
+    observation_time_utc: datetime | None = None,
+) -> MosaicSourceItem:
+    observer = ObserverSettings(
+        observation_time_utc=observation_time_utc or datetime(2025, 12, 14, 18, 11, 45, tzinfo=timezone.utc),
+        latitude_deg=25.0,
+        longitude_deg=102.0,
+        elevation_m=200.0,
+    )
+    source_model = SimpleNamespace(
+        json_path=Path(name),
+        source_image_path=Path(name).with_suffix(".jpg"),
+        source_image_text=Path(name).with_suffix(".jpg").name,
+        observer=observer,
+        utc_offset_hours=8.0,
+    )
+    return MosaicSourceItem(source_model=source_model, coverage_cache=None)  # type: ignore[arg-type]
+
+
+def test_mosaic_display_model_combo_lists_all_and_single_items() -> None:
+    first = _mosaic_source_item("first_model.json")
+    second = _mosaic_source_item("second_model.json")
+    window = MosaicProjectionMixin.__new__(MosaicProjectionMixin)
+    window.ui = SimpleNamespace(comboBoxMosaicDisplayModel=_ComboBox(0))
+    window._mosaic_source_items = [first, second]
+
+    MosaicProjectionMixin._update_mosaic_display_model_combo(window)
+
+    assert window.ui.comboBoxMosaicDisplayModel.count() == 3
+    assert window.ui.comboBoxMosaicDisplayModel.itemText(0) == "显示全部"
+    assert window.ui.comboBoxMosaicDisplayModel.itemText(1) == "1. first_model.jpg"
+    assert window.ui.comboBoxMosaicDisplayModel.isEnabled()
+
+    window.ui.comboBoxMosaicDisplayModel.setCurrentIndex(2)
+
+    assert MosaicProjectionMixin._selected_mosaic_source_items(window) == [second]
+
+
+def test_mosaic_multi_model_observer_uses_earliest_capture_time() -> None:
+    later = _mosaic_source_item("later_model.json", datetime(2025, 8, 13, 20, 0, tzinfo=timezone.utc))
+    earlier = _mosaic_source_item("earlier_model.json", datetime(2025, 8, 13, 18, 30, tzinfo=timezone.utc))
+    window = MosaicProjectionMixin.__new__(MosaicProjectionMixin)
+
+    selected = MosaicProjectionMixin._earliest_mosaic_source_item(window, [later, earlier])
+    MosaicProjectionMixin._set_mosaic_model_observer_from_item(window, selected)
+
+    assert selected is earlier
+    assert window._mosaic_model_observer.observation_time_utc == datetime(
+        2025, 8, 13, 18, 30, tzinfo=timezone.utc
+    )
+
+
+def test_mosaic_multi_model_mode_disables_single_model_actions() -> None:
+    window = MosaicProjectionMixin.__new__(MosaicProjectionMixin)
+    window.ui = SimpleNamespace(
+        pushButtonExportMosaicProjectedImage=_Button(),
+        pushButtonResetMosaicView=_Button(),
+        pushButtonCalculateMosaicResolution=_Button(),
+    )
+    window._mosaic_source_model = None
+    window._mosaic_multi_model_mode = True
+    target_transform_payload = {
+        "version": 1,
+        "type": "icrs_to_cropped_output_pixel",
+        "boundary_width_px": 100,
+        "boundary_height_px": 80,
+        "crop_left_px": 0,
+        "crop_top_px": 0,
+        "output_width_px": 100,
+        "output_height_px": 80,
+        "camera": {},
+        "icrs_camera_basis": {},
+    }
+    MosaicProjectionMixin._set_mosaic_imported_framing(window, Path("target_framing.json"), target_transform_payload)
+
+    assert not window.ui.pushButtonExportMosaicProjectedImage.isEnabled()
+    assert not window.ui.pushButtonResetMosaicView.isEnabled()
+    assert not window.ui.pushButtonCalculateMosaicResolution.isEnabled()
+
+
+def test_mosaic_single_and_multi_modes_replace_each_other_without_merging() -> None:
+    first = _mosaic_source_item("first_model.json")
+    second = _mosaic_source_item("second_model.json")
+    single = _mosaic_source_item("single_model.json")
+    window = MosaicProjectionMixin.__new__(MosaicProjectionMixin)
+
+    MosaicProjectionMixin._activate_multi_mosaic_source_items(window, [first, second])
+
+    assert window._mosaic_multi_model_mode
+    assert window._mosaic_source_model is None
+    assert MosaicProjectionMixin._mosaic_current_source_items(window) == [first, second]
+
+    MosaicProjectionMixin._activate_single_mosaic_source_item(window, single)
+
+    assert not window._mosaic_multi_model_mode
+    assert window._mosaic_source_model is single.source_model
+    assert MosaicProjectionMixin._mosaic_current_source_items(window) == [single]
+
+    MosaicProjectionMixin._activate_multi_mosaic_source_items(window, [first, second])
+
+    assert window._mosaic_multi_model_mode
+    assert window._mosaic_source_model is None
+    assert MosaicProjectionMixin._mosaic_current_source_items(window) == [first, second]
+
+
+def test_mosaic_source_items_paint_later_items_on_top() -> None:
+    first = object()
+    second = object()
+    window = MosaicProjectionMixin.__new__(MosaicProjectionMixin)
+    image = QImage(2, 1, QImage.Format_ARGB32)
+    image.fill(QColor(0, 0, 0))
+
+    def fake_overlay(item, **_kwargs):  # type: ignore[no-untyped-def]
+        if item is first:
+            return np.asarray([[[255, 0, 0, 255], [255, 0, 0, 255]]], dtype=np.uint8)
+        return np.asarray([[[0, 255, 0, 255], [0, 0, 0, 0]]], dtype=np.uint8)
+
+    window._mosaic_source_item_overlay_rgba = fake_overlay  # type: ignore[attr-defined]
+
+    MosaicProjectionMixin._paint_mosaic_source_items(
+        window,
+        image,
+        camera=SimpleNamespace(),
+        view=SimpleNamespace(),
+        items=[first, second],  # type: ignore[list-item]
+        observer=SimpleNamespace(),  # type: ignore[arg-type]
+    )
+
+    assert image.pixelColor(0, 0).green() == 255
+    assert image.pixelColor(1, 0).red() == 255
 
 
 class _MosaicWithReferenceJsonMixin(ReferenceJsonIOMixin, MosaicProjectionMixin):
