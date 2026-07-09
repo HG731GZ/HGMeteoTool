@@ -23,5 +23,6 @@
   "mosaic_grid_precision_default": 24,
   "mosaic_render_fps_limit": 60,
   "mosaic_export_block_rows": 128,
-  "mosaic_map_tile_size_px": 16
+  "mosaic_map_tile_size_px": 16,
+  "mosaic_export_tiff_lzw_compression": true
 }

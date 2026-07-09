@@ -32,6 +32,7 @@ class StarMapUiConfig:
     mosaic_render_fps_limit: int = 60
     mosaic_export_block_rows: int = 1024
     mosaic_map_tile_size_px: int = 4
+    mosaic_export_tiff_lzw_compression: bool = True
 
 
 def default_config_path() -> Path:
@@ -137,5 +138,10 @@ def load_star_map_ui_config(path: Path | None = None) -> StarMapUiConfig:
             4,
             1,
             512,
+        ),
+        mosaic_export_tiff_lzw_compression=_read_bool(
+            raw_config,
+            "mosaic_export_tiff_lzw_compression",
+            True,
         ),
     )

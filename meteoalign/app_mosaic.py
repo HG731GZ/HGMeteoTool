@@ -175,6 +175,8 @@ class MosaicProjectionMixin:
             self.ui.doubleSpinBoxMosaicCoverageOpacity.setValue(100.0)
         if hasattr(self.ui, "spinBoxMosaicGridPrecision"):
             self.ui.spinBoxMosaicGridPrecision.setValue(self._mosaic_default_grid_precision())
+        if hasattr(self.ui, "doubleSpinBoxMosaicMapTileSize"):
+            self.ui.doubleSpinBoxMosaicMapTileSize.setValue(float(self._mosaic_config_map_tile_size_px()))
         self._init_mosaic_observer_controls()
         self._update_mosaic_projection_controls()
         self._update_mosaic_grid_precision_tooltip()
@@ -328,13 +330,27 @@ class MosaicProjectionMixin:
     def _mosaic_export_block_rows(self) -> int:
         return mosaic_export_block_rows(getattr(self, "ui_config", object()))
 
-    def _mosaic_map_tile_size_px(self) -> int:
+    def _mosaic_config_map_tile_size_px(self) -> int:
         configured = getattr(self.ui_config, "mosaic_map_tile_size_px", 4)
         try:
             value = int(configured)
         except (TypeError, ValueError):
             value = 4
         return max(1, min(512, value))
+
+    def _mosaic_map_tile_size_px(self) -> int:
+        if hasattr(self.ui, "doubleSpinBoxMosaicMapTileSize"):
+            configured = self.ui.doubleSpinBoxMosaicMapTileSize.value()
+        else:
+            configured = self._mosaic_config_map_tile_size_px()
+        try:
+            value = int(configured)
+        except (TypeError, ValueError):
+            value = 4
+        return max(1, min(512, value))
+
+    def _mosaic_tiff_lzw_compression_enabled(self) -> bool:
+        return bool(getattr(self.ui_config, "mosaic_export_tiff_lzw_compression", True))
 
     def _mosaic_exact_remap_repair_enabled(self) -> bool:
         if not hasattr(self.ui, "checkBoxMosaicExactRemapRepair"):
@@ -608,7 +624,7 @@ class MosaicProjectionMixin:
     ) -> dict[str, object]:  # type: ignore[no-untyped-def]
         observer = self._mosaic_observer_from_controls()
         if observer is None:
-            raise ValueError("生成 ICRS 到 A 像素变换需要有效拍摄信息。")
+            raise ValueError("生成 ICRS 到全景图像素变换需要有效拍摄信息。")
 
         try:
             QApplication.setOverrideCursor(Qt.WaitCursor)
@@ -677,9 +693,9 @@ class MosaicProjectionMixin:
             self,
             "已导出取景",
             (
-                "取景 JSON 已写入 ICRS 到 A 像素的完整变换。\n\n"
+                "取景 JSON 已写入 ICRS 到全景图像素的完整变换。\n\n"
                 "后续导出重投影图前，请先导入这个取景 JSON，"
-                "以确认当前使用的 ICRS 到 A 像素变换。"
+                "以确认当前使用的 ICRS 到全景图像素变换。"
             ),
         )
 
@@ -731,13 +747,15 @@ class MosaicProjectionMixin:
         output_path = Path(file_path).expanduser()
         if output_path.suffix.lower() not in (".tif", ".tiff"):
             output_path = output_path.with_suffix(".tif")
+        compression_text = "LZW 压缩" if self._mosaic_tiff_lzw_compression_enabled() else "无压缩"
         if QMessageBox.question(
             self,
             "确认导出重投影图",
             (
                 f"导出文件：\n{output_path}\n\n"
                 f"尺寸：{geometry.output_width_px} x {geometry.output_height_px} px\n"
-                "格式：无压缩 16-bit TIFF"
+                f"格式：{compression_text} 16-bit RGBA TIFF\n"
+                "背景：透明"
             ),
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.Yes,
@@ -757,20 +775,30 @@ class MosaicProjectionMixin:
         if source_model is None or observer is None:
             return
         temp_path = output_path.with_name(f"{output_path.stem}.tmp{output_path.suffix or '.tif'}")
-        progress = QProgressDialog("正在导出重投影 TIFF...", "取消", 0, int(geometry.output_height_px), self)
+        progress = QProgressDialog("正在准备导出 TIFF...", "取消", 0, 0, self)
         progress.setWindowTitle("导出自由投影重投影图")
         progress.setWindowModality(Qt.WindowModal)
         progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
         progress.setValue(0)
+        progress.show()
 
-        def update_progress(rows_done: int) -> None:
-            progress.setValue(int(rows_done))
+        def update_export_progress(label: str, value: int, maximum: int) -> None:
+            progress.setLabelText(label)
+            if maximum <= 0:
+                progress.setRange(0, 0)
+            else:
+                safe_maximum = max(1, int(maximum))
+                progress.setRange(0, safe_maximum)
+                progress.setValue(max(0, min(int(value), safe_maximum)))
             QApplication.processEvents()
             if progress.wasCanceled():
                 raise InterruptedError("用户取消了导出。")
 
         try:
             QApplication.setOverrideCursor(Qt.WaitCursor)
+            update_export_progress("正在读取源图...", 0, 0)
             source_image = load_mosaic_export_source_image(source_model.source_image_path)
             if source_image.width_px != source_model.image_width_px or source_image.height_px != source_model.image_height_px:
                 raise ValueError(
@@ -790,12 +818,15 @@ class MosaicProjectionMixin:
                 geometry=geometry,
                 framing_payload=framing_payload,
                 block_rows=self._mosaic_export_block_rows(),
-                progress_callback=update_progress,
+                export_progress_callback=update_export_progress,
                 target_icrs_to_pixel_payload=self._mosaic_target_icrs_to_pixel_payload,
                 map_tile_size_px=self._mosaic_map_tile_size_px(),
                 exact_remap_repair=self._mosaic_exact_remap_repair_enabled(),
+                tiff_lzw_compression=self._mosaic_tiff_lzw_compression_enabled(),
             )
+            update_export_progress("正在完成文件写入...", 0, 0)
             temp_path.replace(output_path)
+            update_export_progress("导出完成。", 1, 1)
         except InterruptedError as exc:
             self.ui.statusbar.showMessage(str(exc))
             try:
@@ -845,7 +876,7 @@ class MosaicProjectionMixin:
             if not isinstance(target_transform_payload, dict):
                 raise ValueError("取景 JSON 缺少 target_icrs_to_pixel_transform，请重新导出取景。")
             if not target_icrs_to_pixel_transform_payload_matches(target_transform_payload, geometry=geometry):
-                raise ValueError("取景 JSON 中的 ICRS 到 A 像素变换与输出几何不匹配。")
+                raise ValueError("取景 JSON 中的 ICRS 到全景图像素变换与输出几何不匹配。")
             self._apply_mosaic_framing_payload(payload)
             self._set_mosaic_imported_framing(json_path, target_transform_payload)
         except Exception as exc:  # noqa: BLE001 - 导入入口需要把 JSON 错误直接反馈到界面。

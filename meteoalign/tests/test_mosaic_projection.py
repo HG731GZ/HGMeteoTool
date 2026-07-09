@@ -150,6 +150,7 @@ def test_mosaic_ui_config_reads_texture_and_grid_defaults(tmp_path: Path) -> Non
                 "mosaic_render_fps_limit": 75,
                 "mosaic_export_block_rows": 512,
                 "mosaic_map_tile_size_px": 4,
+                "mosaic_export_tiff_lzw_compression": False,
             }
         ),
         encoding="utf-8",
@@ -163,6 +164,7 @@ def test_mosaic_ui_config_reads_texture_and_grid_defaults(tmp_path: Path) -> Non
     assert config.mosaic_render_fps_limit == 75
     assert config.mosaic_export_block_rows == 512
     assert config.mosaic_map_tile_size_px == 4
+    assert not config.mosaic_export_tiff_lzw_compression
 
 
 def test_mosaic_render_fps_limit_is_clamped() -> None:
@@ -181,6 +183,14 @@ def test_mosaic_exact_remap_repair_defaults_to_off() -> None:
     window.ui = SimpleNamespace(checkBoxMosaicExactRemapRepair=_CheckBox(True))
 
     assert MosaicProjectionMixin._mosaic_exact_remap_repair_enabled(window)
+
+
+def test_mosaic_map_tile_size_prefers_ui_control() -> None:
+    window = MosaicProjectionMixin.__new__(MosaicProjectionMixin)
+    window.ui_config = SimpleNamespace(mosaic_map_tile_size_px=16)
+    window.ui = SimpleNamespace(doubleSpinBoxMosaicMapTileSize=_SpinBox(5.0))
+
+    assert MosaicProjectionMixin._mosaic_map_tile_size_px(window) == 5
 
 
 def test_mosaic_texture_long_side_uses_lower_limit_and_interaction_half() -> None:

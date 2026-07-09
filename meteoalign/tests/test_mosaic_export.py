@@ -11,6 +11,7 @@ from meteoalign.mosaic_export import (
     MosaicExportSourceImage,
     _finalize_forward_inverse_map,
     _icrs_camera_basis_from_view,
+    _render_mosaic_reprojection_block_from_map,
     build_target_icrs_to_pixel_transform_payload,
     mosaic_export_cropped_geometry,
     mosaic_reprojection_map_blocks,
@@ -97,7 +98,7 @@ def test_mosaic_export_cropped_geometry_subtracts_all_margins() -> None:
     assert geometry.output_height_px == 3830
 
 
-def test_mosaic_export_writes_cropped_uncompressed_u16_tiff_with_exif(tmp_path) -> None:  # type: ignore[no-untyped-def]
+def test_mosaic_export_writes_cropped_lzw_rgba_u16_tiff_with_exif(tmp_path) -> None:  # type: ignore[no-untyped-def]
     width, height = 8, 6
     source_rgb = np.zeros((height, width, 3), dtype=np.uint16)
     for y_value in range(height):
@@ -152,13 +153,48 @@ def test_mosaic_export_writes_cropped_uncompressed_u16_tiff_with_exif(tmp_path) 
         page = tiff.pages[0]
         exported = page.asarray()
         compression = page.tags["Compression"].value
+        extra_samples = page.tags["ExtraSamples"].value
         make = page.tags[271].value
 
-    assert exported.shape == (4, 6, 3)
+    assert exported.shape == (4, 6, 4)
     assert exported.dtype == np.uint16
-    assert compression == 1
+    assert compression == 5
+    assert tuple(int(value) for value in extra_samples) == (2,)
     assert make == "UnitTestCamera"
-    assert np.max(np.abs(exported[0, 0].astype(np.int32) - source_rgb[1, 1].astype(np.int32))) < 8
+    assert exported[0, 0, 3] == 65535
+    assert np.max(np.abs(exported[0, 0, :3].astype(np.int32) - source_rgb[1, 1].astype(np.int32))) < 8
+
+    uncompressed_path = tmp_path / "export_uncompressed.tif"
+    write_mosaic_reprojection_tiff(
+        output_path=uncompressed_path,
+        source_model=source_model,
+        source_image=source_image,
+        camera=camera,
+        view=view,
+        observer=observer,
+        geometry=geometry,
+        block_rows=2,
+        tiff_lzw_compression=False,
+    )
+    with tifffile.TiffFile(uncompressed_path) as tiff:
+        assert tiff.pages[0].tags["Compression"].value == 1
+
+
+def test_mosaic_render_block_marks_invalid_pixels_transparent() -> None:
+    source_rgb = np.zeros((2, 2, 3), dtype=np.uint16)
+    source_rgb[0, 0] = (1000, 2000, 3000)
+    map_x = np.asarray([[0.0, -1.0]], dtype=np.float32)
+    map_y = np.asarray([[0.0, -1.0]], dtype=np.float32)
+
+    rendered = _render_mosaic_reprojection_block_from_map(
+        source_rgb_u16=source_rgb,
+        map_x=map_x,
+        map_y=map_y,
+    )
+
+    assert rendered.shape == (1, 2, 4)
+    assert np.array_equal(rendered[0, 0], np.asarray([1000, 2000, 3000, 65535], dtype=np.uint16))
+    assert np.array_equal(rendered[0, 1], np.asarray([0, 0, 0, 0], dtype=np.uint16))
 
 
 def test_mosaic_export_map_blocks_bridge_target_pixels_to_source_pixels(tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -222,8 +258,9 @@ def test_mosaic_export_map_blocks_bridge_target_pixels_to_source_pixels(tmp_path
     assert len(map_blocks) == 2
     assert abs(float(map_blocks[0]["map_x"][0, 0]) - 1.0) < 1e-3
     assert abs(float(map_blocks[0]["map_y"][0, 0]) - 1.0) < 1e-3
-    assert exported.shape == (4, 6, 3)
-    assert np.max(np.abs(exported[1, 1].astype(np.int32) - source_rgb[2, 2].astype(np.int32))) < 8
+    assert exported.shape == (4, 6, 4)
+    assert exported[1, 1, 3] == 65535
+    assert np.max(np.abs(exported[1, 1, :3].astype(np.int32) - source_rgb[2, 2].astype(np.int32))) < 8
 
 
 def test_mosaic_export_uses_target_icrs_to_pixel_transform_payload(tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -287,8 +324,9 @@ def test_mosaic_export_uses_target_icrs_to_pixel_transform_payload(tmp_path) -> 
     assert "blocks" not in target_transform_payload
     assert "camera" in target_transform_payload
     assert "icrs_camera_basis" in target_transform_payload
-    assert exported.shape == (4, 6, 3)
-    assert np.max(np.abs(exported[1, 1].astype(np.int32) - source_rgb[2, 2].astype(np.int32))) < 8
+    assert exported.shape == (4, 6, 4)
+    assert exported[1, 1, 3] == 65535
+    assert np.max(np.abs(exported[1, 1, :3].astype(np.int32) - source_rgb[2, 2].astype(np.int32))) < 8
 
 
 def test_mosaic_export_fixed_tile_forward_path_projects_fewer_source_points(tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -349,7 +387,9 @@ def test_mosaic_export_fixed_tile_forward_path_projects_fewer_source_points(tmp_
     exported = tifffile.imread(output_path)
     assert source_model.projected_vector_count == 0
     assert source_model.projected_source_pixel_count < width * height
-    assert np.max(np.abs(exported[1, 1].astype(np.int32) - source_rgb[2, 2].astype(np.int32))) < 16
+    assert exported.shape == (3, 7, 4)
+    assert exported[1, 1, 3] == 65535
+    assert np.max(np.abs(exported[1, 1, :3].astype(np.int32) - source_rgb[2, 2].astype(np.int32))) < 16
 
 
 def test_mosaic_export_forward_remap_fills_projected_sampling_gaps(tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -417,8 +457,8 @@ def test_mosaic_export_forward_remap_fills_projected_sampling_gaps(tmp_path) -> 
     )
 
     exported = tifffile.imread(output_path)
-    white_pixels = np.all(exported == 65535, axis=2)
-    assert not np.any(white_pixels)
+    assert exported.shape == (8, 12, 4)
+    assert np.all(exported[:, :, 3] == 65535)
     assert source_model.projected_source_pixel_count < source_width * source_height
     assert source_model.projected_vector_count == 0
 

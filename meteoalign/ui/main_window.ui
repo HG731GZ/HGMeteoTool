@@ -2401,14 +2401,63 @@
                 </layout>
                </item>
                <item>
-                <widget class="QCheckBox" name="checkBoxMosaicExactRemapRepair">
-                 <property name="toolTip">
-                  <string>鱼眼亮星出现小黑点时可启用；会额外精确反算缺失和低权重像素，导出更慢。</string>
-                 </property>
-                 <property name="text">
-                  <string>精确修复亮星小黑点（较慢）</string>
-                 </property>
-                </widget>
+                <layout class="QHBoxLayout" name="horizontalLayoutMosaicExportOptions">
+                 <item>
+                  <widget class="QLabel" name="labelMosaicMapTileSize">
+                   <property name="text">
+                    <string>投影网格大小</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QDoubleSpinBox" name="doubleSpinBoxMosaicMapTileSize">
+                   <property name="toolTip">
+                    <string>源图按固定网格投到全景图；数值越小越精细但越慢。</string>
+                   </property>
+                   <property name="decimals">
+                    <number>0</number>
+                   </property>
+                   <property name="minimum">
+                    <double>1.000000000000000</double>
+                   </property>
+                   <property name="maximum">
+                    <double>512.000000000000000</double>
+                   </property>
+                   <property name="singleStep">
+                    <double>1.000000000000000</double>
+                   </property>
+                   <property name="suffix">
+                    <string> px</string>
+                   </property>
+                   <property name="value">
+                    <double>4.000000000000000</double>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <spacer name="horizontalSpacerMosaicExportOptions">
+                   <property name="orientation">
+                    <enum>Qt::Horizontal</enum>
+                   </property>
+                   <property name="sizeHint" stdset="0">
+                    <size>
+                     <width>20</width>
+                     <height>20</height>
+                    </size>
+                   </property>
+                  </spacer>
+                 </item>
+                 <item>
+                  <widget class="QCheckBox" name="checkBoxMosaicExactRemapRepair">
+                   <property name="toolTip">
+                    <string>鱼眼亮星出现小黑点时可启用；会额外精确反算缺失和低权重像素，导出更慢。</string>
+                   </property>
+                   <property name="text">
+                    <string>修复亮星小黑点（较慢）</string>
+                   </property>
+                  </widget>
+                 </item>
+                </layout>
                </item>
                <item>
                 <widget class="QPushButton" name="pushButtonExportMosaicProjectedImage">
