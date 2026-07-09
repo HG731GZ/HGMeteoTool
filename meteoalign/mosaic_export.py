@@ -1337,7 +1337,7 @@ def write_mosaic_reprojection_tiff(
         compression=compression,
         metadata=None,
         description=description,
-        software="MeteoAlign",
+        software="HoshinoPanoAssistant",
         iccprofile=source_image.icc_profile,
         extratags=source_image.exif_tags or None,
     )
@@ -1345,18 +1345,18 @@ def write_mosaic_reprojection_tiff(
 
 def _mosaic_export_description(framing_payload: dict[str, object] | None) -> str:
     if framing_payload is None:
-        return "MeteoAlign free projection mosaic export"
+        return "HoshinoPanoAssistant free projection mosaic export"
     try:
         return _tiff_ascii(json.dumps(
             {
-                "software": "MeteoAlign",
+                "software": "HoshinoPanoAssistant",
                 "mosaic_framing": framing_payload,
             },
             ensure_ascii=True,
             separators=(",", ":"),
         ))
     except (TypeError, ValueError):
-        return "MeteoAlign free projection mosaic export"
+        return "HoshinoPanoAssistant free projection mosaic export"
 
 
 def _tiff_ascii(text: str) -> str:

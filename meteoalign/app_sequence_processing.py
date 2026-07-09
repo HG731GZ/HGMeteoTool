@@ -18,7 +18,7 @@ class SequenceProcessingMixin:
             self._ensure_first_sequence_session_loaded_for_processing()
             self._ensure_sequence_ready_for_processing()
             if not self._confirm_overwrite_sequence_outputs():
-                self.ui.statusbar.showMessage("已取消图像序列处理。")
+                self.ui.statusbar.showMessage("已取消图像序列解析。")
                 return
             first_item = self._current_sequence_first_item()
             first_output_paths = self._ensure_first_sequence_output_jsons(first_item)
@@ -180,6 +180,6 @@ class SequenceProcessingMixin:
             message += "\n\n失败明细：\n" + "\n".join(failures[:12])
             if len(failures) > 12:
                 message += f"\n... 另有 {len(failures) - 12} 条"
-            QMessageBox.warning(self, "图像序列处理完成", message)
+            QMessageBox.warning(self, "图像序列解析完成", message)
         else:
-            QMessageBox.information(self, "图像序列处理完成", message)
+            QMessageBox.information(self, "图像序列解析完成", message)

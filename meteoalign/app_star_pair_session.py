@@ -503,7 +503,7 @@ class StarPairSessionMixin:
             raise ValueError("JSON 根对象必须是字典。")
         payload_format = payload.get("format")
         if payload_format != STAR_PAIR_SESSION_FORMAT:
-            raise ValueError("当前只支持 MeteoAlign 星点配对 JSON。")
+            raise ValueError("当前只支持 HoshinoPanoAssistant 星点配对 JSON。")
 
         reference_payload = payload.get("reference_payload")
         pair_payloads = payload.get("pairs", [])

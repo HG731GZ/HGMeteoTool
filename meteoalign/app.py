@@ -22,7 +22,6 @@ from PyQt5.QtWidgets import (
     QInputDialog,
     QLabel,
     QMainWindow,
-    QMenu,
     QMessageBox,
     QProgressDialog,
     QHeaderView,
@@ -136,7 +135,7 @@ class MainWindow(
     RenderingMixin,
     ViewControlsMixin,
 ):
-    """MeteoAlign 主窗口。
+    """HoshinoPanoAssistant 主窗口。
 
     采用 Mixin 多重继承模式将不同功能拆分到独立模块：
     - AppWidgetMixin: UI 辅助（标签、字体）
@@ -389,8 +388,6 @@ class MainWindow(
         self.ui.comboBoxAutoMatchConstraintMode.currentIndexChanged.connect(self._update_auto_match_controls)
         self.ui.pushButtonAutoMatchFieldStars.clicked.connect(self.auto_match_field_stars)
         self.ui.pushButtonExportSourceModel.clicked.connect(self.export_source_model_json)
-        self.ui.actionImportSingleImage.triggered.connect(self.import_single_image)
-        self.ui.actionImportImageSequence.triggered.connect(self.import_image_sequence)
         self.ui.tabWidgetMain.currentChanged.connect(self._handle_tab_changed)
         self.ui.tabWidgetMain.currentChanged.connect(lambda _index: self.schedule_mosaic_render())
         self.ui.tableWidgetStarPairs.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -462,7 +459,7 @@ class MainWindow(
 # ===================================================================
 
 def main(argv: list[str] | None = None) -> int:
-    """MeteoAlign 桌面程序入口。
+    """HoshinoPanoAssistant 桌面程序入口。
 
     启动 Qt 应用，检查星表数据是否就绪，然后显示主窗口。
     """

@@ -1,3 +1,3 @@
-"""MeteoAlign desktop application package."""
+"""HoshinoPanoAssistant desktop application package."""
 
 __version__ = "0.1.0"

@@ -69,8 +69,8 @@ def check_qt() -> None:
     from PyQt5.QtWidgets import QApplication, QLabel
 
     app = QApplication.instance() or QApplication([])
-    label = QLabel("MeteoAlign")
-    if label.text() != "MeteoAlign":
+    label = QLabel("HoshinoPanoAssistant")
+    if label.text() != "HoshinoPanoAssistant":
         fail("Qt QLabel smoke test failed")
     print(f"Qt=={QT_VERSION_STR}")
     print(f"PyQt=={PYQT_VERSION_STR}")

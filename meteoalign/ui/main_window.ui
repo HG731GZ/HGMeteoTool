@@ -11,7 +11,7 @@
    </rect>
   </property>
   <property name="windowTitle">
-   <string>MeteoAlign Phase 2</string>
+   <string>HoshinoPanoAssistant - Vibe Coded by HG</string>
   </property>
   <widget class="QWidget" name="centralwidget">
    <layout class="QVBoxLayout" name="verticalLayoutMain">
@@ -592,7 +592,7 @@
       </widget>
       <widget class="QWidget" name="tabImageSequence">
        <attribute name="title">
-        <string>图像序列处理</string>
+        <string>图像序列解析</string>
        </attribute>
        <layout class="QHBoxLayout" name="horizontalLayoutImageSequence">
         <item>
@@ -911,7 +911,7 @@
       </widget>
       <widget class="QWidget" name="tabReferenceImage">
        <attribute name="title">
-        <string>真实图像点选</string>
+        <string>星点匹配</string>
        </attribute>
        <layout class="QHBoxLayout" name="horizontalLayoutReferenceImage">
         <item>
@@ -1688,7 +1688,7 @@
       </widget>
 	      <widget class="QWidget" name="tabFreeSkyMosaic">
        <attribute name="title">
-        <string>自由投影拼图</string>
+        <string>全景构图</string>
        </attribute>
        <layout class="QHBoxLayout" name="horizontalLayoutMosaic">
         <item>
@@ -2865,35 +2865,7 @@
     </item>
    </layout>
   </widget>
-  <widget class="QMenuBar" name="menubar">
-   <property name="geometry">
-    <rect>
-     <x>0</x>
-     <y>0</y>
-     <width>1280</width>
-     <height>22</height>
-    </rect>
-   </property>
-   <widget class="QMenu" name="menuFile">
-    <property name="title">
-     <string>文件</string>
-    </property>
-    <addaction name="actionImportSingleImage"/>
-    <addaction name="actionImportImageSequence"/>
-   </widget>
-   <addaction name="menuFile"/>
-  </widget>
   <widget class="QStatusBar" name="statusbar"/>
-  <action name="actionImportSingleImage">
-   <property name="text">
-    <string>导入单张图像...</string>
-   </property>
-  </action>
-  <action name="actionImportImageSequence">
-   <property name="text">
-    <string>导入序列图像...</string>
-   </property>
-  </action>
  </widget>
  <resources/>
  <connections/>

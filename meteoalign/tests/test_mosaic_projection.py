@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -165,19 +164,20 @@ def test_mosaic_model_defaults_keep_projection_for_free_anchor_models() -> None:
 
 
 def test_mosaic_ui_config_reads_texture_and_grid_defaults(tmp_path: Path) -> None:
-    config_path = tmp_path / "meteoalign_ui_config.json"
+    config_path = tmp_path / "preference.json"
     config_path.write_text(
-        json.dumps(
-            {
-                "mosaic_texture_scale_percent": 50.0,
-                "mosaic_texture_max_long_side_px": 1800,
-                "mosaic_grid_precision_default": 30,
-                "mosaic_render_fps_limit": 75,
-                "mosaic_export_block_rows": 512,
-                "mosaic_map_tile_size_px": 4,
-                "mosaic_export_tiff_lzw_compression": False,
-            }
-        ),
+        """
+        {
+          // 自由拼图预览贴图缩放比例。
+          "mosaic_texture_scale_percent": 50.0,
+          "mosaic_texture_max_long_side_px": 1800,
+          "mosaic_grid_precision_default": 30,
+          "mosaic_render_fps_limit": 75,
+          "mosaic_export_block_rows": 512,
+          "mosaic_map_tile_size_px": 4,
+          "mosaic_export_tiff_lzw_compression": false
+        }
+        """,
         encoding="utf-8",
     )
 

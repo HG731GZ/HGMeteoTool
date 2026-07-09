@@ -214,12 +214,12 @@ class SourceModelExportMixin:
             preloaded_to_mosaic = False
             if hasattr(self, "load_mosaic_model_json"):
                 preloaded_to_mosaic = bool(self.load_mosaic_model_json(json_path, quiet=True))
-            preload_status = "，已预载到自由投影拼图" if preloaded_to_mosaic else "，自由投影预载失败"
+            preload_status = "，已预载到全景构图" if preloaded_to_mosaic else "，自由投影预载失败"
             self.ui.statusbar.showMessage(
                 f"已导出 xy→RA/Dec 映射 JSON: {json_path}  配对数: {pair_count}  "
                 f"RMS: {rms_px:.2f}px{preload_status}"
             )
-            preload_message = "\n已预载到自由投影拼图，可切换页面查看。" if preloaded_to_mosaic else "\n自由投影预载失败，可稍后手动导入检查。"
+            preload_message = "\n已预载到全景构图，可切换页面查看。" if preloaded_to_mosaic else "\n自由投影预载失败，可稍后手动导入检查。"
             QMessageBox.information(
                 self,
                 "映射 JSON 已导出",

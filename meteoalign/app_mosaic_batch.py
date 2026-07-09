@@ -162,7 +162,7 @@ class MosaicBatchMixin:
         if not isinstance(payload, dict):
             raise ValueError("取景 JSON 根对象必须是对象。")
         if str(payload.get("schema") or "") != MOSAIC_FRAMING_SCHEMA:
-            raise ValueError("这不是 MeteoAlign 自由投影取景 JSON。")
+            raise ValueError("这不是 HoshinoPanoAssistant 自由投影取景 JSON。")
         geometry = self._mosaic_geometry_from_framing_payload(payload)
         if geometry.output_width_px <= 0 or geometry.output_height_px <= 0:
             raise ValueError("裁剪后的导出尺寸无效。")

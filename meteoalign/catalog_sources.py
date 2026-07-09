@@ -159,7 +159,7 @@ def download_file(
         temp_path = Path(temp_file.name)
         try:
             request = urllib.request.Request(
-                item.url, headers={"User-Agent": "MeteoAlign catalog downloader"}
+                item.url, headers={"User-Agent": "HoshinoPanoAssistant catalog downloader"}
             )
             with urllib.request.urlopen(request, timeout=120) as response:
                 total_bytes = item.expected_size or _content_length(response)

@@ -613,7 +613,7 @@ class AlignmentMixin:
                     projection_tooltip=projection_tooltip,
                     soft_tooltip=soft_tooltip,
                     source_model_summary=(
-                        "已可导出 xy→RA/Dec JSON，并可在自由投影拼图中验证。"
+                        "已可导出 xy→RA/Dec JSON，并可在全景构图中验证。"
                         if self._source_astrometric_model is not None
                         else self._source_model_error_message or "尚未就绪。"
                     ),

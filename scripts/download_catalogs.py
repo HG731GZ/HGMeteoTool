@@ -1,4 +1,4 @@
-"""下载 MeteoAlign 使用的离线星表。
+"""下载 HoshinoPanoAssistant 使用的离线星表。
 
 运行方式：
     conda run -n hgastro python scripts/download_catalogs.py

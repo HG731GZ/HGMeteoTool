@@ -206,23 +206,56 @@ def _load_mosaic_fit_data(payload: dict[str, object]) -> MosaicModelFitData | No
     )
 
 
+def _append_unique_path(paths: list[Path], candidate: Path | None) -> None:
+    """按优先级追加候选图像路径，避免重复。"""
+
+    if candidate is None:
+        return
+    if candidate not in paths:
+        paths.append(candidate)
+
+
+def _source_image_file_name(source_image: dict[str, object]) -> str:
+    """优先使用 file_name，旧 JSON 缺失时从相对或绝对路径提取文件名。"""
+
+    for key in ("file_name", "relative_path", "path"):
+        value = source_image.get(key)
+        if isinstance(value, str) and value.strip():
+            name = Path(value.strip()).name
+            if name:
+                return name
+    return ""
+
+
 def _resolve_source_image_path(payload: dict[str, object], json_path: Path) -> tuple[Path | None, str]:
     source_image = payload.get("source_image")
     if not isinstance(source_image, dict):
         return None, "未记录源图路径"
+
+    candidates: list[Path] = []
+    file_name = _source_image_file_name(source_image)
+    if file_name:
+        _append_unique_path(candidates, (json_path.parent / file_name).resolve())
+
+    relative_path = str(source_image.get("relative_path") or "").strip()
+    if relative_path:
+        _append_unique_path(candidates, (json_path.parent / relative_path).resolve())
+
     raw_path = str(source_image.get("path") or "").strip()
     if raw_path:
         image_path = Path(raw_path).expanduser()
-        if not image_path.is_absolute():
-            image_path = (json_path.parent / image_path).resolve()
-        return image_path, image_path.name
-    relative_path = str(source_image.get("relative_path") or "").strip()
-    if relative_path:
-        image_path = (json_path.parent / relative_path).resolve()
-        return image_path, image_path.name
-    file_name = str(source_image.get("file_name") or "").strip()
-    if file_name:
-        return None, file_name
+        if image_path.is_absolute():
+            _append_unique_path(candidates, image_path.resolve())
+        else:
+            # 兼容旧 JSON 中 path 写成相对路径的情况；新 JSON 应优先使用 relative_path。
+            _append_unique_path(candidates, (json_path.parent / image_path).resolve())
+
+    for image_path in candidates:
+        if image_path.exists():
+            return image_path, image_path.name
+    if candidates:
+        fallback = candidates[-1]
+        return fallback, fallback.name
     return None, "未记录源图路径"
 
 

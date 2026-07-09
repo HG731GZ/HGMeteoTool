@@ -27,7 +27,7 @@ class ReferenceJsonIOMixin:
             self,
             "导入预览 JSON",
             str(default_dir),
-            "MeteoAlign 参考图 JSON (*.json);;JSON 文件 (*.json);;所有文件 (*)",
+            "HoshinoPanoAssistant 参考图 JSON (*.json);;JSON 文件 (*.json);;所有文件 (*)",
         )
         if not file_path:
             return
@@ -121,7 +121,7 @@ class ReferenceJsonIOMixin:
         if not isinstance(payload, dict):
             raise ValueError("JSON 根对象必须是字典。")
         if payload.get("format") != "meteoalign_phase1_reference":
-            raise ValueError("当前只支持 MeteoAlign 导出的参考图 JSON。")
+            raise ValueError("当前只支持 HoshinoPanoAssistant 导出的参考图 JSON。")
 
         observer = self._payload_section(payload, "observer")
         camera = self._payload_section(payload, "camera")

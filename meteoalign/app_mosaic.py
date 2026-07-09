@@ -110,7 +110,7 @@ class MosaicSourceItem:
 
 
 class MosaicProjectionMixin:
-    """自由投影拼图预览 Mixin。"""
+    """全景构图预览 Mixin。"""
 
     ui: object
     renderer: object
@@ -1014,7 +1014,7 @@ class MosaicProjectionMixin:
     def _apply_mosaic_framing_payload(self, payload: dict[str, object]) -> None:
         schema = str(payload.get("schema") or "")
         if schema != MOSAIC_FRAMING_SCHEMA:
-            raise ValueError("这不是 MeteoAlign 自由投影取景 JSON。")
+            raise ValueError("这不是 HoshinoPanoAssistant 自由投影取景 JSON。")
 
         projection_payload = payload.get("projection")
         if not isinstance(projection_payload, dict):

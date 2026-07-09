@@ -243,8 +243,6 @@ class ImageMixin:
     def _set_image_import_controls_enabled(self, enabled: bool) -> None:
         self.ui.pushButtonImportSingleImage.setEnabled(enabled)
         self.ui.pushButtonImportImageSequence.setEnabled(enabled)
-        self.ui.actionImportSingleImage.setEnabled(enabled)
-        self.ui.actionImportImageSequence.setEnabled(enabled)
         if hasattr(self.ui, "pushButtonProcessImageSequence"):
             self._update_image_sequence_controls()
 
