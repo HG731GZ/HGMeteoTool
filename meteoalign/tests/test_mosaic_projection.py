@@ -17,7 +17,9 @@ from meteoalign.mosaic_common import (
     MOSAIC_OVERLAY_MODES,
     MOSAIC_PROJECTION_MODELS,
 )
+from meteoalign.mosaic_export import MosaicExportGeometry
 from meteoalign.mosaic_model_io import MosaicCoverageCache
+from meteoalign.simulator import ObserverSettings
 
 
 class _Control:
@@ -67,6 +69,17 @@ class _CheckBox(_Control):
 
     def setChecked(self, value: bool) -> None:  # noqa: N802 - Qt 控件接口命名
         self._value = bool(value)
+
+
+class _Button(_Control):
+    def __init__(self) -> None:
+        super().__init__(False)
+
+    def setEnabled(self, value: bool) -> None:  # noqa: N802 - Qt 控件接口命名
+        self._value = bool(value)
+
+    def isEnabled(self) -> bool:  # noqa: N802 - Qt 控件接口命名
+        return bool(self._value)
 
 
 def _mosaic_window() -> MosaicProjectionMixin:
@@ -264,3 +277,113 @@ def test_mosaic_framing_import_uses_mosaic_payload_parser_despite_mro_collision(
     assert window._mosaic_output_size() == (5835, 4540)
     assert window._mosaic_framing_observer.latitude_deg == 25.0
     assert window.ui.doubleSpinBoxMosaicCropTop.value() == 190.0
+
+
+def test_mosaic_framing_payload_does_not_embed_source_model_or_map() -> None:
+    observer = ObserverSettings(
+        observation_time_utc=datetime(2025, 12, 14, 18, 11, 45, tzinfo=timezone.utc),
+        latitude_deg=25.0,
+        longitude_deg=102.0,
+        elevation_m=200.0,
+    )
+    window = MosaicProjectionMixin.__new__(MosaicProjectionMixin)
+    window.ui = SimpleNamespace(
+        comboBoxMosaicProjection=_ComboBox(0),
+        doubleSpinBoxMosaicFov=_SpinBox(120.0, minimum=5.0, maximum=360.0),
+    )
+    window._mosaic_source_model = SimpleNamespace(
+        json_path=Path("source_model.json"),
+        observer=observer,
+        utc_offset_hours=8.0,
+        image_width_px=6000,
+        image_height_px=4000,
+        rms_px=0.25,
+    )
+    window._mosaic_center_az_deg = 199.0
+    window._mosaic_center_alt_deg = 45.0
+    window._mosaic_roll_deg = 3.0
+    window._mosaic_output_boundary_width_px = 5835
+    window._mosaic_output_boundary_height_px = 4540
+    window._mosaic_resolution_estimate = None
+    window._mosaic_render_size = lambda: (1200, 800)  # type: ignore[attr-defined]
+
+    payload = MosaicProjectionMixin._mosaic_framing_payload(window)
+
+    assert "source_model" not in payload
+    assert "reprojection_map" not in payload
+    assert payload["output"]["boundary_width_px"] == 5835
+
+
+def test_mosaic_imported_framing_ready_requires_matching_target_icrs_map() -> None:
+    geometry = MosaicExportGeometry(
+        boundary_width_px=100,
+        boundary_height_px=80,
+        crop_left_px=10,
+        crop_top_px=8,
+        output_width_px=60,
+        output_height_px=40,
+    )
+    target_map_payload = {
+        "version": 1,
+        "scope": "cropped_output",
+        "vector_frame": "ICRS",
+        "boundary_width_px": 100,
+        "boundary_height_px": 80,
+        "crop_left_px": 10,
+        "crop_top_px": 8,
+        "output_width_px": 60,
+        "output_height_px": 40,
+        "blocks": [],
+    }
+    window = MosaicProjectionMixin.__new__(MosaicProjectionMixin)
+    window.ui = SimpleNamespace()
+
+    MosaicProjectionMixin._set_mosaic_imported_framing(window, Path("target_framing.json"), target_map_payload)
+
+    assert MosaicProjectionMixin._mosaic_imported_framing_ready(window, geometry)
+    assert not MosaicProjectionMixin._mosaic_imported_framing_ready(
+        window,
+        MosaicExportGeometry(
+            boundary_width_px=100,
+            boundary_height_px=80,
+            crop_left_px=11,
+            crop_top_px=8,
+            output_width_px=60,
+            output_height_px=40,
+        ),
+    )
+
+    MosaicProjectionMixin._clear_mosaic_imported_framing(window)
+
+    assert not MosaicProjectionMixin._mosaic_imported_framing_ready(window)
+
+
+def test_mosaic_export_button_requires_source_model_and_imported_framing() -> None:
+    window = MosaicProjectionMixin.__new__(MosaicProjectionMixin)
+    window.ui = SimpleNamespace(pushButtonExportMosaicProjectedImage=_Button())
+    window._mosaic_source_model = None
+    target_map_payload = {
+        "version": 1,
+        "scope": "cropped_output",
+        "vector_frame": "ICRS",
+        "boundary_width_px": 100,
+        "boundary_height_px": 80,
+        "crop_left_px": 0,
+        "crop_top_px": 0,
+        "output_width_px": 100,
+        "output_height_px": 80,
+        "blocks": [],
+    }
+
+    MosaicProjectionMixin._update_mosaic_export_button_state(window)
+
+    assert not window.ui.pushButtonExportMosaicProjectedImage.isEnabled()
+
+    MosaicProjectionMixin._set_mosaic_imported_framing(window, Path("target_framing.json"), target_map_payload)
+
+    assert not window.ui.pushButtonExportMosaicProjectedImage.isEnabled()
+
+    window._mosaic_source_model = SimpleNamespace()
+    MosaicProjectionMixin._update_mosaic_export_button_state(window)
+
+    assert window.ui.pushButtonExportMosaicProjectedImage.isEnabled()

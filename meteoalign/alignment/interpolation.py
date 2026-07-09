@@ -50,21 +50,13 @@ class AnchorInterpolation2D:
 
         normalized = self.normalized_points(point_array)
         with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
-            values = np.column_stack(
-                (
-                    _evaluate_thin_plate_spline(
-                        normalized,
-                        self.anchor_points,
-                        self.tps_weights_x,
-                        self.tps_affine_x,
-                    ),
-                    _evaluate_thin_plate_spline(
-                        normalized,
-                        self.anchor_points,
-                        self.tps_weights_y,
-                        self.tps_affine_y,
-                    ),
-                )
+            values = _evaluate_thin_plate_spline_2d(
+                normalized,
+                self.anchor_points,
+                self.tps_weights_x,
+                self.tps_weights_y,
+                self.tps_affine_x,
+                self.tps_affine_y,
             )
         values[~np.all(np.isfinite(point_array), axis=1)] = np.nan
         values[~np.all(np.isfinite(values), axis=1)] = np.nan
@@ -83,8 +75,10 @@ def _thin_plate_spline_kernel_from_squared_distance(distance_squared: np.ndarray
 def _thin_plate_spline_kernel(points: np.ndarray, anchors: np.ndarray) -> np.ndarray:
     point_array = np.asarray(points, dtype=np.float64)
     anchor_array = np.asarray(anchors, dtype=np.float64)
-    delta = point_array[:, None, :] - anchor_array[None, :, :]
-    distance_squared = np.sum(delta * delta, axis=2)
+    point_norms = np.sum(point_array * point_array, axis=1)[:, None]
+    anchor_norms = np.sum(anchor_array * anchor_array, axis=1)[None, :]
+    distance_squared = point_norms + anchor_norms - 2.0 * (point_array @ anchor_array.T)
+    np.maximum(distance_squared, 0.0, out=distance_squared)
     return _thin_plate_spline_kernel_from_squared_distance(distance_squared)
 
 
@@ -166,6 +160,41 @@ def _evaluate_thin_plate_spline(
     with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
         values = kernel @ weight_array + polynomial_terms @ affine_array
     values[~np.isfinite(values)] = np.nan
+    return values.astype(np.float64)
+
+
+def _evaluate_thin_plate_spline_2d(
+    points: np.ndarray,
+    anchor_points: np.ndarray,
+    weights_x: np.ndarray,
+    weights_y: np.ndarray,
+    affine_x: np.ndarray,
+    affine_y: np.ndarray,
+) -> np.ndarray:
+    point_array = np.asarray(points, dtype=np.float64)
+    anchor_array = np.asarray(anchor_points, dtype=np.float64)
+    weight_x_array = np.asarray(weights_x, dtype=np.float64)
+    weight_y_array = np.asarray(weights_y, dtype=np.float64)
+    affine_x_array = np.asarray(affine_x, dtype=np.float64)
+    affine_y_array = np.asarray(affine_y, dtype=np.float64)
+    if point_array.ndim != 2 or point_array.shape[1] != 2:
+        raise ValueError("薄板样条求值点必须是 Nx2 数组。")
+    if anchor_array.ndim != 2 or anchor_array.shape[1] != 2:
+        raise ValueError("薄板样条锚点必须是 Nx2 数组。")
+    if (
+        weight_x_array.shape[0] != anchor_array.shape[0]
+        or weight_y_array.shape[0] != anchor_array.shape[0]
+        or affine_x_array.shape[0] != 3
+        or affine_y_array.shape[0] != 3
+    ):
+        raise ValueError("薄板样条系数数量不匹配。")
+    kernel = _thin_plate_spline_kernel(point_array, anchor_array)
+    polynomial_terms = np.column_stack((np.ones(point_array.shape[0]), point_array[:, 0], point_array[:, 1]))
+    weights = np.column_stack((weight_x_array, weight_y_array))
+    affine = np.column_stack((affine_x_array, affine_y_array))
+    with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
+        values = kernel @ weights + polynomial_terms @ affine
+    values[~np.all(np.isfinite(values), axis=1)] = np.nan
     return values.astype(np.float64)
 
 

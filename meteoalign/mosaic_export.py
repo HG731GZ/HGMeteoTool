@@ -5,7 +5,6 @@ import json
 import warnings
 import zlib
 from dataclasses import dataclass
-from datetime import timezone
 from pathlib import Path
 from typing import Callable, Iterator
 
@@ -42,8 +41,8 @@ except ImportError:  # pragma: no cover - tifffile 由环境声明，兜底用�
 MOSAIC_EXPORT_TIFF_FILTER = "无压缩 16-bit TIFF (*.tif *.tiff)"
 MOSAIC_EXPORT_DEFAULT_BLOCK_ROWS = 1024
 MOSAIC_EXPORT_WHITE_U16 = 65535
-MOSAIC_REPROJECTION_MAP_VERSION = 1
-MOSAIC_REPROJECTION_MAP_COMPRESSION_LEVEL = 6
+MOSAIC_TARGET_ICRS_MAP_VERSION = 1
+MOSAIC_TARGET_ICRS_MAP_COMPRESSION_LEVEL = 6
 
 # 这些标签由导出图自身决定，继续复制原图值会造成尺寸、压缩或方向冲突。
 _EXIF_EXCLUDED_TAGS = {
@@ -132,24 +131,19 @@ def _crop_margin_px(value: object, maximum: int) -> int:
     return max(0, min(int(round(numeric)), max(0, int(maximum))))
 
 
-def build_mosaic_reprojection_map_payload(
+def build_target_icrs_map_payload(
     *,
-    source_model: object,
     camera: CameraSettings,
     view: ViewSettings,
     observer: ObserverSettings,
     geometry: MosaicExportGeometry,
-    source_model_path: str | None = None,
-    source_image_width_px: int | None = None,
-    source_image_height_px: int | None = None,
     block_rows: int = MOSAIC_EXPORT_DEFAULT_BLOCK_ROWS,
     progress_callback: Callable[[int], None] | None = None,
 ) -> dict[str, object]:
-    """生成裁剪导出区域的 map_x/map_y，并以分块压缩形式写入 JSON 负载。"""
+    """生成 A 像素到 ICRS 单位向量的分块压缩负载。"""
 
     blocks: list[dict[str, object]] = []
-    for block in mosaic_reprojection_map_blocks(
-        source_model=source_model,
+    for block in target_icrs_map_blocks(
         camera=camera,
         view=view,
         observer=observer,
@@ -157,13 +151,20 @@ def build_mosaic_reprojection_map_payload(
         block_rows=block_rows,
         progress_callback=progress_callback,
     ):
-        blocks.append(_encode_map_block(block["row_start"], block["map_x"], block["map_y"]))
+        blocks.append(
+            _encode_target_icrs_block(
+                int(block["row_start"]),
+                np.asarray(block["icrs_vectors"], dtype=np.float32),
+            )
+        )
     return {
-        "version": MOSAIC_REPROJECTION_MAP_VERSION,
+        "version": MOSAIC_TARGET_ICRS_MAP_VERSION,
         "scope": "cropped_output",
         "dtype": "float32",
-        "invalid_value": -1.0,
         "encoding": "zlib+base64",
+        "vector_frame": "ICRS",
+        "vector_components": ["x", "y", "z"],
+        "pixel_convention": "0-based_pixel_center",
         "block_rows": int(max(1, block_rows)),
         "boundary_width_px": int(geometry.boundary_width_px),
         "boundary_height_px": int(geometry.boundary_height_px),
@@ -171,30 +172,24 @@ def build_mosaic_reprojection_map_payload(
         "crop_top_px": int(geometry.crop_top_px),
         "output_width_px": int(geometry.output_width_px),
         "output_height_px": int(geometry.output_height_px),
-        "source_model_path": "" if source_model_path is None else str(source_model_path),
-        "source_image_width_px": None if source_image_width_px is None else int(source_image_width_px),
-        "source_image_height_px": None if source_image_height_px is None else int(source_image_height_px),
-        "transform_signature": _mosaic_reprojection_map_signature(camera, view, observer),
         "blocks": blocks,
     }
 
 
-def mosaic_reprojection_map_payload_matches(
+def target_icrs_map_payload_matches(
     payload: object,
     *,
     geometry: MosaicExportGeometry,
-    source_model_path: str | None = None,
-    camera: CameraSettings | None = None,
-    view: ViewSettings | None = None,
-    observer: ObserverSettings | None = None,
 ) -> bool:
-    """检查 JSON 中的重投影 map 是否匹配当前导出几何。"""
+    """检查 A 像素到 ICRS map 是否匹配当前裁剪输出几何。"""
 
     if not isinstance(payload, dict):
         return False
-    if int(payload.get("version", 0) or 0) != MOSAIC_REPROJECTION_MAP_VERSION:
+    if int(payload.get("version", 0) or 0) != MOSAIC_TARGET_ICRS_MAP_VERSION:
         return False
     if str(payload.get("scope") or "") != "cropped_output":
+        return False
+    if str(payload.get("vector_frame") or "") != "ICRS":
         return False
     expected = {
         "boundary_width_px": geometry.boundary_width_px,
@@ -211,102 +206,92 @@ def mosaic_reprojection_map_payload_matches(
             return False
         if actual_value != int(expected_value):
             return False
-    if source_model_path:
-        recorded_path = str(payload.get("source_model_path") or "")
-        if recorded_path and recorded_path != str(source_model_path):
-            return False
-    if camera is not None or view is not None or observer is not None:
-        if camera is None or view is None or observer is None:
-            return False
-        if payload.get("transform_signature") != _mosaic_reprojection_map_signature(camera, view, observer):
-            return False
     return isinstance(payload.get("blocks"), list)
 
 
-def _mosaic_reprojection_map_signature(
+def target_icrs_map_blocks(
+    *,
     camera: CameraSettings,
     view: ViewSettings,
     observer: ObserverSettings,
-) -> dict[str, object]:
-    """把影响 map_x/map_y 的取景参数固化为可比较签名。"""
+    geometry: MosaicExportGeometry,
+    block_rows: int = MOSAIC_EXPORT_DEFAULT_BLOCK_ROWS,
+    progress_callback: Callable[[int], None] | None = None,
+) -> Iterator[dict[str, object]]:
+    """逐块生成裁剪后 A 像素中心对应的 ICRS 单位向量。"""
 
-    observation_time = observer.observation_time_utc
-    if observation_time.tzinfo is None:
-        observation_time = observation_time.replace(tzinfo=timezone.utc)
-    observation_time = observation_time.astimezone(timezone.utc)
-    return {
-        "camera": {
-            "lens_model": str(camera.lens_model),
-            "sensor_width_mm": _signature_float(camera.sensor_width_mm),
-            "sensor_height_mm": _signature_float(camera.sensor_height_mm),
-            "image_width_px": int(camera.image_width_px),
-            "image_height_px": int(camera.image_height_px),
-            "focal_length_mm": _signature_float(camera.focal_length_mm),
-            "fisheye_fov_deg": _signature_float(camera.fisheye_fov_deg),
-        },
-        "view": {
-            "center_az_deg": _signature_float(float(view.center_az_deg) % 360.0),
-            "center_alt_deg": _signature_float(view.center_alt_deg),
-            "roll_deg": _signature_float(view.roll_deg),
-        },
-        "observer": {
-            "observation_time_utc": observation_time.isoformat(),
-            "latitude_deg": _signature_float(observer.latitude_deg),
-            "longitude_deg": _signature_float(observer.longitude_deg),
-            "elevation_m": _signature_float(observer.elevation_m),
-        },
-    }
+    output_width = int(geometry.output_width_px)
+    output_height = int(geometry.output_height_px)
+    safe_block_rows = max(1, int(block_rows))
+    full_x = (geometry.crop_left_px + np.arange(output_width, dtype=np.float64)).astype(np.float64)
+    basis = _icrs_camera_basis_from_view(view, observer)
+    completed_rows = 0
 
-
-def _signature_float(value: object) -> float:
-    return round(float(value), 12)
+    for row_start in range(0, output_height, safe_block_rows):
+        rows = min(safe_block_rows, output_height - row_start)
+        full_y = geometry.crop_top_px + row_start + np.arange(rows, dtype=np.float64)
+        grid_x, grid_y = np.meshgrid(full_x, full_y)
+        vectors, valid = target_image_points_to_icrs_vectors(
+            grid_x.ravel(),
+            grid_y.ravel(),
+            camera=camera,
+            icrs_basis=basis,
+        )
+        vectors[~valid] = np.nan
+        completed_rows += rows
+        if progress_callback is not None:
+            progress_callback(completed_rows)
+        yield {
+            "row_start": int(row_start),
+            "icrs_vectors": vectors.reshape((rows, output_width, 3)).astype(np.float32),
+        }
 
 
-def _encode_map_block(row_start: int, map_x: np.ndarray, map_y: np.ndarray) -> dict[str, object]:
-    rows, columns = map_x.shape
+def iter_target_icrs_map_payload_blocks(payload: dict[str, object]) -> Iterator[dict[str, object]]:
+    """逐块解码取景 JSON 中保存的 A 像素到 ICRS map。"""
+
+    blocks = payload.get("blocks")
+    if not isinstance(blocks, list):
+        raise ValueError("取景 JSON 中的 target_icrs_map.blocks 必须是数组。")
+    for block in blocks:
+        if not isinstance(block, dict):
+            raise ValueError("取景 JSON 中的 target_icrs_map block 必须是对象。")
+        rows = int(block.get("rows", 0) or 0)
+        columns = int(block.get("columns", 0) or 0)
+        row_start = int(block.get("row_start", 0) or 0)
+        if rows <= 0 or columns <= 0:
+            raise ValueError("取景 JSON 中的 target_icrs_map block 尺寸无效。")
+        yield {
+            "row_start": row_start,
+            "icrs_vectors": _decode_target_icrs_vectors(str(block.get("icrs_vectors") or ""), rows, columns),
+        }
+
+
+def _encode_target_icrs_block(row_start: int, icrs_vectors: np.ndarray) -> dict[str, object]:
+    rows, columns, components = icrs_vectors.shape
+    if components != 3:
+        raise ValueError("ICRS map block 必须是 rows x columns x 3。")
     return {
         "row_start": int(row_start),
         "rows": int(rows),
         "columns": int(columns),
-        "map_x": _encode_float32_array(map_x),
-        "map_y": _encode_float32_array(map_y),
+        "icrs_vectors": _encode_float32_array(icrs_vectors),
     }
 
 
 def _encode_float32_array(array: np.ndarray) -> str:
     values = np.ascontiguousarray(array, dtype=np.float32)
-    compressed = zlib.compress(values.tobytes(order="C"), level=MOSAIC_REPROJECTION_MAP_COMPRESSION_LEVEL)
+    compressed = zlib.compress(values.tobytes(order="C"), level=MOSAIC_TARGET_ICRS_MAP_COMPRESSION_LEVEL)
     return base64.b64encode(compressed).decode("ascii")
 
 
-def iter_mosaic_reprojection_map_payload_blocks(payload: dict[str, object]) -> Iterator[dict[str, object]]:
-    """逐块解码 JSON 中的 map_x/map_y。"""
-
-    blocks = payload.get("blocks")
-    if not isinstance(blocks, list):
-        raise ValueError("取景 JSON 中的 reprojection_map.blocks 必须是数组。")
-    for block in blocks:
-        if not isinstance(block, dict):
-            raise ValueError("取景 JSON 中的 reprojection_map block 必须是对象。")
-        rows = int(block.get("rows", 0) or 0)
-        columns = int(block.get("columns", 0) or 0)
-        row_start = int(block.get("row_start", 0) or 0)
-        if rows <= 0 or columns <= 0:
-            raise ValueError("取景 JSON 中的 map block 尺寸无效。")
-        yield {
-            "row_start": row_start,
-            "map_x": _decode_float32_array(str(block.get("map_x") or ""), rows, columns),
-            "map_y": _decode_float32_array(str(block.get("map_y") or ""), rows, columns),
-        }
-
-
-def _decode_float32_array(encoded: str, rows: int, columns: int) -> np.ndarray:
+def _decode_target_icrs_vectors(encoded: str, rows: int, columns: int) -> np.ndarray:
     raw = zlib.decompress(base64.b64decode(encoded.encode("ascii")))
     values = np.frombuffer(raw, dtype=np.float32)
-    expected_size = int(rows) * int(columns)
+    expected_size = int(rows) * int(columns) * 3
     if values.size != expected_size:
-        raise ValueError("取景 JSON 中的 map 数组长度与尺寸不一致。")
-    return values.reshape((int(rows), int(columns))).copy()
+        raise ValueError("取景 JSON 中的 ICRS map 数组长度与尺寸不一致。")
+    return values.reshape((int(rows), int(columns), 3)).copy()
 
 
 def load_mosaic_export_source_image(image_path: str | Path) -> MosaicExportSourceImage:
@@ -429,17 +414,14 @@ def mosaic_reprojection_blocks(
     geometry: MosaicExportGeometry,
     block_rows: int = MOSAIC_EXPORT_DEFAULT_BLOCK_ROWS,
     progress_callback: Callable[[int], None] | None = None,
-    map_payload: dict[str, object] | None = None,
+    target_icrs_map_payload: dict[str, object] | None = None,
 ) -> Iterator[np.ndarray]:
     """逐块生成裁剪后目标图像的 RGB uint16 像素。"""
 
     if cv2 is None:
         raise RuntimeError("当前环境缺少 OpenCV，无法执行重投影导出。")
     source = np.ascontiguousarray(source_rgb_u16, dtype=np.uint16)
-    map_blocks: Iterator[dict[str, object]]
-    if map_payload is not None:
-        map_blocks = iter_mosaic_reprojection_map_payload_blocks(map_payload)
-    else:
+    if target_icrs_map_payload is None:
         map_blocks = mosaic_reprojection_map_blocks(
             source_model=source_model,
             camera=camera,
@@ -448,6 +430,11 @@ def mosaic_reprojection_blocks(
             geometry=geometry,
             block_rows=block_rows,
             progress_callback=None,
+        )
+    else:
+        map_blocks = _mosaic_reprojection_map_blocks_from_target_icrs_map(
+            source_model=source_model,
+            target_icrs_map_payload=target_icrs_map_payload,
         )
     completed_rows = 0
 
@@ -463,6 +450,31 @@ def mosaic_reprojection_blocks(
         if progress_callback is not None:
             progress_callback(completed_rows)
         yield block
+
+
+def _mosaic_reprojection_map_blocks_from_target_icrs_map(
+    *,
+    source_model: object,
+    target_icrs_map_payload: dict[str, object],
+) -> Iterator[dict[str, object]]:
+    """把已导入的 A 像素到 ICRS map 转换成当前源图 B 的 remap 坐标。"""
+
+    for block in iter_target_icrs_map_payload_blocks(target_icrs_map_payload):
+        icrs_vectors = np.asarray(block["icrs_vectors"], dtype=np.float64)
+        rows, columns, components = icrs_vectors.shape
+        if components != 3:
+            raise ValueError("取景 JSON 中的 ICRS map block 形状无效。")
+        map_x, map_y = _source_pixel_map_from_icrs_vectors(
+            source_model=source_model,
+            icrs_vectors=icrs_vectors.reshape((-1, 3)),
+            rows=rows,
+            columns=columns,
+        )
+        yield {
+            "row_start": int(block["row_start"]),
+            "map_x": map_x,
+            "map_y": map_y,
+        }
 
 
 def mosaic_reprojection_map_blocks(
@@ -523,9 +535,28 @@ def _build_mosaic_reprojection_map_block(
         camera=camera,
         icrs_basis=icrs_basis,
     )
-    map_x = np.full(x_px.shape, -1.0, dtype=np.float32)
-    map_y = np.full(y_px.shape, -1.0, dtype=np.float32)
-    valid = valid_projection & np.all(np.isfinite(icrs_vectors), axis=1)
+    icrs_vectors[~valid_projection] = np.nan
+    return _source_pixel_map_from_icrs_vectors(
+        source_model=source_model,
+        icrs_vectors=icrs_vectors,
+        rows=rows,
+        columns=columns,
+    )
+
+
+def _source_pixel_map_from_icrs_vectors(
+    *,
+    source_model: object,
+    icrs_vectors: np.ndarray,
+    rows: int,
+    columns: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """把 ICRS 单位向量投到源图 B 像素，生成 OpenCV remap 坐标。"""
+
+    vector_count = int(np.asarray(icrs_vectors).shape[0])
+    map_x = np.full(vector_count, -1.0, dtype=np.float32)
+    map_y = np.full(vector_count, -1.0, dtype=np.float32)
+    valid = np.all(np.isfinite(icrs_vectors), axis=1)
     if np.any(valid):
         source_pixels = _source_pixels_from_icrs_vectors(source_model, icrs_vectors[valid])
         mapped_valid = (
@@ -717,7 +748,7 @@ def write_mosaic_reprojection_tiff(
     framing_payload: dict[str, object] | None = None,
     block_rows: int = MOSAIC_EXPORT_DEFAULT_BLOCK_ROWS,
     progress_callback: Callable[[int], None] | None = None,
-    map_payload: dict[str, object] | None = None,
+    target_icrs_map_payload: dict[str, object] | None = None,
 ) -> None:
     """把重投影结果写成无压缩 16-bit RGB TIFF。"""
 
@@ -725,14 +756,11 @@ def write_mosaic_reprojection_tiff(
         raise RuntimeError("当前环境缺少 tifffile，无法写入 16-bit TIFF。")
     if geometry.output_width_px <= 0 or geometry.output_height_px <= 0:
         raise ValueError("裁剪后的导出尺寸无效。")
-    if map_payload is not None and not mosaic_reprojection_map_payload_matches(
-        map_payload,
+    if target_icrs_map_payload is not None and not target_icrs_map_payload_matches(
+        target_icrs_map_payload,
         geometry=geometry,
-        camera=camera,
-        view=view,
-        observer=observer,
     ):
-        raise ValueError("取景 JSON 中的 map_x/map_y 与当前导出取景不匹配。")
+        raise ValueError("取景 JSON 中的 A 像素到 ICRS map 与当前输出几何不匹配。")
     description = _mosaic_export_description(framing_payload)
     blocks = mosaic_reprojection_blocks(
         source_model=source_model,
@@ -743,7 +771,7 @@ def write_mosaic_reprojection_tiff(
         geometry=geometry,
         block_rows=block_rows,
         progress_callback=progress_callback,
-        map_payload=map_payload,
+        target_icrs_map_payload=target_icrs_map_payload,
     )
     tifffile.imwrite(
         str(output_path),

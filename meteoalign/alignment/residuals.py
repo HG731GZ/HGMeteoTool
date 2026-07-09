@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .constants import RESIDUAL_CORRECTION_TPS
-from .interpolation import _evaluate_thin_plate_spline, fit_anchor_interpolation
+from .interpolation import _evaluate_thin_plate_spline_2d, fit_anchor_interpolation
 from .validation import _array_is_finite, _fit_point_weights, _residual_anchor_mask
 
 
@@ -108,11 +108,13 @@ def _apply_residual_correction(
     )
     if residual_kind == RESIDUAL_CORRECTION_TPS:
         with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
-            corrected = points + np.column_stack(
-                (
-                    _evaluate_thin_plate_spline(normalized, anchor_points, tps_weights_x, tps_affine_x),
-                    _evaluate_thin_plate_spline(normalized, anchor_points, tps_weights_y, tps_affine_y),
-                )
+            corrected = points + _evaluate_thin_plate_spline_2d(
+                normalized,
+                anchor_points,
+                tps_weights_x,
+                tps_weights_y,
+                tps_affine_x,
+                tps_affine_y,
             )
     else:
         raise ValueError(f"不支持的残差插值类型：{residual_kind}")
