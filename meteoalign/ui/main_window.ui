@@ -2401,6 +2401,16 @@
                 </layout>
                </item>
                <item>
+                <widget class="QCheckBox" name="checkBoxMosaicExactRemapRepair">
+                 <property name="toolTip">
+                  <string>鱼眼亮星出现小黑点时可启用；会额外精确反算缺失和低权重像素，导出更慢。</string>
+                 </property>
+                 <property name="text">
+                  <string>精确修复亮星小黑点（较慢）</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
                 <widget class="QPushButton" name="pushButtonExportMosaicProjectedImage">
                  <property name="text">
                   <string>导出重投影图</string>

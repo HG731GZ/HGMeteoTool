@@ -149,6 +149,7 @@ def test_mosaic_ui_config_reads_texture_and_grid_defaults(tmp_path: Path) -> Non
                 "mosaic_grid_precision_default": 30,
                 "mosaic_render_fps_limit": 75,
                 "mosaic_export_block_rows": 512,
+                "mosaic_map_tile_size_px": 4,
             }
         ),
         encoding="utf-8",
@@ -161,6 +162,7 @@ def test_mosaic_ui_config_reads_texture_and_grid_defaults(tmp_path: Path) -> Non
     assert config.mosaic_grid_precision_default == 30
     assert config.mosaic_render_fps_limit == 75
     assert config.mosaic_export_block_rows == 512
+    assert config.mosaic_map_tile_size_px == 4
 
 
 def test_mosaic_render_fps_limit_is_clamped() -> None:
@@ -168,6 +170,17 @@ def test_mosaic_render_fps_limit_is_clamped() -> None:
     window.ui_config = SimpleNamespace(mosaic_render_fps_limit=500)
 
     assert MosaicProjectionMixin._mosaic_render_fps_limit(window) == 240
+
+
+def test_mosaic_exact_remap_repair_defaults_to_off() -> None:
+    window = MosaicProjectionMixin.__new__(MosaicProjectionMixin)
+    window.ui = SimpleNamespace()
+
+    assert not MosaicProjectionMixin._mosaic_exact_remap_repair_enabled(window)
+
+    window.ui = SimpleNamespace(checkBoxMosaicExactRemapRepair=_CheckBox(True))
+
+    assert MosaicProjectionMixin._mosaic_exact_remap_repair_enabled(window)
 
 
 def test_mosaic_texture_long_side_uses_lower_limit_and_interaction_half() -> None:
@@ -314,7 +327,7 @@ def test_mosaic_framing_payload_does_not_embed_source_model_or_map() -> None:
     assert payload["output"]["boundary_width_px"] == 5835
 
 
-def test_mosaic_imported_framing_ready_requires_matching_target_icrs_map() -> None:
+def test_mosaic_imported_framing_ready_requires_matching_target_icrs_to_pixel_transform() -> None:
     geometry = MosaicExportGeometry(
         boundary_width_px=100,
         boundary_height_px=80,
@@ -323,22 +336,22 @@ def test_mosaic_imported_framing_ready_requires_matching_target_icrs_map() -> No
         output_width_px=60,
         output_height_px=40,
     )
-    target_map_payload = {
+    target_transform_payload = {
         "version": 1,
-        "scope": "cropped_output",
-        "vector_frame": "ICRS",
+        "type": "icrs_to_cropped_output_pixel",
         "boundary_width_px": 100,
         "boundary_height_px": 80,
         "crop_left_px": 10,
         "crop_top_px": 8,
         "output_width_px": 60,
         "output_height_px": 40,
-        "blocks": [],
+        "camera": {},
+        "icrs_camera_basis": {},
     }
     window = MosaicProjectionMixin.__new__(MosaicProjectionMixin)
     window.ui = SimpleNamespace()
 
-    MosaicProjectionMixin._set_mosaic_imported_framing(window, Path("target_framing.json"), target_map_payload)
+    MosaicProjectionMixin._set_mosaic_imported_framing(window, Path("target_framing.json"), target_transform_payload)
 
     assert MosaicProjectionMixin._mosaic_imported_framing_ready(window, geometry)
     assert not MosaicProjectionMixin._mosaic_imported_framing_ready(
@@ -362,24 +375,24 @@ def test_mosaic_export_button_requires_source_model_and_imported_framing() -> No
     window = MosaicProjectionMixin.__new__(MosaicProjectionMixin)
     window.ui = SimpleNamespace(pushButtonExportMosaicProjectedImage=_Button())
     window._mosaic_source_model = None
-    target_map_payload = {
+    target_transform_payload = {
         "version": 1,
-        "scope": "cropped_output",
-        "vector_frame": "ICRS",
+        "type": "icrs_to_cropped_output_pixel",
         "boundary_width_px": 100,
         "boundary_height_px": 80,
         "crop_left_px": 0,
         "crop_top_px": 0,
         "output_width_px": 100,
         "output_height_px": 80,
-        "blocks": [],
+        "camera": {},
+        "icrs_camera_basis": {},
     }
 
     MosaicProjectionMixin._update_mosaic_export_button_state(window)
 
     assert not window.ui.pushButtonExportMosaicProjectedImage.isEnabled()
 
-    MosaicProjectionMixin._set_mosaic_imported_framing(window, Path("target_framing.json"), target_map_payload)
+    MosaicProjectionMixin._set_mosaic_imported_framing(window, Path("target_framing.json"), target_transform_payload)
 
     assert not window.ui.pushButtonExportMosaicProjectedImage.isEnabled()
 

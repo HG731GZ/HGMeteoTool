@@ -38,12 +38,12 @@ from .mosaic_grid_service import (
 )
 from .mosaic_export import (
     MOSAIC_EXPORT_TIFF_FILTER,
-    build_target_icrs_map_payload,
+    build_target_icrs_to_pixel_transform_payload,
     load_mosaic_export_source_image,
     mosaic_export_available,
     mosaic_export_block_rows,
     mosaic_export_cropped_geometry,
-    target_icrs_map_payload_matches,
+    target_icrs_to_pixel_transform_payload_matches,
     write_mosaic_reprojection_tiff,
 )
 from .mosaic_framing import (
@@ -150,7 +150,7 @@ class MosaicProjectionMixin:
         self._mosaic_framing_observer: ObserverSettings | None = None
         self._mosaic_framing_utc_offset_hours = 0.0
         self._mosaic_framing_json_path: Path | None = None
-        self._mosaic_target_icrs_map_payload: dict[str, object] | None = None
+        self._mosaic_target_icrs_to_pixel_payload: dict[str, object] | None = None
         self._init_mosaic_projection_defaults()
 
     def _init_mosaic_projection_defaults(self) -> None:
@@ -328,6 +328,19 @@ class MosaicProjectionMixin:
     def _mosaic_export_block_rows(self) -> int:
         return mosaic_export_block_rows(getattr(self, "ui_config", object()))
 
+    def _mosaic_map_tile_size_px(self) -> int:
+        configured = getattr(self.ui_config, "mosaic_map_tile_size_px", 4)
+        try:
+            value = int(configured)
+        except (TypeError, ValueError):
+            value = 4
+        return max(1, min(512, value))
+
+    def _mosaic_exact_remap_repair_enabled(self) -> bool:
+        if not hasattr(self.ui, "checkBoxMosaicExactRemapRepair"):
+            return False
+        return bool(self.ui.checkBoxMosaicExactRemapRepair.isChecked())
+
     def _set_mosaic_output_resolution(
         self,
         width_px: int,
@@ -358,28 +371,28 @@ class MosaicProjectionMixin:
 
     def _clear_mosaic_imported_framing(self) -> None:
         self._mosaic_framing_json_path = None
-        self._mosaic_target_icrs_map_payload = None
+        self._mosaic_target_icrs_to_pixel_payload = None
         self._update_mosaic_framing_label()
         self._update_mosaic_export_button_state()
 
     def _set_mosaic_imported_framing(
         self,
         json_path: Path,
-        target_icrs_map_payload: dict[str, object],
+        target_icrs_to_pixel_payload: dict[str, object],
     ) -> None:
         self._mosaic_framing_json_path = json_path
-        self._mosaic_target_icrs_map_payload = target_icrs_map_payload
+        self._mosaic_target_icrs_to_pixel_payload = target_icrs_to_pixel_payload
         self._update_mosaic_framing_label()
         self._update_mosaic_export_button_state()
 
     def _mosaic_imported_framing_ready(self, geometry=None) -> bool:  # type: ignore[no-untyped-def]
-        map_payload = getattr(self, "_mosaic_target_icrs_map_payload", None)
+        transform_payload = getattr(self, "_mosaic_target_icrs_to_pixel_payload", None)
         json_path = getattr(self, "_mosaic_framing_json_path", None)
-        if map_payload is None or json_path is None:
+        if transform_payload is None or json_path is None:
             return False
         if geometry is None:
             return True
-        return target_icrs_map_payload_matches(map_payload, geometry=geometry)
+        return target_icrs_to_pixel_transform_payload_matches(transform_payload, geometry=geometry)
 
     def _update_mosaic_framing_label(self) -> None:
         if not hasattr(self.ui, "labelMosaicFramingPath"):
@@ -589,43 +602,26 @@ class MosaicProjectionMixin:
             crop=output_payload.get("crop") if isinstance(output_payload.get("crop"), dict) else {},
         )
 
-    def _build_mosaic_target_icrs_map_for_geometry(
+    def _build_mosaic_target_icrs_to_pixel_transform_for_geometry(
         self,
         geometry,
-        *,
-        title: str,
     ) -> dict[str, object]:  # type: ignore[no-untyped-def]
         observer = self._mosaic_observer_from_controls()
         if observer is None:
-            raise ValueError("生成 A 像素到 ICRS map 需要有效拍摄信息。")
-
-        progress = QProgressDialog("正在生成 A 像素到 ICRS map...", "取消", 0, int(geometry.output_height_px), self)
-        progress.setWindowTitle(title)
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.setValue(0)
-
-        def update_progress(rows_done: int) -> None:
-            progress.setValue(int(rows_done))
-            QApplication.processEvents()
-            if progress.wasCanceled():
-                raise InterruptedError("用户取消了 A 像素到 ICRS map 生成。")
+            raise ValueError("生成 ICRS 到 A 像素变换需要有效拍摄信息。")
 
         try:
             QApplication.setOverrideCursor(Qt.WaitCursor)
             camera = self._mosaic_camera_for_render(geometry.boundary_width_px, geometry.boundary_height_px)
             view = self._mosaic_view_settings(camera)
-            return build_target_icrs_map_payload(
+            return build_target_icrs_to_pixel_transform_payload(
                 camera=camera,
                 view=view,
                 observer=observer,
                 geometry=geometry,
-                block_rows=self._mosaic_export_block_rows(),
-                progress_callback=update_progress,
             )
         finally:
             QApplication.restoreOverrideCursor()
-            progress.close()
 
     def export_mosaic_framing_json(self) -> None:
         if self._mosaic_source_model is not None:
@@ -665,9 +661,8 @@ class MosaicProjectionMixin:
             geometry = self._mosaic_geometry_from_framing_payload(payload)
             if geometry.output_width_px <= 0 or geometry.output_height_px <= 0:
                 raise ValueError("裁剪后的输出尺寸无效，请减小四边裁剪量。")
-            payload["target_icrs_map"] = self._build_mosaic_target_icrs_map_for_geometry(
-                geometry,
-                title="导出自由投影取景",
+            payload["target_icrs_to_pixel_transform"] = self._build_mosaic_target_icrs_to_pixel_transform_for_geometry(
+                geometry
             )
             json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         except InterruptedError as exc:
@@ -682,9 +677,9 @@ class MosaicProjectionMixin:
             self,
             "已导出取景",
             (
-                "取景 JSON 已写入 A 像素到 ICRS 的完整变换。\n\n"
+                "取景 JSON 已写入 ICRS 到 A 像素的完整变换。\n\n"
                 "后续导出重投影图前，请先导入这个取景 JSON，"
-                "以确认当前使用的 A 像素到 ICRS 变换。"
+                "以确认当前使用的 ICRS 到 A 像素变换。"
             ),
         )
 
@@ -796,7 +791,9 @@ class MosaicProjectionMixin:
                 framing_payload=framing_payload,
                 block_rows=self._mosaic_export_block_rows(),
                 progress_callback=update_progress,
-                target_icrs_map_payload=self._mosaic_target_icrs_map_payload,
+                target_icrs_to_pixel_payload=self._mosaic_target_icrs_to_pixel_payload,
+                map_tile_size_px=self._mosaic_map_tile_size_px(),
+                exact_remap_repair=self._mosaic_exact_remap_repair_enabled(),
             )
             temp_path.replace(output_path)
         except InterruptedError as exc:
@@ -844,13 +841,13 @@ class MosaicProjectionMixin:
             if not isinstance(payload, dict):
                 raise ValueError("取景 JSON 根对象必须是对象。")
             geometry = self._mosaic_geometry_from_framing_payload(payload)
-            target_icrs_map_payload = payload.get("target_icrs_map")
-            if not isinstance(target_icrs_map_payload, dict):
-                raise ValueError("取景 JSON 缺少 target_icrs_map，请重新导出取景。")
-            if not target_icrs_map_payload_matches(target_icrs_map_payload, geometry=geometry):
-                raise ValueError("取景 JSON 中的 A 像素到 ICRS map 与输出几何不匹配。")
+            target_transform_payload = payload.get("target_icrs_to_pixel_transform")
+            if not isinstance(target_transform_payload, dict):
+                raise ValueError("取景 JSON 缺少 target_icrs_to_pixel_transform，请重新导出取景。")
+            if not target_icrs_to_pixel_transform_payload_matches(target_transform_payload, geometry=geometry):
+                raise ValueError("取景 JSON 中的 ICRS 到 A 像素变换与输出几何不匹配。")
             self._apply_mosaic_framing_payload(payload)
-            self._set_mosaic_imported_framing(json_path, target_icrs_map_payload)
+            self._set_mosaic_imported_framing(json_path, target_transform_payload)
         except Exception as exc:  # noqa: BLE001 - 导入入口需要把 JSON 错误直接反馈到界面。
             QMessageBox.critical(self, "导入取景失败", str(exc))
             self.ui.statusbar.showMessage(f"导入取景失败: {exc}")
