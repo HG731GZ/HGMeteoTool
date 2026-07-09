@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,6 +37,13 @@ class StarMapUiConfig:
 
 
 def default_config_path() -> Path:
+    if getattr(sys, "frozen", False):
+        executable_path = Path(sys.executable).resolve()
+        if sys.platform == "darwin":
+            for parent in executable_path.parents:
+                if parent.suffix == ".app":
+                    return parent.parent / "preference.json"
+        return executable_path.parent / "preference.json"
     return Path(__file__).resolve().parents[1] / "preference.json"
 
 
