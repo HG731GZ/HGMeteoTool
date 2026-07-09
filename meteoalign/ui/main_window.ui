@@ -2620,6 +2620,220 @@
 	    </item>
    </layout>
       </widget>
+      <widget class="QWidget" name="tabMosaicBatch">
+       <attribute name="title">
+        <string>全景图批处理</string>
+       </attribute>
+       <layout class="QHBoxLayout" name="horizontalLayoutMosaicBatch">
+        <item>
+         <widget class="QScrollArea" name="scrollAreaMosaicBatchControls">
+          <property name="minimumSize">
+           <size>
+            <width>350</width>
+            <height>0</height>
+           </size>
+          </property>
+          <property name="maximumSize">
+           <size>
+            <width>390</width>
+            <height>16777215</height>
+           </size>
+          </property>
+          <property name="widgetResizable">
+           <bool>true</bool>
+          </property>
+          <property name="horizontalScrollBarPolicy">
+           <enum>Qt::ScrollBarAlwaysOff</enum>
+          </property>
+          <widget class="QWidget" name="widgetMosaicBatchSidePanel">
+           <property name="geometry">
+            <rect>
+             <x>0</x>
+             <y>0</y>
+             <width>360</width>
+             <height>640</height>
+            </rect>
+           </property>
+           <layout class="QVBoxLayout" name="verticalLayoutMosaicBatchSidePanel">
+            <item>
+             <widget class="QGroupBox" name="groupBoxMosaicBatchSettings">
+              <property name="title">
+               <string>批处理设置</string>
+              </property>
+              <layout class="QVBoxLayout" name="verticalLayoutMosaicBatchSettings">
+               <item>
+                <layout class="QFormLayout" name="formLayoutMosaicBatchSettings">
+                 <item row="0" column="0">
+                  <widget class="QLabel" name="labelMosaicBatchMode">
+                   <property name="text">
+                    <string>处理模式</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="0" column="1">
+                  <widget class="QComboBox" name="comboBoxMosaicBatchMode">
+                   <item>
+                    <property name="text">
+                     <string>天球模式</string>
+                    </property>
+                   </item>
+                   <item>
+                    <property name="text">
+                     <string>底图模式</string>
+                    </property>
+                   </item>
+                  </widget>
+                 </item>
+                 <item row="1" column="0">
+                  <widget class="QLabel" name="labelMosaicBatchFramingPathTitle">
+                   <property name="text">
+                    <string>取景</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="1" column="1">
+                  <widget class="QLabel" name="labelMosaicBatchFramingPath">
+                   <property name="sizePolicy">
+                    <sizepolicy hsizetype="Ignored" vsizetype="Preferred">
+                     <horstretch>0</horstretch>
+                     <verstretch>0</verstretch>
+                    </sizepolicy>
+                   </property>
+                   <property name="text">
+                    <string>未导入</string>
+                   </property>
+                   <property name="wordWrap">
+                    <bool>false</bool>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="2" column="0">
+                  <widget class="QLabel" name="labelMosaicBatchImageCountTitle">
+                   <property name="text">
+                    <string>图像</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="2" column="1">
+                  <widget class="QLabel" name="labelMosaicBatchImageCount">
+                   <property name="text">
+                    <string>未导入</string>
+                   </property>
+                  </widget>
+                 </item>
+                </layout>
+               </item>
+               <item>
+                <layout class="QHBoxLayout" name="horizontalLayoutMosaicBatchImportButtons">
+                 <item>
+                  <widget class="QPushButton" name="pushButtonImportMosaicBatchFramingJson">
+                   <property name="text">
+                    <string>导入取景JSON</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QPushButton" name="pushButtonImportMosaicBatchImageJson">
+                   <property name="text">
+                    <string>导入图像JSON</string>
+                   </property>
+                  </widget>
+                 </item>
+                </layout>
+               </item>
+               <item>
+                <widget class="QPushButton" name="pushButtonClearMosaicBatchImports">
+                 <property name="text">
+                  <string>清除导入</string>
+                 </property>
+                </widget>
+               </item>
+              </layout>
+             </widget>
+            </item>
+            <item>
+             <widget class="QGroupBox" name="groupBoxMosaicBatchImages">
+              <property name="title">
+               <string>单张图像</string>
+              </property>
+              <layout class="QVBoxLayout" name="verticalLayoutMosaicBatchImages">
+               <item>
+                <widget class="QTableWidget" name="tableWidgetMosaicBatchImages">
+                 <property name="minimumSize">
+                  <size>
+                   <width>0</width>
+                   <height>240</height>
+                  </size>
+                 </property>
+                 <property name="selectionBehavior">
+                  <enum>QAbstractItemView::SelectRows</enum>
+                 </property>
+                 <property name="showGrid">
+                  <bool>true</bool>
+                 </property>
+                 <property name="columnCount">
+                  <number>2</number>
+                 </property>
+                 <column>
+                  <property name="text">
+                   <string>文件名</string>
+                  </property>
+                 </column>
+                 <column>
+                  <property name="text">
+                   <string>处理状态</string>
+                  </property>
+                 </column>
+                </widget>
+               </item>
+              </layout>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="pushButtonStartMosaicBatch">
+              <property name="text">
+               <string>开始批处理</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <spacer name="verticalSpacerMosaicBatchSidePanel">
+              <property name="orientation">
+               <enum>Qt::Vertical</enum>
+              </property>
+              <property name="sizeHint" stdset="0">
+               <size>
+                <width>20</width>
+                <height>40</height>
+               </size>
+              </property>
+             </spacer>
+            </item>
+           </layout>
+          </widget>
+         </widget>
+        </item>
+        <item>
+         <widget class="QWidget" name="widgetMosaicBatchBlank">
+          <layout class="QVBoxLayout" name="verticalLayoutMosaicBatchBlank">
+           <item>
+            <spacer name="verticalSpacerMosaicBatchBlank">
+             <property name="orientation">
+              <enum>Qt::Vertical</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>20</width>
+               <height>40</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+          </layout>
+         </widget>
+        </item>
+       </layout>
+      </widget>
      </widget>
     </item>
    </layout>

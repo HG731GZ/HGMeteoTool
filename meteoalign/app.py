@@ -101,6 +101,7 @@ from .app_auto_match import AutoMatchMixin
 from .app_rendering import RenderingMixin
 from .app_view_controls import ViewControlsMixin
 from .app_mosaic import MosaicProjectionMixin
+from .app_mosaic_batch import MosaicBatchMixin
 from .app_utils import (
     _session_image_candidate,
     _resolve_star_pair_session_real_image_path,
@@ -131,6 +132,7 @@ class MainWindow(
     ImageMixin,
     AutoMatchMixin,
     MosaicProjectionMixin,
+    MosaicBatchMixin,
     RenderingMixin,
     ViewControlsMixin,
 ):
@@ -196,6 +198,7 @@ class MainWindow(
             self.ui.imageSequenceView.viewport().installEventFilter(self)
 
         self._init_mosaic_projection_page()
+        self._init_mosaic_batch_page()
 
         self.render_timer = QTimer(self)
         self.render_timer.setSingleShot(True)
@@ -277,6 +280,7 @@ class MainWindow(
         self._init_defaults()
         self._connect_inputs()
         self._connect_mosaic_projection_inputs()
+        self._connect_mosaic_batch_inputs()
         self._configure_star_pair_table_columns()
         if hasattr(self, "_configure_image_sequence_table_columns"):
             self._configure_image_sequence_table_columns()
