@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 from meteoalign.config import default_config_path
+from meteoalign.runtime_paths import runtime_catalog_dir
 
 
 def test_default_config_path_uses_source_project_root() -> None:
@@ -30,3 +31,48 @@ def test_default_config_path_uses_macos_app_sibling(monkeypatch) -> None:  # typ
     )
 
     assert default_config_path() == Path("/Applications") / "preference.json"
+
+
+def test_runtime_catalog_dir_prefers_frozen_executable_sibling_catalog(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    app_dir = tmp_path / "release" / "HoshinoPanoAssistant"
+    catalog_dir = app_dir / "catalog"
+    catalog_dir.mkdir(parents=True)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sys, "executable", str(app_dir / "HoshinoPanoAssistant.exe"))
+    monkeypatch.delattr(sys, "_MEIPASS", raising=False)
+
+    assert runtime_catalog_dir() == catalog_dir
+
+
+def test_runtime_catalog_dir_uses_pyinstaller_meipass_catalog_when_external_missing(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    app_dir = tmp_path / "release" / "HoshinoPanoAssistant"
+    bundled_dir = tmp_path / "bundle" / "catalog"
+    bundled_dir.mkdir(parents=True)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sys, "executable", str(app_dir / "HoshinoPanoAssistant.exe"))
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path / "bundle"), raising=False)
+
+    assert runtime_catalog_dir() == bundled_dir
+
+
+def test_runtime_catalog_dir_uses_macos_resources_catalog_when_external_missing(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    app_bundle = tmp_path / "dist" / "HoshinoPanoAssistant.app"
+    catalog_dir = app_bundle / "Contents" / "Resources" / "catalog"
+    catalog_dir.mkdir(parents=True)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(sys, "executable", str(app_bundle / "Contents" / "MacOS" / "HoshinoPanoAssistant"))
+    monkeypatch.delattr(sys, "_MEIPASS", raising=False)
+
+    assert runtime_catalog_dir() == catalog_dir

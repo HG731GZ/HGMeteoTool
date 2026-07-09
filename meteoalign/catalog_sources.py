@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from .catalog import default_catalog_dir
+
 
 @dataclass(frozen=True)
 class CatalogFile:
@@ -75,10 +77,6 @@ CATALOG_FILES = (
         minimum_size=30_000_000,
     ),
 )
-
-
-def default_catalog_dir() -> Path:
-    return Path(__file__).resolve().parents[1] / "catalog"
 
 
 def file_is_complete(path: Path, expected_size: int | None) -> bool:

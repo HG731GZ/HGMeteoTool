@@ -9,6 +9,8 @@ from pathlib import Path
 
 import numpy as np
 
+from .runtime_paths import runtime_catalog_dir, source_project_root
+
 
 @dataclass(frozen=True)
 class StarCatalog:
@@ -41,23 +43,27 @@ class StarCatalog:
 
 
 def project_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+    return source_project_root()
+
+
+def default_catalog_dir() -> Path:
+    return runtime_catalog_dir()
 
 
 def default_yale_bsc_path() -> Path:
-    return project_root() / "catalog" / "yale_bsc" / "catalog.gz"
+    return default_catalog_dir() / "yale_bsc" / "catalog.gz"
 
 
 def default_iau_csn_path() -> Path:
-    return project_root() / "catalog" / "iau_csn" / "modern_iau_star_names.html"
+    return default_catalog_dir() / "iau_csn" / "modern_iau_star_names.html"
 
 
 def default_hipparcos_path() -> Path:
-    return project_root() / "catalog" / "hipparcos_i239" / "hip_main.dat"
+    return default_catalog_dir() / "hipparcos_i239" / "hip_main.dat"
 
 
 def default_chinese_star_names_path() -> Path:
-    return project_root() / "catalog" / "star_names.zh_CN.fab"
+    return default_catalog_dir() / "star_names.zh_CN.fab"
 
 
 def _parse_int(text: str) -> int | None:

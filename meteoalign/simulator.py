@@ -29,7 +29,7 @@ from astropy.time import Time
 from astropy.utils import iers
 from skyfield.api import Loader, load_file, wgs84
 
-from .catalog import StarCatalog, project_root
+from .catalog import StarCatalog, default_catalog_dir
 from .milky_way import MilkyWayCatalog
 
 
@@ -341,7 +341,7 @@ def _ensure_aware_utc(value: datetime) -> datetime:
 
 
 def default_solar_system_ephemeris_path() -> Path:
-    return project_root() / "catalog" / "de440s.bsp"
+    return default_catalog_dir() / "de440s.bsp"
 
 
 @lru_cache(maxsize=1)
