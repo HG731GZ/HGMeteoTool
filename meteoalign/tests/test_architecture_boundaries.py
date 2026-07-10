@@ -8,6 +8,7 @@ from pathlib import Path
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+APPLICATION_ROOT = PACKAGE_ROOT / "application"
 CORE_PACKAGE_NAMES = (
     "projection",
     "astro",
@@ -15,8 +16,8 @@ CORE_PACKAGE_NAMES = (
     "astrometry",
     "calibration",
 )
-FORBIDDEN_CORE_IMPORT_PREFIXES = ("PyQt5", "meteoalign.app_")
-# 当前 app_* 模块共有 39 条横向 import；后续重构只能减少，不能增加。
+FORBIDDEN_CORE_IMPORT_PREFIXES = ("PyQt5", "meteoalign.application.app_")
+# 当前 application/app_* 模块共有 39 条横向 import；后续重构只能减少，不能增加。
 APP_CROSS_IMPORT_BASELINE = 39
 
 
@@ -122,18 +123,18 @@ def test_numerical_core_packages_do_not_import_qt_or_app_modules() -> None:
     )
 
 
-def test_app_module_cross_imports_do_not_exceed_baseline() -> None:
-    """app_* 横向依赖暂以现状为上限，后续拆分只能使其下降。"""
+def test_application_module_cross_imports_do_not_exceed_baseline() -> None:
+    """application/app_* 横向依赖暂以现状为上限，后续拆分只能使其下降。"""
 
     cross_imports = [
         occurrence
-        for path in sorted(PACKAGE_ROOT.glob("app_*.py"))
+        for path in sorted(APPLICATION_ROOT.glob("app_*.py"))
         for occurrence in _import_occurrences(path)
-        if occurrence.target_module.startswith("meteoalign.app_")
+        if occurrence.target_module.startswith("meteoalign.application.app_")
     ]
 
     assert len(cross_imports) <= APP_CROSS_IMPORT_BASELINE, (
-        f"app_* 横向 import 从基线 {APP_CROSS_IMPORT_BASELINE} 增加到 {len(cross_imports)}：\n"
+        f"application/app_* 横向 import 从基线 {APP_CROSS_IMPORT_BASELINE} 增加到 {len(cross_imports)}：\n"
         + "\n".join(occurrence.format_location() for occurrence in cross_imports)
     )
 
@@ -141,13 +142,13 @@ def test_app_module_cross_imports_do_not_exceed_baseline() -> None:
 def test_sequence_matching_does_not_import_other_app_modules() -> None:
     """序列匹配逻辑不得再向其他 app_* Mixin 或 UI 常量模块取依赖。"""
 
-    path = PACKAGE_ROOT / "app_sequence_matching.py"
+    path = APPLICATION_ROOT / "app_sequence_matching.py"
     violations = [
         occurrence
         for occurrence in _import_occurrences(path)
-        if occurrence.target_module.startswith("meteoalign.app_")
+        if occurrence.target_module.startswith("meteoalign.application.app_")
     ]
 
-    assert not violations, "序列匹配模块存在 app_* 依赖：\n" + "\n".join(
+    assert not violations, "序列匹配模块存在 application/app_* 依赖：\n" + "\n".join(
         violation.format_location() for violation in violations
     )

@@ -7,8 +7,8 @@ from types import SimpleNamespace
 import numpy as np
 
 from meteoalign.alignment.constants import SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT
-from meteoalign.app_reference_json_io import ReferenceJsonIOMixin
-from meteoalign.app_mosaic import MosaicProjectionMixin, MosaicSourceItem
+from meteoalign.application.app_reference_json_io import ReferenceJsonIOMixin
+from meteoalign.application.app_mosaic import MosaicProjectionMixin, MosaicSourceItem
 from meteoalign.config import load_star_map_ui_config
 from meteoalign.mosaic.render_coordinator import MosaicRenderCoordinator
 from meteoalign.mosaic_framing import MOSAIC_FRAMING_SCHEMA

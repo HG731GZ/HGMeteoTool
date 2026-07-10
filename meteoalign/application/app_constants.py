@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PyQt5.QtCore import Qt
 
-from .alignment.constants import (
+from ..alignment.constants import (
     SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION,
     SKY_MATCHING_MODEL_CYLINDRICAL_EQUIDISTANT,
     SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT,
@@ -11,7 +11,7 @@ from .alignment.constants import (
     SKY_MATCHING_MODEL_POLYNOMIAL,
     SKY_MATCHING_MODEL_RECTILINEAR,
 )
-from .matching_constants import (
+from ..matching_constants import (
     AUTO_MATCH_ANNOTATION_LIMIT,
     AUTO_MATCH_CONSTRAINT_ANCHOR,
     AUTO_MATCH_CONSTRAINT_MODES,
@@ -26,7 +26,7 @@ from .matching_constants import (
     MIN_PSF_RADIUS_PX,
     REFERENCE_STAR_PICK_SCREEN_RADIUS_PX,
 )
-from .simulator import FISHEYE_EQUISOLID, RECTILINEAR_LENS_MODEL
+from ..simulator import FISHEYE_EQUISOLID, RECTILINEAR_LENS_MODEL
 
 # ---------------------------------------------------------------------------
 # 镜头与配准模型选项

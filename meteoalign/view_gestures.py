@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from PyQt5.QtCore import QEvent, Qt
 
-from .app_constants import (
+from .application.app_constants import (
     TOUCHPAD_ZOOM_MAX_FACTOR,
     TOUCHPAD_ZOOM_MIN_FACTOR,
     TOUCHPAD_ZOOM_SENSITIVITY,

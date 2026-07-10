@@ -21,10 +21,10 @@ from .app_constants import (
 )
 from .app_utils import _relative_image_path_for_session, _resolve_star_pair_session_real_image_path
 from .app_workers import StarPairSessionImportWorker
-from .catalog import project_root
-from .image_preview import load_image_preview, ImagePreview
-from .qt_tasks import start_qt_worker_task
-from .star_pair_model import (
+from ..catalog import project_root
+from ..image_preview import load_image_preview, ImagePreview
+from ..qt_tasks import start_qt_worker_task
+from ..star_pair_model import (
     StarPairRecord,
     star_pair_records_from_payloads,
 )

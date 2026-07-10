@@ -8,16 +8,16 @@ from pathlib import Path
 import numpy as np
 from PyQt5.QtWidgets import QFileDialog, QMessageBox
 
-from .alignment.constants import MIN_ALIGNMENT_PAIRS
+from ..alignment.constants import MIN_ALIGNMENT_PAIRS
 from .app_utils import _relative_image_path_for_session
-from .catalog import project_root
-from .fixed_camera_model import (
+from ..catalog import project_root
+from ..fixed_camera_model import (
     FixedCameraModel,
     FixedCameraTimeFitResult,
     estimate_frame_time_correction,
 )
-from .simulator import ObserverSettings
-from .source_model import SourceAstrometricModel
+from ..simulator import ObserverSettings
+from ..source_model import SourceAstrometricModel
 
 class SourceModelExportMixin:
     """单图源模型 JSON 导出入口。"""

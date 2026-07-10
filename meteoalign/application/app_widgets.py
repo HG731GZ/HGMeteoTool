@@ -6,7 +6,7 @@ from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import QLabel
 
-from .config import StarMapUiConfig
+from ..config import StarMapUiConfig
 
 
 class AppWidgetMixin:

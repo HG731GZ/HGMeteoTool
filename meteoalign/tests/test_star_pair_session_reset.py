@@ -6,7 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtWidgets import QApplication, QTableWidget
 
-from meteoalign.app_star_pair_json_task import StarPairJsonTaskMixin
+from meteoalign.application.app_star_pair_json_task import StarPairJsonTaskMixin
 from meteoalign.star_pair_store import StarPairStore
 
 

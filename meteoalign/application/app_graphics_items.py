@@ -5,9 +5,9 @@ from PyQt5.QtCore import QPointF, QRectF, Qt
 from PyQt5.QtGui import QColor, QBrush, QFont, QImage, QPainter, QPen, QPixmap
 from PyQt5.QtWidgets import QGraphicsItem
 
-from .renderer import StarMapRenderer
-from .simulator import ProjectedStarMap, ReferenceStar
-from .alignment.models import SkyAlignmentTransform
+from ..renderer import StarMapRenderer
+from ..simulator import ProjectedStarMap, ReferenceStar
+from ..alignment.models import SkyAlignmentTransform
 
 # 从 app.py 移出的常量，供 LiveStarMapGraphicsItem 使用
 STAR_RADIUS_ZOOM_EXPONENT = 0.32

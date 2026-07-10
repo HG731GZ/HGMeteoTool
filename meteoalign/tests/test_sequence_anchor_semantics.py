@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from meteoalign.app_constants import AUTO_MATCH_CONSTRAINT_SOFT
-from meteoalign.app_sequence import SequenceBatchMixin, _SequenceCandidate, _SequencePairTemplate
+from meteoalign.application.app_constants import AUTO_MATCH_CONSTRAINT_SOFT
+from meteoalign.application.app_sequence import SequenceBatchMixin, _SequenceCandidate, _SequencePairTemplate
 from meteoalign.simulator import ReferenceStar
 from meteoalign.star_fitting import FittedStarPosition
 

@@ -28,7 +28,7 @@ from PyQt5.QtWidgets import (
     QTableWidgetItem,
 )
 
-from .alignment.constants import (
+from ..alignment.constants import (
     MIN_ALIGNMENT_PAIRS,
     SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION,
     SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT,
@@ -36,20 +36,20 @@ from .alignment.constants import (
     SKY_MATCHING_MODEL_POLYNOMIAL,
     SKY_MATCHING_MODEL_RECTILINEAR,
 )
-from .alignment.fitting import fit_sky_alignment
-from .alignment.models import SkyAlignmentTransform
-from .catalog_download import ensure_catalogs_ready_or_handle
-from .catalog import load_default_catalog, project_root
-from .camera_calibration import CameraCalibrationProfile
-from .config import StarMapUiConfig, load_star_map_ui_config
-from .preference_manager import ensure_preference_file, recent_import_directory, remember_import_path
-from .coordinates import radec_to_unit_vectors
-from .image_preview import IMAGE_FILE_FILTER, ImagePreview, load_image_preview
-from .milky_way import MilkyWayCatalog, load_milky_way
-from .reference import build_reference_payload, save_reference_outputs
-from .renderer import StarMapRenderer
-from .source_model import SourceAstrometricModel, fit_source_astrometric_model
-from .simulator import (
+from ..alignment.fitting import fit_sky_alignment
+from ..alignment.models import SkyAlignmentTransform
+from ..catalog_download import ensure_catalogs_ready_or_handle
+from ..catalog import load_default_catalog, project_root
+from ..camera_calibration import CameraCalibrationProfile
+from ..config import StarMapUiConfig, load_star_map_ui_config
+from ..preference_manager import ensure_preference_file, recent_import_directory, remember_import_path
+from ..coordinates import radec_to_unit_vectors
+from ..image_preview import IMAGE_FILE_FILTER, ImagePreview, load_image_preview
+from ..milky_way import MilkyWayCatalog, load_milky_way
+from ..reference import build_reference_payload, save_reference_outputs
+from ..renderer import StarMapRenderer
+from ..source_model import SourceAstrometricModel, fit_source_astrometric_model
+from ..simulator import (
     CameraSettings,
     FISHEYE_EQUIDISTANT,
     FISHEYE_EQUISOLID,
@@ -71,9 +71,9 @@ from .simulator import (
     select_reference_stars,
     vertical_fov_deg,
 )
-from .star_fitting import FittedStarPosition, fit_star_position
-from .star_pair_store import StarPairStore
-from .ui.ui_main_window import Ui_MainWindow
+from ..star_fitting import FittedStarPosition, fit_star_position
+from ..star_pair_store import StarPairStore
+from ..ui.ui_main_window import Ui_MainWindow
 from .app_constants import (
     AUTO_MATCH_CONSTRAINT_MODES,
     AUTO_MATCH_CONSTRAINT_SOFT,

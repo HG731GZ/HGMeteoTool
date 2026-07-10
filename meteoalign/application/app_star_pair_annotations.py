@@ -24,8 +24,8 @@ from .app_constants import (
     STAR_PAIR_INDEX_COLUMN,
     STAR_PICK_CIRCLE_STEP_PX,
 )
-from .simulator import ReferenceStar
-from .star_fitting import FittedStarPosition
+from ..simulator import ReferenceStar
+from ..star_fitting import FittedStarPosition
 
 class StarPairAnnotationsMixin:
     """星对图像标注、视图聚焦和拾取光标。"""

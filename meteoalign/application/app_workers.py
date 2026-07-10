@@ -11,8 +11,8 @@ from .app_utils import (
     _qimage_to_binary_mask,
     _resolve_star_pair_session_real_image_path,
 )
-from .image_preview import ImagePreview, load_image_preview
-from .image_sequence import collect_image_sequence
+from ..image_preview import ImagePreview, load_image_preview
+from ..image_sequence import collect_image_sequence
 
 
 class ImagePreviewLoadWorker(QObject):

@@ -13,11 +13,11 @@ from .app_sequence_matching import SequenceMatchingMixin
 from .app_sequence_processing import SequenceProcessingMixin
 from .app_sequence_table_preview import SequenceTablePreviewMixin
 from .app_workers import ImageSequenceCollectWorker
-from .image_preview import ImagePreview
-from .image_sequence import ImageSequenceItem
-from .simulator import ProjectedStarMap
-from .source_model import SourceAstrometricModel
-from .sequence_types import (
+from ..image_preview import ImagePreview
+from ..image_sequence import ImageSequenceItem
+from ..simulator import ProjectedStarMap
+from ..source_model import SourceAstrometricModel
+from ..sequence_types import (
     _SequenceCandidate,
     _SequenceFitPlan,
     _SequenceMatchedPair,

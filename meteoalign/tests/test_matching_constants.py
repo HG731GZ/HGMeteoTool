@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from meteoalign.app_constants import (
+from meteoalign.application.app_constants import (
     AUTO_MATCH_CONSTRAINT_SOFT as facade_constraint_soft,
     AUTO_MATCH_MIN_ALTITUDE_DEG as facade_min_altitude_deg,
     AUTO_MATCH_SEARCH_MAG_LIMIT as facade_search_mag_limit,

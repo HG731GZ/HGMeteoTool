@@ -10,8 +10,8 @@ from .app_constants import (
     STAR_PAIR_POSITION_COLUMN,
     STAR_PAIR_ROW_TYPE_MANUAL,
 )
-from .star_fitting import FittedStarPosition
-from .star_pair_model import (
+from ..star_fitting import FittedStarPosition
+from ..star_pair_model import (
     PAIR_ORIGIN_AUTO_MATCH,
     PAIR_ORIGIN_MANUAL,
     PsfFit,

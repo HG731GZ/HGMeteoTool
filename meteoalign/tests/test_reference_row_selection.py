@@ -15,8 +15,8 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from meteoalign.app_auto_match import AutoMatchMixin
-from meteoalign.app_rendering import RenderingMixin
+from meteoalign.application.app_auto_match import AutoMatchMixin
+from meteoalign.application.app_rendering import RenderingMixin
 
 
 _QT_APP: QApplication | None = None

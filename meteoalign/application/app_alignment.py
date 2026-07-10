@@ -7,13 +7,13 @@ import numpy as np
 from PyQt5.QtCore import QRectF, Qt
 from PyQt5.QtWidgets import QFileDialog, QTableWidgetItem, QGraphicsView, QMessageBox
 
-from .alignment.constants import MIN_ALIGNMENT_PAIRS, SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION
-from .alignment.fitting import fit_sky_alignment
-from .alignment.models import SkyAlignmentTransform
-from .camera_calibration import CameraCalibrationProfile
-from .coordinates import radec_to_unit_vectors
-from .frame_astrometry import FrameAstrometricModel
-from .simulator import (
+from ..alignment.constants import MIN_ALIGNMENT_PAIRS, SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION
+from ..alignment.fitting import fit_sky_alignment
+from ..alignment.models import SkyAlignmentTransform
+from ..camera_calibration import CameraCalibrationProfile
+from ..coordinates import radec_to_unit_vectors
+from ..frame_astrometry import FrameAstrometricModel
+from ..simulator import (
     ReferenceStar, camera_basis_from_view, local_vectors_from_altaz,
 )
 
@@ -25,7 +25,7 @@ from .app_constants import (
     AUTO_MATCH_CONSTRAINT_SOFT, AUTO_MATCH_CONSTRAINT_MODES,
     SOURCE_MODEL_JSON_FILTER,
 )
-from .source_model import (
+from ..source_model import (
     FixedProfilePoseSourceModel,
     SourceAstrometricModel,
     fit_source_astrometric_model,

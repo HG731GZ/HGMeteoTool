@@ -3,9 +3,9 @@ from __future__ import annotations
 from .app_star_pair_actions import StarPairActionsMixin
 from .app_star_pair_annotations import StarPairAnnotationsMixin
 from .app_star_pair_table_groups import StarPairTableGroupsMixin
-from .config import StarMapUiConfig
-from .alignment.models import SkyAlignmentTransform
-from .star_pair_store import StarPairStore
+from ..config import StarMapUiConfig
+from ..alignment.models import SkyAlignmentTransform
+from ..star_pair_store import StarPairStore
 from PyQt5.QtGui import QCursor
 
 

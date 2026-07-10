@@ -9,14 +9,14 @@ from PyQt5.QtCore import QDateTime
 from PyQt5.QtGui import QImage
 from PyQt5.QtWidgets import QApplication, QFileDialog, QMenu, QMessageBox, QProgressDialog
 
-from .image_preview import IMAGE_FILE_FILTER
+from ..image_preview import IMAGE_FILE_FILTER
 from .app_utils import _image_with_binary_mask
 from .app_workers import ImagePreviewLoadWorker, SkyMaskLoadWorker
-from .catalog import project_root
-from .image_sequence import read_image_capture_time, sequence_item_local_datetime
-from .image_preview import ImagePreview, load_image_preview
-from .qt_tasks import create_progress_dialog, start_qt_worker_task
-from .reference import build_reference_payload, save_reference_outputs
+from ..catalog import project_root
+from ..image_sequence import read_image_capture_time, sequence_item_local_datetime
+from ..image_preview import ImagePreview, load_image_preview
+from ..qt_tasks import create_progress_dialog, start_qt_worker_task
+from ..reference import build_reference_payload, save_reference_outputs
 
 
 class ImageMixin:

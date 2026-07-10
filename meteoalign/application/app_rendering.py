@@ -14,9 +14,9 @@ from .app_constants import (
     REFERENCE_LABEL_MODE_FIXED_MAG_LIMIT,
     REFERENCE_LABEL_MODES,
 )
-from .catalog import project_root
-from .image_preview import ImagePreview
-from .simulator import (
+from ..catalog import project_root
+from ..image_preview import ImagePreview
+from ..simulator import (
     CameraSettings,
     FISHEYE_EQUIDISTANT,
     FISHEYE_EQUISOLID,

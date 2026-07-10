@@ -16,8 +16,8 @@ from .app_constants import (
     TOUCHPAD_ZOOM_SENSITIVITY,
 )
 from .app_graphics_items import LiveStarMapGraphicsItem
-from .simulator import horizontal_fov_deg, vertical_fov_deg
-from .view_gestures import (
+from ..simulator import horizontal_fov_deg, vertical_fov_deg
+from ..view_gestures import (
     ViewZoomPolicy,
     native_gesture_zoom_factor,
     native_gesture_zoom_value,

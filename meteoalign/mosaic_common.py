@@ -19,11 +19,11 @@ from .alignment.constants import (
     SKY_MATCHING_MODEL_MERCATOR,
     SKY_MATCHING_MODEL_RECTILINEAR,
 )
-from .app_constants import (
+from .application.app_constants import (
     AUTO_MATCH_CONSTRAINT_SOFT,
     SOURCE_MODEL_JSON_FILTER,
 )
-from .app_graphics_items import GraphicsImageItem
+from .application.app_graphics_items import GraphicsImageItem
 from .catalog import project_root
 from .frame_astrometry import FrameAstrometricModel
 from .geometry2d import cell_crosses_angle_break, expand_polygon_radially, grid_cell_quad

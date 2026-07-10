@@ -4,12 +4,12 @@ from pathlib import Path
 
 from PyQt5.QtWidgets import QApplication, QFileDialog, QMessageBox
 
-from .alignment.constants import MIN_ALIGNMENT_PAIRS
+from ..alignment.constants import MIN_ALIGNMENT_PAIRS
 from .app_workers import ImageSequenceCollectWorker
-from .image_preview import IMAGE_FILE_FILTER
-from .image_sequence import ImageSequenceItem, RejectedSequenceImage, sequence_item_time_delta_seconds
-from .qt_tasks import create_progress_dialog, start_qt_worker_task
-from .sequence_constants import IMAGE_SEQUENCE_IMPORT_PROGRESS_MIN_VISIBLE_MS
+from ..image_preview import IMAGE_FILE_FILTER
+from ..image_sequence import ImageSequenceItem, RejectedSequenceImage, sequence_item_time_delta_seconds
+from ..qt_tasks import create_progress_dialog, start_qt_worker_task
+from ..sequence_constants import IMAGE_SEQUENCE_IMPORT_PROGRESS_MIN_VISIBLE_MS
 
 class SequenceImportMixin:
     """图像序列导入、首帧准备和导入状态管理。"""

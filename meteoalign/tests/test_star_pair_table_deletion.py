@@ -8,15 +8,15 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication, QTableWidget
 
-from meteoalign.app_constants import (
+from meteoalign.application.app_constants import (
     AUTO_MATCH_CONSTRAINT_ANCHOR,
     AUTO_MATCH_CONSTRAINT_MODES,
     AUTO_MATCH_CONSTRAINT_SOFT,
     STAR_PAIR_NAME_COLUMN,
     STAR_PAIR_ROW_TYPE_MANUAL,
 )
-from meteoalign.app_auto_match import AutoMatchMixin
-from meteoalign.app_star_pair_table import StarPairTableMixin
+from meteoalign.application.app_auto_match import AutoMatchMixin
+from meteoalign.application.app_star_pair_table import StarPairTableMixin
 from meteoalign.simulator import ReferenceStar
 from meteoalign.star_pair_model import StarPairRecord
 from meteoalign.star_pair_store import StarPairStore

@@ -12,15 +12,15 @@ from PyQt5.QtWidgets import QAbstractItemView, QHeaderView, QTableWidgetItem
 
 from .app_constants import RESIDUAL_WARNING_MIN_PX
 from .app_utils import _image_with_binary_mask
-from .image_preview import ImagePreview, load_image_preview
-from .image_sequence import (
+from ..image_preview import ImagePreview, load_image_preview
+from ..image_sequence import (
     ImageSequenceItem,
     RejectedSequenceImage,
     sequence_item_local_datetime,
     sequence_item_observation_time_utc,
     sequence_item_time_delta_seconds,
 )
-from .sequence_constants import (
+from ..sequence_constants import (
     IMAGE_SEQUENCE_INDEX_COLUMN,
     IMAGE_SEQUENCE_INDEX_ROLE,
     IMAGE_SEQUENCE_MASK_CACHE_LIMIT,

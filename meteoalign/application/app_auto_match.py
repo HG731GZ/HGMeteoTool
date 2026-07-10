@@ -6,9 +6,9 @@ import numpy as np
 from PyQt5.QtCore import QPoint, Qt
 from PyQt5.QtWidgets import QApplication, QGraphicsView, QMessageBox, QProgressDialog
 
-from .alignment.constants import MIN_ALIGNMENT_PAIRS
-from .alignment.models import SkyAlignmentTransform
-from .matching_constants import (
+from ..alignment.constants import MIN_ALIGNMENT_PAIRS
+from ..alignment.models import SkyAlignmentTransform
+from ..matching_constants import (
     AUTO_MATCH_ANNOTATION_LIMIT,
     AUTO_MATCH_DUPLICATE_MIN_DISTANCE_PX,
     AUTO_MATCH_MIN_ALTITUDE_DEG,
@@ -19,8 +19,8 @@ from .matching_constants import (
     MIN_PSF_RADIUS_PX,
     REFERENCE_STAR_PICK_SCREEN_RADIUS_PX,
 )
-from .simulator import ProjectedStarMap, ReferenceStar
-from .star_fitting import FittedStarPosition, fit_star_position
+from ..simulator import ProjectedStarMap, ReferenceStar
+from ..star_fitting import FittedStarPosition, fit_star_position
 
 
 class AutoMatchMixin:

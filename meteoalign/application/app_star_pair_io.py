@@ -5,7 +5,7 @@ from .app_source_model_export import SourceModelExportMixin
 from .app_star_pair_json_task import StarPairJsonTaskMixin
 from .app_star_pair_reference_payload import StarPairReferencePayloadMixin
 from .app_star_pair_session import StarPairSessionMixin
-from .star_pair_store import StarPairStore
+from ..star_pair_store import StarPairStore
 
 
 class StarPairIOMixin(

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from meteoalign.app_utils import _resolve_star_pair_session_real_image_path
+from meteoalign.application.app_utils import _resolve_star_pair_session_real_image_path
 from meteoalign.mosaic_model_io import _resolve_source_image_path
 
 

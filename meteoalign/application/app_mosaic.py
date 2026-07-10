@@ -10,7 +10,7 @@ from PyQt5.QtCore import QDateTime, QElapsedTimer, QEvent, QRectF, QTimer, Qt
 from PyQt5.QtGui import QColor, QImage, QPainter, QPen
 from PyQt5.QtWidgets import QApplication, QFileDialog, QGraphicsScene, QMessageBox, QProgressDialog
 
-from .alignment.constants import (
+from ..alignment.constants import (
     SKY_KNOWN_PROJECTION_DISPLAY_NAMES,
     SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT,
     SKY_MATCHING_MODEL_FISHEYE_EQUISOLID,
@@ -18,8 +18,8 @@ from .alignment.constants import (
 )
 from .app_constants import SOURCE_MODEL_JSON_FILTER
 from .app_graphics_items import GraphicsImageItem
-from .catalog import project_root
-from .mosaic_common import (
+from ..catalog import project_root
+from ..mosaic_common import (
     MOSAIC_COVERAGE_GRID_LONG_SIDE,
     MOSAIC_GRID_MAX_PRECISION,
     MOSAIC_GRID_MIN_PRECISION,
@@ -31,43 +31,43 @@ from .mosaic_common import (
     MOSAIC_SOURCE_TEXTURE_LONG_SIDE_PX,
     MOSAIC_ZOOM_FACTOR,
 )
-from .mosaic.grid_service import (
+from ..mosaic.grid_service import (
     build_coverage_cache,
     compute_center_from_model,
     suggest_fov_from_coverage,
 )
-from .mosaic_export import (
+from ..mosaic_export import (
     MOSAIC_EXPORT_TIFF_FILTER,
     load_mosaic_export_source_image,
     mosaic_export_available,
     mosaic_export_block_rows,
     write_mosaic_reprojection_tiff,
 )
-from .mosaic.export.geometry import mosaic_export_cropped_geometry
-from .mosaic.export.target_transform import (
+from ..mosaic.export.geometry import mosaic_export_cropped_geometry
+from ..mosaic.export.target_transform import (
     build_target_icrs_to_pixel_transform_payload,
     target_icrs_to_pixel_transform_payload_matches,
 )
-from .mosaic.framing import (
+from ..mosaic.framing import (
     MOSAIC_FRAMING_SCHEMA,
     MOSAIC_FRAMING_VERSION,
     MOSAIC_RESOLUTION_METHOD,
     MosaicResolutionEstimate,
     estimate_mosaic_optimal_resolution,
 )
-from .mosaic.model_io import (
+from ..mosaic.model_io import (
     MosaicCoverageCache,
     MosaicSourceModel,
     _load_mosaic_source_model,
 )
-from .mosaic.overlay_renderer import load_source_texture
-from .mosaic.state import MosaicSessionState, MosaicSourceState
-from .mosaic.render_coordinator import MosaicRenderCoordinator
-from .mosaic.render_types import MosaicRenderRequest
-from .projection.grid import grid_shape_for_long_side
-from .projection_interaction_controller import ProjectionInteractionController
-from .projection.view_state import ProjectionViewState
-from .simulator import (
+from ..mosaic.overlay_renderer import load_source_texture
+from ..mosaic.state import MosaicSessionState, MosaicSourceState
+from ..mosaic.render_coordinator import MosaicRenderCoordinator
+from ..mosaic.render_types import MosaicRenderRequest
+from ..projection.grid import grid_shape_for_long_side
+from ..projection_interaction_controller import ProjectionInteractionController
+from ..projection.view_state import ProjectionViewState
+from ..simulator import (
     CameraSettings,
     ObserverSettings,
     ViewSettings,
@@ -75,8 +75,8 @@ from .simulator import (
     local_vectors_from_altaz,
     vertical_fov_deg,
 )
-from .sky_scene_service import SkyPreviewRenderService, SkyPreviewStyle, SkySceneData
-from .view_gestures import (
+from ..sky_scene_service import SkyPreviewRenderService, SkyPreviewStyle, SkySceneData
+from ..view_gestures import (
     ViewZoomPolicy,
     clamp_fov,
     roll_after_drag,

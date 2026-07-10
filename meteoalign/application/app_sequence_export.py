@@ -7,21 +7,21 @@ from pathlib import Path
 import numpy as np
 from PyQt5.QtWidgets import QFileDialog, QMessageBox
 
-from .alignment.constants import MIN_ALIGNMENT_PAIRS
+from ..alignment.constants import MIN_ALIGNMENT_PAIRS
 from .app_constants import (
     STAR_PAIR_SESSION_FORMAT,
     STAR_PAIR_SESSION_VERSION,
 )
 from .app_constants import AUTO_MATCH_SEARCH_MAG_LIMIT
 from .app_utils import _relative_image_path_for_session
-from .fixed_camera_model import FixedCameraModel, FixedCameraTimeFitResult
-from .image_preview import IMAGE_FILE_FILTER, ImagePreview, load_image_preview
-from .image_sequence import ImageSequenceItem, sequence_item_time_delta_seconds
-from .reference import build_reference_payload
-from .sequence_geometry import frame_astrometric_model_from_fixed_camera
-from .sequence_types import _SequenceMatchedPair
-from .simulator import ObserverSettings
-from .star_pair_model import PsfFit, StarPairRecord
+from ..fixed_camera_model import FixedCameraModel, FixedCameraTimeFitResult
+from ..image_preview import IMAGE_FILE_FILTER, ImagePreview, load_image_preview
+from ..image_sequence import ImageSequenceItem, sequence_item_time_delta_seconds
+from ..reference import build_reference_payload
+from ..sequence_geometry import frame_astrometric_model_from_fixed_camera
+from ..sequence_types import _SequenceMatchedPair
+from ..simulator import ObserverSettings
+from ..star_pair_model import PsfFit, StarPairRecord
 
 class SequenceExportMixin:
     """序列批处理结果 payload、JSON 输出和覆盖确认。"""

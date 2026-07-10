@@ -27,8 +27,8 @@ from .app_constants import (
     STAR_PAIR_SORT_KEY_INDEX,
     STAR_PAIR_SORT_KEY_RESIDUAL,
 )
-from .simulator import ReferenceStar
-from .star_fitting import FittedStarPosition
+from ..simulator import ReferenceStar
+from ..star_fitting import FittedStarPosition
 
 class StarPairTableGroupsMixin:
     """星对表格列、分组、排序和约束显示。"""

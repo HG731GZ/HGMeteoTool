@@ -13,8 +13,8 @@ from .app_constants import (
     REFERENCE_LABEL_MODES,
 )
 from .app_workers import ReferenceJsonImportWorker
-from .catalog import project_root
-from .qt_tasks import start_qt_worker_task
+from ..catalog import project_root
+from ..qt_tasks import start_qt_worker_task
 
 class ReferenceJsonIOMixin:
     """参考 JSON 导入和应用。"""

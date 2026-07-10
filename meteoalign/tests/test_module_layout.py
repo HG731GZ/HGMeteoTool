@@ -14,6 +14,8 @@ from meteoalign.projection.grid import build_pixel_grid as archived_build_pixel_
 from meteoalign.projection.view_state import ProjectionViewState as ArchivedProjectionViewState
 from meteoalign.projection_grid import build_pixel_grid
 from meteoalign.projection_view_state import ProjectionViewState
+from meteoalign.application.app_sequence import SequenceBatchMixin
+from meteoalign.application.main_window import MainWindow
 
 
 def test_archived_modules_keep_legacy_imports_as_compatibility_facades() -> None:
@@ -25,3 +27,10 @@ def test_archived_modules_keep_legacy_imports_as_compatibility_facades() -> None
     assert build_coverage_cache is archived_build_coverage_cache
     assert coverage_altaz is archived_coverage_altaz
     assert build_pixel_grid is archived_build_pixel_grid
+
+
+def test_application_package_exposes_main_window_and_sequence_workflow() -> None:
+    """应用包应直接提供主窗口组合与序列工作流。"""
+
+    assert MainWindow.__module__ == "meteoalign.application.main_window"
+    assert SequenceBatchMixin.__module__ == "meteoalign.application.app_sequence"

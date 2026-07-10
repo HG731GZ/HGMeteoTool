@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from meteoalign.app_mosaic_batch import MosaicBatchMixin
+from meteoalign.application.app_mosaic_batch import MosaicBatchMixin
 
 
 class _Control:

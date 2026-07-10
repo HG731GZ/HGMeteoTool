@@ -17,18 +17,18 @@ from PyQt5.QtWidgets import (
 )
 
 from .app_constants import SOURCE_MODEL_JSON_FILTER
-from .catalog import project_root
-from .mosaic_export import (
+from ..catalog import project_root
+from ..mosaic_export import (
     MOSAIC_EXPORT_TIFF_FILTER,
     load_mosaic_export_source_image,
     mosaic_export_available,
     write_mosaic_reprojection_tiff,
 )
-from .mosaic.export.geometry import MosaicExportGeometry
-from .mosaic.export.target_transform import target_icrs_to_pixel_transform_payload_matches
-from .mosaic.framing import MOSAIC_FRAMING_SCHEMA
-from .mosaic.model_io import MosaicSourceModel, _load_mosaic_source_model
-from .simulator import CameraSettings, ObserverSettings, RECTILINEAR_LENS_MODEL, ViewSettings
+from ..mosaic.export.geometry import MosaicExportGeometry
+from ..mosaic.export.target_transform import target_icrs_to_pixel_transform_payload_matches
+from ..mosaic.framing import MOSAIC_FRAMING_SCHEMA
+from ..mosaic.model_io import MosaicSourceModel, _load_mosaic_source_model
+from ..simulator import CameraSettings, ObserverSettings, RECTILINEAR_LENS_MODEL, ViewSettings
 
 
 MOSAIC_BATCH_FRAMING_JSON_FILTER = "自由投影取景 JSON (*.json);;JSON 文件 (*.json);;所有文件 (*)"

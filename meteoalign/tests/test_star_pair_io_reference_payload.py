@@ -5,7 +5,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from meteoalign.app_star_pair_io import StarPairIOMixin
+from meteoalign.application.app_star_pair_io import StarPairIOMixin
 from meteoalign.simulator import ObserverSettings, ReferenceStar
 
 

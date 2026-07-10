@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PyQt5.QtWidgets import QApplication, QProgressDialog
 
-from .qt_tasks import create_progress_dialog
+from ..qt_tasks import create_progress_dialog
 
 class StarPairJsonTaskMixin:
     """JSON 导入后台任务与进度对话框生命周期。"""
