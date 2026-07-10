@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from meteoalign.config import default_config_path
+from meteoalign.config import StarMapUiConfig, default_config_path, load_star_map_ui_config
 from meteoalign.runtime_paths import runtime_catalog_dir
 
 
@@ -11,6 +11,17 @@ def test_default_config_path_uses_source_project_root() -> None:
     expected = Path(__file__).resolve().parents[2] / "preference.json"
 
     assert default_config_path() == expected
+
+
+def test_star_color_mag_limit_defaults_to_six() -> None:
+    assert StarMapUiConfig().star_color_mag_limit == 6.0
+
+
+def test_star_color_mag_limit_is_loaded_from_preference(tmp_path: Path) -> None:
+    config_path = tmp_path / "preference.json"
+    config_path.write_text('{"star_color_mag_limit": 5.25}', encoding="utf-8")
+
+    assert load_star_map_ui_config(config_path).star_color_mag_limit == 5.25
 
 
 def test_default_config_path_uses_windows_exe_sibling(monkeypatch) -> None:  # type: ignore[no-untyped-def]

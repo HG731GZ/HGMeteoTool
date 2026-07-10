@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 import math
 
 import numpy as np
-from PyQt5.QtCore import QTimer, Qt
+from PyQt5.QtCore import QItemSelectionModel, QTimer, Qt
 
 from .app_constants import (
     AUTO_MATCH_SEARCH_MAG_LIMIT,
@@ -271,7 +271,14 @@ class RenderingMixin:
     def _select_star_pair_row_by_id(self, star_id: str) -> int | None:
         row = self._row_for_star_id(star_id)
         if row is not None:
-            self.ui.tableWidgetStarPairs.selectRow(row)
+            table = self.ui.tableWidgetStarPairs
+            row_index = table.model().index(row, 0)
+            table.selectionModel().setCurrentIndex(
+                row_index,
+                QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows,
+            )
+            table.scrollTo(row_index)
+            table.setFocus(Qt.OtherFocusReason)
             return row
         return None
 
@@ -482,6 +489,7 @@ class RenderingMixin:
             visible_mag_limit=mag_limit,
             horizontal_milky_way=horizontal_milky_way,
             horizontal_solar_system=horizontal_solar_system,
+            star_color_mag_limit=self.ui_config.star_color_mag_limit,
         )
         return observer, camera, view, mag_limit, star_map
 
@@ -575,6 +583,7 @@ class RenderingMixin:
         radius, intensity = _star_style(horizontal_catalog.mag_v[inside], mag_limit)
         star_rgb = _star_rgb(
             mag_v=horizontal_catalog.mag_v[inside],
+            star_color_mag_limit=self.ui_config.star_color_mag_limit,
             intensity=intensity,
             color_index_bv=horizontal_catalog.color_index_bv[inside],
             spectral_type=horizontal_catalog.spectral_type[inside],

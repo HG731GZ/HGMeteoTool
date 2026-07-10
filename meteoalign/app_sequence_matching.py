@@ -169,6 +169,7 @@ class SequenceMatchingMixin:
             camera=camera,
             view=self._view_settings(),
             visible_mag_limit=visible_mag_limit,
+            star_color_mag_limit=self.ui_config.star_color_mag_limit,
         )
 
     def _sequence_candidate_stars(

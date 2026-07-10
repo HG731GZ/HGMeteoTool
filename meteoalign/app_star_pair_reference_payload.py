@@ -77,6 +77,7 @@ class StarPairReferencePayloadMixin:
             visible_mag_limit=mag_limit,
             horizontal_milky_way=horizontal_milky_way,
             horizontal_solar_system=horizontal_solar_system,
+            star_color_mag_limit=self.ui_config.star_color_mag_limit,
         )
         reference_stars = self._select_current_reference_stars(star_map)
         reference_stars = self._reference_stars_with_pair_records(reference_stars, pair_records, observer)
@@ -153,4 +154,3 @@ class StarPairReferencePayloadMixin:
         for star_id, star in pair_lookup.items():
             merged_lookup.setdefault(star_id, star)
         self._imported_reference_star_by_id = merged_lookup
-

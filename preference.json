@@ -9,6 +9,8 @@
   "star_name_font_size_pt": 14,
   // 参考星标注编号和名称的字体大小。
   "reference_label_font_size_pt": 15,
+  // 只有视觉星等不大于该值的恒星才渲染色度；更暗的恒星使用灰阶。
+  "star_color_mag_limit": 4.0,
   // 叠加参考星图时的显示缩放倍率。
   "aligned_reference_scale_multiplier": 1.6,
 

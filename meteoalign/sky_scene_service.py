@@ -68,6 +68,7 @@ class SkyPreviewRenderService:
             visible_mag_limit=visible_mag_limit,
             horizontal_milky_way=scene.horizontal_milky_way,
             horizontal_solar_system=scene.horizontal_solar_system,
+            star_color_mag_limit=self.renderer.ui_config.star_color_mag_limit,
         )
         if (
             render_style.force_opaque

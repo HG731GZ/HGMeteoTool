@@ -607,13 +607,14 @@ def _rgb_from_spectral_type(spectral_type: str) -> tuple[int, int, int] | None:
 
 def _star_rgb(
     mag_v: np.ndarray,
+    star_color_mag_limit: float,
     intensity: np.ndarray,
     color_index_bv: np.ndarray,
     spectral_type: np.ndarray,
 ) -> np.ndarray:
     rgb = np.column_stack((intensity, intensity, intensity)).astype(np.uint8)
-    bright = mag_v <= 3.0
-    for index in np.flatnonzero(bright):
+    colored_star_indexes = np.flatnonzero(mag_v <= float(star_color_mag_limit))
+    for index in colored_star_indexes:
         color_index = float(color_index_bv[index])
         if np.isfinite(color_index):
             rgb[index] = _rgb_from_bv(color_index)
@@ -1205,6 +1206,7 @@ def project_horizontal_catalog(
     visible_mag_limit: float = 6.5,
     horizontal_milky_way: HorizontalMilkyWayCatalog | None = None,
     horizontal_solar_system: HorizontalSolarSystemCatalog | None = None,
+    star_color_mag_limit: float = 6.0,
 ) -> ProjectedStarMap:
     if camera.sensor_width_mm <= 0 or camera.sensor_height_mm <= 0:
         raise ValueError("Sensor dimensions must be positive")
@@ -1241,6 +1243,7 @@ def project_horizontal_catalog(
     radius, intensity = _star_style(horizontal_catalog.mag_v[inside], visible_mag_limit)
     star_rgb = _star_rgb(
         mag_v=horizontal_catalog.mag_v[inside],
+        star_color_mag_limit=star_color_mag_limit,
         intensity=intensity,
         color_index_bv=horizontal_catalog.color_index_bv[inside],
         spectral_type=horizontal_catalog.spectral_type[inside],
@@ -1293,6 +1296,7 @@ def project_catalog(
     camera: CameraSettings,
     view: ViewSettings,
     visible_mag_limit: float = 6.5,
+    star_color_mag_limit: float = 6.0,
 ) -> ProjectedStarMap:
     horizontal_catalog = compute_horizontal_catalog(catalog, observer, visible_mag_limit)
     return project_horizontal_catalog(
@@ -1300,6 +1304,7 @@ def project_catalog(
         camera=camera,
         view=view,
         visible_mag_limit=visible_mag_limit,
+        star_color_mag_limit=star_color_mag_limit,
     )
 
 
