@@ -33,6 +33,7 @@ class ImageMixin:
     current_sky_mask: np.ndarray | None
     current_sky_mask_path: Path | None
     current_sky_masked_image: QImage | None
+    _mask_excluded_reference_star_ids: set
     _preserve_sequence_on_next_image_load: bool
     _sky_alignment_transform: object | None
     _source_astrometric_model: object | None
@@ -99,6 +100,7 @@ class ImageMixin:
         self.current_sky_mask_path = None
         self.current_sky_mask = None
         self.current_sky_masked_image = None
+        self._mask_excluded_reference_star_ids = set()
         if hasattr(self, "_invalidate_image_sequence_mask_cache"):
             self._invalidate_image_sequence_mask_cache()
         self._set_elided_label_text(self.ui.labelSkyMaskStatus, "未使用蒙版", "")
@@ -177,6 +179,7 @@ class ImageMixin:
         default_dir = project_root() / "testimages"
         if not default_dir.exists():
             default_dir = project_root()
+        default_dir = self._import_dialog_directory(default_dir)
         file_path, _selected_filter = QFileDialog.getOpenFileName(
             self,
             "导入单张图像",
@@ -185,6 +188,7 @@ class ImageMixin:
         )
         if not file_path:
             return
+        self._remember_import_path(file_path)
         self.start_single_image_import(file_path)
 
     def start_single_image_import(self, file_path: str | Path, *, preserve_sequence_status: bool = False) -> None:
@@ -320,6 +324,7 @@ class ImageMixin:
             return
 
         default_dir = Path(self.current_image_preview.path).expanduser().resolve().parent
+        default_dir = self._import_dialog_directory(default_dir)
         file_path, _selected_filter = QFileDialog.getOpenFileName(
             self,
             "导入星空区域蒙版",
@@ -328,6 +333,7 @@ class ImageMixin:
         )
         if not file_path:
             return
+        self._remember_import_path(file_path)
         self.start_sky_mask_import(file_path)
 
     def load_sky_mask(self, file_path: str | Path) -> None:
@@ -394,6 +400,7 @@ class ImageMixin:
             if mask_array.shape != (image.height(), image.width()):
                 raise ValueError("蒙版尺寸与当前真实图像不一致，请重新导入。")
 
+            self._mask_excluded_reference_star_ids = set()
             self.current_sky_mask_path = mask_path
             self.current_sky_mask = mask_array
             self.current_sky_masked_image = masked_image if isinstance(masked_image, QImage) else None

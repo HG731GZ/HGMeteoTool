@@ -204,6 +204,7 @@ class StarPairSessionMixin:
         default_dir = project_root() / "outputs"
         if not default_dir.exists():
             default_dir = project_root()
+        default_dir = self._import_dialog_directory(default_dir)
         file_path, _selected_filter = QFileDialog.getOpenFileName(
             self,
             "导入星点配对 JSON",
@@ -212,6 +213,7 @@ class StarPairSessionMixin:
         )
         if not file_path:
             return
+        self._remember_import_path(file_path)
         self.load_star_pair_session(file_path)
 
     def load_star_pair_session(

@@ -66,6 +66,7 @@ class MosaicBatchMixin:
         if not hasattr(self.ui, "comboBoxMosaicBatchMode"):
             return
         self._mosaic_batch_framing: MosaicBatchFraming | None = None
+        self._mosaic_batch_base_model: MosaicSourceModel | None = None
         self._mosaic_batch_items: list[MosaicBatchImageItem] = []
         self.ui.comboBoxMosaicBatchMode.setCurrentIndex(MOSAIC_BATCH_MODE_SKY_INDEX)
         self._configure_mosaic_batch_table()
@@ -102,7 +103,28 @@ class MosaicBatchMixin:
         return self.ui.comboBoxMosaicBatchMode.currentIndex() == MOSAIC_BATCH_MODE_SKY_INDEX
 
     def _mosaic_batch_has_imports(self) -> bool:
-        return self._mosaic_batch_framing is not None or bool(self._mosaic_batch_items)
+        return (
+            self._mosaic_batch_framing is not None
+            or self._mosaic_batch_base_model is not None
+            or bool(self._mosaic_batch_items)
+        )
+
+    def _mosaic_batch_target_geometry(self) -> MosaicExportGeometry | None:
+        """返回当前模式的目标画布几何。"""
+
+        if self._mosaic_batch_is_sky_mode():
+            return None if self._mosaic_batch_framing is None else self._mosaic_batch_framing.geometry
+        base_model = self._mosaic_batch_base_model
+        if base_model is None:
+            return None
+        return MosaicExportGeometry(
+            boundary_width_px=int(base_model.image_width_px),
+            boundary_height_px=int(base_model.image_height_px),
+            crop_left_px=0,
+            crop_top_px=0,
+            output_width_px=int(base_model.image_width_px),
+            output_height_px=int(base_model.image_height_px),
+        )
 
     def _update_mosaic_batch_controls(self, *unused) -> None:  # type: ignore[no-untyped-def]
         if not hasattr(self.ui, "comboBoxMosaicBatchMode"):
@@ -110,35 +132,38 @@ class MosaicBatchMixin:
         has_imports = self._mosaic_batch_has_imports()
         sky_mode = self._mosaic_batch_is_sky_mode()
         self.ui.comboBoxMosaicBatchMode.setEnabled(not has_imports)
-        self.ui.pushButtonImportMosaicBatchFramingJson.setEnabled(sky_mode)
-        self.ui.pushButtonImportMosaicBatchImageJson.setEnabled(sky_mode)
+        target_name = "取景" if sky_mode else "底图"
+        self.ui.labelMosaicBatchFramingPathTitle.setText(target_name)
+        self.ui.pushButtonImportMosaicBatchFramingJson.setText(f"导入{target_name}JSON")
+        self.ui.pushButtonImportMosaicBatchFramingJson.setToolTip(
+            "导入自由投影页面导出的取景 JSON。" if sky_mode else "导入底图的 model.json，作为输出像素坐标参考。"
+        )
+        self.ui.pushButtonImportMosaicBatchFramingJson.setEnabled(True)
+        self.ui.pushButtonImportMosaicBatchImageJson.setEnabled(True)
         self.ui.pushButtonClearMosaicBatchImports.setEnabled(has_imports)
-        can_start = sky_mode and self._mosaic_batch_framing is not None and bool(self._mosaic_batch_items)
+        can_start = self._mosaic_batch_target_geometry() is not None and bool(self._mosaic_batch_items)
         self.ui.pushButtonStartMosaicBatch.setEnabled(can_start)
-        if sky_mode:
-            self.ui.pushButtonStartMosaicBatch.setToolTip("")
-        else:
-            self.ui.pushButtonStartMosaicBatch.setToolTip("底图模式接口后续实现。")
+        self.ui.pushButtonStartMosaicBatch.setToolTip("")
         self._update_mosaic_batch_summary_labels()
 
     def _update_mosaic_batch_summary_labels(self) -> None:
-        framing = self._mosaic_batch_framing
-        if framing is None:
+        target = self._mosaic_batch_framing if self._mosaic_batch_is_sky_mode() else self._mosaic_batch_base_model
+        if target is None:
             self._set_elided_label_text(self.ui.labelMosaicBatchFramingPath, "未导入")
         else:
             self._set_elided_label_text(
                 self.ui.labelMosaicBatchFramingPath,
-                framing.json_path.name,
-                str(framing.json_path),
+                target.json_path.name,
+                str(target.json_path),
             )
         count = len(self._mosaic_batch_items)
         self.ui.labelMosaicBatchImageCount.setText(f"{count} 张" if count else "未导入")
 
     def import_mosaic_batch_framing_json(self) -> None:
         if not self._mosaic_batch_is_sky_mode():
-            QMessageBox.information(self, "暂未实现", "底图模式接口后续实现。")
+            self._import_mosaic_batch_base_json()
             return
-        default_dir = self._mosaic_batch_default_dir()
+        default_dir = self._import_dialog_directory(self._mosaic_batch_default_dir())
         file_path, _selected_filter = QFileDialog.getOpenFileName(
             self,
             "导入批处理取景 JSON",
@@ -147,6 +172,7 @@ class MosaicBatchMixin:
         )
         if not file_path:
             return
+        self._remember_import_path(file_path)
         try:
             framing = self._load_mosaic_batch_framing(Path(file_path).expanduser())
         except Exception as exc:  # noqa: BLE001 - 导入入口需要把 JSON 错误直接反馈到界面。
@@ -154,8 +180,33 @@ class MosaicBatchMixin:
             self.ui.statusbar.showMessage(f"导入批处理取景 JSON 失败: {exc}")
             return
         self._mosaic_batch_framing = framing
+        self._mosaic_batch_base_model = None
         self._update_mosaic_batch_controls()
         self.ui.statusbar.showMessage(f"已导入批处理取景 JSON: {framing.json_path}")
+
+    def _import_mosaic_batch_base_json(self) -> None:
+        default_dir = self._import_dialog_directory(self._mosaic_batch_default_dir())
+        file_path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "导入批处理底图模型 JSON",
+            str(default_dir),
+            SOURCE_MODEL_JSON_FILTER,
+        )
+        if not file_path:
+            return
+        self._remember_import_path(file_path)
+        try:
+            base_model = _load_mosaic_source_model(Path(file_path).expanduser())
+            if base_model.image_width_px <= 0 or base_model.image_height_px <= 0:
+                raise ValueError("底图模型缺少有效图像尺寸。")
+        except Exception as exc:  # noqa: BLE001 - 导入入口需要把 JSON 错误直接反馈到界面。
+            QMessageBox.critical(self, "导入底图 JSON 失败", str(exc))
+            self.ui.statusbar.showMessage(f"导入批处理底图 JSON 失败: {exc}")
+            return
+        self._mosaic_batch_base_model = base_model
+        self._mosaic_batch_framing = None
+        self._update_mosaic_batch_controls()
+        self.ui.statusbar.showMessage(f"已导入批处理底图 JSON: {base_model.json_path}")
 
     def _load_mosaic_batch_framing(self, json_path: Path) -> MosaicBatchFraming:
         payload = json.loads(json_path.read_text(encoding="utf-8"))
@@ -200,10 +251,7 @@ class MosaicBatchMixin:
         )
 
     def import_mosaic_batch_image_json(self) -> None:
-        if not self._mosaic_batch_is_sky_mode():
-            QMessageBox.information(self, "暂未实现", "底图模式接口后续实现。")
-            return
-        default_dir = self._mosaic_batch_default_dir()
+        default_dir = self._import_dialog_directory(self._mosaic_batch_default_dir())
         file_paths, _selected_filter = QFileDialog.getOpenFileNames(
             self,
             "导入批处理图像模型 JSON",
@@ -212,6 +260,7 @@ class MosaicBatchMixin:
         )
         if not file_paths:
             return
+        self._remember_import_path(file_paths)
         imported_count = 0
         errors: list[str] = []
         existing_paths = {item.source_model.json_path.resolve() for item in self._mosaic_batch_items}
@@ -244,6 +293,7 @@ class MosaicBatchMixin:
 
     def clear_mosaic_batch_imports(self) -> None:
         self._mosaic_batch_framing = None
+        self._mosaic_batch_base_model = None
         self._mosaic_batch_items = []
         self.ui.tableWidgetMosaicBatchImages.setRowCount(0)
         self._update_mosaic_batch_controls()
@@ -319,12 +369,10 @@ class MosaicBatchMixin:
                 item.setBackground(brush)
 
     def start_mosaic_batch_processing(self) -> None:
-        if not self._mosaic_batch_is_sky_mode():
-            QMessageBox.information(self, "暂未实现", "底图模式接口后续实现。")
-            return
-        framing = self._mosaic_batch_framing
-        if framing is None:
-            QMessageBox.warning(self, "批处理失败", "请先导入取景 JSON。")
+        geometry = self._mosaic_batch_target_geometry()
+        if geometry is None:
+            target_name = "取景" if self._mosaic_batch_is_sky_mode() else "底图"
+            QMessageBox.warning(self, "批处理失败", f"请先导入{target_name} JSON。")
             return
         if not self._mosaic_batch_items:
             QMessageBox.warning(self, "批处理失败", "请先导入图像模型 JSON。")
@@ -347,7 +395,7 @@ class MosaicBatchMixin:
             (
                 f"将处理 {total_count} 张图像。\n\n"
                 f"输出目录：\n{output_dir}\n\n"
-                f"尺寸：{framing.geometry.output_width_px} x {framing.geometry.output_height_px} px\n"
+                f"尺寸：{geometry.output_width_px} x {geometry.output_height_px} px\n"
                 f"格式：{MOSAIC_EXPORT_TIFF_FILTER}"
             ),
             QMessageBox.Yes | QMessageBox.No,
@@ -357,8 +405,8 @@ class MosaicBatchMixin:
         self._run_mosaic_batch(output_dir)
 
     def _run_mosaic_batch(self, output_dir: Path) -> None:
-        framing = self._mosaic_batch_framing
-        if framing is None:
+        geometry = self._mosaic_batch_target_geometry()
+        if geometry is None:
             return
         used_output_paths: set[Path] = set()
         success_count = 0
@@ -381,7 +429,7 @@ class MosaicBatchMixin:
                 output_path = self._mosaic_batch_unique_output_path(
                     output_dir,
                     item.source_model,
-                    framing.geometry,
+                    geometry,
                     used_output_paths,
                 )
                 self._set_mosaic_batch_item_status(row, "处理中")
@@ -402,7 +450,7 @@ class MosaicBatchMixin:
                 try:
                     self._write_mosaic_batch_item(
                         item,
-                        framing,
+                        geometry,
                         output_path,
                         update_export_progress,
                     )
@@ -432,7 +480,7 @@ class MosaicBatchMixin:
     def _write_mosaic_batch_item(
         self,
         item: MosaicBatchImageItem,
-        framing: MosaicBatchFraming,
+        geometry: MosaicExportGeometry,
         output_path: Path,
         update_export_progress,
     ) -> None:  # type: ignore[no-untyped-def]
@@ -449,18 +497,23 @@ class MosaicBatchMixin:
                     f"原图 {source_image.width_px} x {source_image.height_px} px，"
                     f"模型 {source_model.image_width_px} x {source_model.image_height_px} px。"
                 )
+            framing = self._mosaic_batch_framing if self._mosaic_batch_is_sky_mode() else None
+            base_model = self._mosaic_batch_base_model if not self._mosaic_batch_is_sky_mode() else None
+            if framing is None and base_model is None:
+                raise ValueError("当前批处理模式缺少目标取景或底图模型。")
             write_mosaic_reprojection_tiff(
                 output_path=temp_path,
                 source_model=source_model.model,
                 source_image=source_image,
-                camera=framing.camera,
-                view=framing.view,
-                observer=framing.observer,
-                geometry=framing.geometry,
-                framing_payload=framing.payload,
+                camera=None if framing is None else framing.camera,
+                view=None if framing is None else framing.view,
+                observer=None if framing is None else framing.observer,
+                geometry=geometry,
+                framing_payload=None if framing is None else framing.payload,
                 block_rows=self._mosaic_export_block_rows(),
                 export_progress_callback=update_export_progress,
-                target_icrs_to_pixel_payload=framing.target_icrs_to_pixel_payload,
+                target_icrs_to_pixel_payload=None if framing is None else framing.target_icrs_to_pixel_payload,
+                target_model=None if base_model is None else base_model.model,
                 map_tile_size_px=self._mosaic_batch_map_tile_size_px(),
                 exact_remap_repair=self._mosaic_batch_exact_remap_repair_enabled(),
                 tiff_lzw_compression=self._mosaic_tiff_lzw_compression_enabled(),
@@ -511,6 +564,8 @@ class MosaicBatchMixin:
                 return parent
         if self._mosaic_batch_framing is not None and self._mosaic_batch_framing.json_path.parent.exists():
             return self._mosaic_batch_framing.json_path.parent
+        if self._mosaic_batch_base_model is not None and self._mosaic_batch_base_model.json_path.parent.exists():
+            return self._mosaic_batch_base_model.json_path.parent
         output_dir = project_root() / "outputs"
         return output_dir if output_dir.exists() else project_root()
 

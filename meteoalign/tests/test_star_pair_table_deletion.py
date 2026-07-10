@@ -15,6 +15,7 @@ from meteoalign.app_constants import (
     STAR_PAIR_NAME_COLUMN,
     STAR_PAIR_ROW_TYPE_MANUAL,
 )
+from meteoalign.app_auto_match import AutoMatchMixin
 from meteoalign.app_star_pair_table import StarPairTableMixin
 from meteoalign.simulator import ReferenceStar
 from meteoalign.star_pair_model import StarPairRecord
@@ -77,6 +78,7 @@ class _StarPairTableHarness(StarPairTableMixin):
         self._current_star_map = object()
         self._manual_reference_star_ids: list[str] = []
         self._excluded_reference_star_ids: list[str] = []
+        self._mask_excluded_reference_star_ids: set[str] = set()
         self.current_image_preview = None
         self._star_pair_store = StarPairStore()
 
@@ -117,7 +119,7 @@ class _StarPairTableHarness(StarPairTableMixin):
 
     def _refresh_reference_stars_from_current_map(self) -> None:
         auto_star_ids = set(self._auto_match_reference_star_ids)
-        excluded_star_ids = set(self._excluded_reference_star_ids)
+        excluded_star_ids = set(self._excluded_reference_star_ids) | set(self._mask_excluded_reference_star_ids)
         matched_star_ids = self._matched_reference_star_ids_from_table()
         visible_stars = tuple(
             star
@@ -207,3 +209,52 @@ def test_deleting_matched_manual_row_removes_it_instead_of_preserving_matched_st
     assert deleted_count == 1
     assert _visible_star_ids(harness) == []
     assert "manual-1" in harness._excluded_reference_star_ids
+
+
+def test_deleted_auto_match_row_can_reenter_auto_match_candidate_pool() -> None:
+    reference_star = _reference_star("auto-1", 1)
+    harness = _StarPairTableHarness((reference_star,))
+    harness._auto_match_reference_star_ids = ["auto-1"]
+    harness._auto_match_group_order = ["A"]
+    harness._auto_match_group_by_star_id = {"auto-1": "A"}
+    harness._auto_match_group_expanded_by_id = {"A": True}
+    harness._update_star_pair_table(harness.reference_stars)
+
+    deleted_count = harness._delete_star_pair_rows([_row_for_star_id(harness, "auto-1")])
+
+    assert deleted_count == 1
+    assert "auto-1" in harness._excluded_reference_star_ids
+    assert "auto-1" not in AutoMatchMixin._auto_match_blocked_reference_star_ids(harness)
+
+    harness._auto_match_constraint_mode = lambda: AUTO_MATCH_CONSTRAINT_SOFT  # type: ignore[attr-defined]
+    harness._auto_match_soft_weight = lambda: 0.3  # type: ignore[attr-defined]
+    candidate_ids = AutoMatchMixin._ensure_auto_match_candidates_visible(harness, [reference_star], "B")
+
+    assert candidate_ids == {"auto-1"}
+    assert "auto-1" not in harness._excluded_reference_star_ids
+    assert "auto-1" in harness._auto_match_reference_star_ids
+    assert harness._is_auto_match_row(_row_for_star_id(harness, "auto-1"))
+
+
+def test_only_mask_exclusions_remain_blocked_after_unmatched_candidate_cleanup() -> None:
+    failed_star = _reference_star("failed-1", 1)
+    masked_star = _reference_star("masked-1", 2)
+    harness = _StarPairTableHarness((failed_star, masked_star))
+    harness._auto_match_reference_star_ids = ["failed-1", "masked-1"]
+    harness._auto_match_group_order = ["A"]
+    harness._auto_match_group_by_star_id = {"failed-1": "A", "masked-1": "A"}
+    harness._auto_match_group_expanded_by_id = {"A": True}
+    harness._mask_excluded_reference_star_ids = {"masked-1"}
+    harness._update_star_pair_table(harness.reference_stars)
+
+    removed_count = AutoMatchMixin._remove_unmatched_auto_match_candidates(
+        harness,
+        {"failed-1", "masked-1"},
+    )
+    blocked_star_ids = AutoMatchMixin._auto_match_blocked_reference_star_ids(harness)
+
+    assert removed_count == 2
+    assert "failed-1" not in blocked_star_ids
+    assert "masked-1" in blocked_star_ids
+    assert "failed-1" in harness._excluded_reference_star_ids
+    assert "masked-1" in harness._excluded_reference_star_ids

@@ -957,6 +957,7 @@ class MosaicProjectionMixin:
             default_dir = self._mosaic_current_source_items()[-1].source_model.json_path.parent
         if not default_dir.exists():
             default_dir = project_root()
+        default_dir = self._import_dialog_directory(default_dir)
         file_path, _selected_filter = QFileDialog.getOpenFileName(
             self,
             "导入自由投影取景 JSON",
@@ -965,6 +966,7 @@ class MosaicProjectionMixin:
         )
         if not file_path:
             return
+        self._remember_import_path(file_path)
         self.load_mosaic_framing_json(file_path)
 
     def load_mosaic_framing_json(self, file_path: str | Path) -> bool:
@@ -1152,6 +1154,7 @@ class MosaicProjectionMixin:
             default_dir = self._mosaic_current_source_items()[-1].source_model.json_path.parent
         elif not default_dir.exists():
             default_dir = project_root()
+        default_dir = self._import_dialog_directory(default_dir)
         file_path, _selected_filter = QFileDialog.getOpenFileName(
             self,
             "导入源图模型 JSON",
@@ -1160,6 +1163,7 @@ class MosaicProjectionMixin:
         )
         if not file_path:
             return
+        self._remember_import_path(file_path)
         self.load_mosaic_model_json(file_path)
 
     def import_mosaic_models_json(self) -> None:
@@ -1169,6 +1173,7 @@ class MosaicProjectionMixin:
             default_dir = current_items[-1].source_model.json_path.parent
         elif not default_dir.exists():
             default_dir = project_root()
+        default_dir = self._import_dialog_directory(default_dir)
         file_paths, _selected_filter = QFileDialog.getOpenFileNames(
             self,
             "导入多张源图模型 JSON",
@@ -1177,6 +1182,7 @@ class MosaicProjectionMixin:
         )
         if not file_paths:
             return
+        self._remember_import_path(file_paths)
         self.load_mosaic_models_json(file_paths)
 
     def load_mosaic_model_json(self, file_path: str | Path, *, quiet: bool = False) -> bool:

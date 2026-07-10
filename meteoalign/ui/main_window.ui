@@ -2699,6 +2699,9 @@
                  </item>
                  <item row="0" column="1">
                   <widget class="QComboBox" name="comboBoxMosaicBatchMode">
+                   <property name="toolTip">
+                    <string>选择投影到自由天球取景，或对齐到底图的像素画布。</string>
+                   </property>
                    <item>
                     <property name="text">
                      <string>天球模式</string>
@@ -2754,6 +2757,9 @@
                 <layout class="QHBoxLayout" name="horizontalLayoutMosaicBatchImportButtons">
                  <item>
                   <widget class="QPushButton" name="pushButtonImportMosaicBatchFramingJson">
+                   <property name="toolTip">
+                    <string>导入自由投影页面导出的取景 JSON。</string>
+                   </property>
                    <property name="text">
                     <string>导入取景JSON</string>
                    </property>

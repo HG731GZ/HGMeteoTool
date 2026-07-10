@@ -26,6 +26,7 @@ class SequenceImportMixin:
             return
 
         default_dir = Path(self.current_image_preview.path).parent if self.current_image_preview is not None else Path.cwd()
+        default_dir = self._import_dialog_directory(default_dir)
         file_paths, _selected_filter = QFileDialog.getOpenFileNames(
             self,
             "导入序列图像",
@@ -34,6 +35,7 @@ class SequenceImportMixin:
         )
         if not file_paths:
             return
+        self._remember_import_path(file_paths)
 
         self.start_image_sequence_import(file_paths)
 

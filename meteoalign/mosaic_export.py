@@ -357,14 +357,15 @@ def mosaic_reprojection_blocks(
     *,
     source_model: object,
     source_rgb_u16: np.ndarray,
-    camera: CameraSettings,
-    view: ViewSettings,
-    observer: ObserverSettings,
+    camera: CameraSettings | None,
+    view: ViewSettings | None,
+    observer: ObserverSettings | None,
     geometry: MosaicExportGeometry,
     block_rows: int = MOSAIC_EXPORT_DEFAULT_BLOCK_ROWS,
     progress_callback: Callable[[int], None] | None = None,
     export_progress_callback: MosaicExportProgressCallback | None = None,
     target_icrs_to_pixel_payload: dict[str, object] | None = None,
+    target_model: object | None = None,
     map_tile_size_px: int = 4,
     exact_remap_repair: bool = False,
 ) -> Iterator[np.ndarray]:
@@ -372,8 +373,12 @@ def mosaic_reprojection_blocks(
 
     if cv2 is None:
         raise RuntimeError("当前环境缺少 OpenCV，无法执行重投影导出。")
+    if target_icrs_to_pixel_payload is not None and target_model is not None:
+        raise ValueError("目标 ICRS 变换和底图模型不能同时指定。")
     source = np.ascontiguousarray(source_rgb_u16, dtype=np.uint16)
-    if target_icrs_to_pixel_payload is None:
+    if target_icrs_to_pixel_payload is None and target_model is None:
+        if camera is None or view is None or observer is None:
+            raise ValueError("天球模式缺少目标相机、取景或观测者参数。")
         map_blocks = mosaic_reprojection_map_blocks(
             source_model=source_model,
             camera=camera,
@@ -410,6 +415,7 @@ def mosaic_reprojection_blocks(
         source_model=source_model,
         source_rgb_u16=source,
         target_icrs_to_pixel_payload=target_icrs_to_pixel_payload,
+        target_model=target_model,
         geometry=geometry,
         map_tile_size_px=map_tile_size_px,
         exact_remap_repair=exact_remap_repair,
@@ -422,7 +428,8 @@ def _render_mosaic_forward_remap_from_source_to_target(
     *,
     source_model: object,
     source_rgb_u16: np.ndarray,
-    target_icrs_to_pixel_payload: dict[str, object],
+    target_icrs_to_pixel_payload: dict[str, object] | None,
+    target_model: object | None,
     geometry: MosaicExportGeometry,
     map_tile_size_px: int,
     exact_remap_repair: bool,
@@ -448,6 +455,8 @@ def _render_mosaic_forward_remap_from_source_to_target(
                 source_model,
                 np.column_stack((grid_x.ravel(), grid_y.ravel())),
                 target_icrs_to_pixel_payload,
+                target_model=target_model,
+                geometry=geometry,
             )
             _accumulate_source_pixels_to_inverse_map(
                 accum_x,
@@ -472,6 +481,8 @@ def _render_mosaic_forward_remap_from_source_to_target(
             _accumulate_source_tile_row_to_inverse_map(
                 source_model=source_model,
                 target_icrs_to_pixel_payload=target_icrs_to_pixel_payload,
+                target_model=target_model,
+                geometry=geometry,
                 accum_x=accum_x,
                 accum_y=accum_y,
                 weights=weights,
@@ -498,6 +509,8 @@ def _render_mosaic_forward_remap_from_source_to_target(
         tile_size,
         source_model=source_model,
         target_icrs_to_pixel_payload=target_icrs_to_pixel_payload,
+        target_model=target_model,
+        geometry=geometry,
         exact_remap_repair=exact_remap_repair,
         export_progress_callback=export_progress_callback,
     )
@@ -518,7 +531,9 @@ def _finalize_forward_inverse_map(
     tile_size: int,
     *,
     source_model: object,
-    target_icrs_to_pixel_payload: dict[str, object],
+    target_icrs_to_pixel_payload: dict[str, object] | None,
+    target_model: object | None = None,
+    geometry: MosaicExportGeometry | None = None,
     exact_remap_repair: bool,
     export_progress_callback: MosaicExportProgressCallback | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -540,6 +555,8 @@ def _finalize_forward_inverse_map(
                 exact_mask,
                 source_model=source_model,
                 target_icrs_to_pixel_payload=target_icrs_to_pixel_payload,
+                target_model=target_model,
+                geometry=geometry,
                 progress_callback=lambda value, maximum: _emit_export_progress(
                     export_progress_callback,
                     "正在精确修复亮星小黑点...",
@@ -634,7 +651,9 @@ def _fill_forward_inverse_map_exact(
     exact_mask: np.ndarray,
     *,
     source_model: object,
-    target_icrs_to_pixel_payload: dict[str, object],
+    target_icrs_to_pixel_payload: dict[str, object] | None,
+    target_model: object | None,
+    geometry: MosaicExportGeometry | None,
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> np.ndarray:
     """对缺失和低权重全景图像素精确反算源图坐标，避免亮星处坐标平均出黑点。"""
@@ -655,6 +674,8 @@ def _fill_forward_inverse_map_exact(
         source_pixels, valid = _source_pixel_points_from_target_output_pixels(
             source_model=source_model,
             target_icrs_to_pixel_payload=target_icrs_to_pixel_payload,
+            target_model=target_model,
+            geometry=geometry,
             output_x_px=x_batch,
             output_y_px=y_batch,
         )
@@ -672,20 +693,31 @@ def _fill_forward_inverse_map_exact(
 def _source_pixel_points_from_target_output_pixels(
     *,
     source_model: object,
-    target_icrs_to_pixel_payload: dict[str, object],
+    target_icrs_to_pixel_payload: dict[str, object] | None,
+    target_model: object | None,
+    geometry: MosaicExportGeometry | None,
     output_x_px: np.ndarray,
     output_y_px: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
     """把裁剪后全景图像素精确反算到源图像素。"""
 
-    full_x = np.asarray(output_x_px, dtype=np.float64) + float(target_icrs_to_pixel_payload.get("crop_left_px", 0.0))
-    full_y = np.asarray(output_y_px, dtype=np.float64) + float(target_icrs_to_pixel_payload.get("crop_top_px", 0.0))
-    icrs_vectors, valid_projection = target_image_points_to_icrs_vectors(
-        full_x,
-        full_y,
-        camera=_target_transform_camera(target_icrs_to_pixel_payload),
-        icrs_basis=_target_transform_basis(target_icrs_to_pixel_payload),
-    )
+    crop_left_px, crop_top_px = _target_output_crop_offsets(target_icrs_to_pixel_payload, geometry)
+    full_x = np.asarray(output_x_px, dtype=np.float64) + crop_left_px
+    full_y = np.asarray(output_y_px, dtype=np.float64) + crop_top_px
+    if target_model is not None:
+        icrs_vectors, valid_projection = _model_pixel_points_to_icrs_vectors(
+            target_model,
+            np.column_stack((full_x, full_y)),
+        )
+    else:
+        if target_icrs_to_pixel_payload is None:
+            raise ValueError("缺少目标 ICRS 变换或底图模型。")
+        icrs_vectors, valid_projection = target_image_points_to_icrs_vectors(
+            full_x,
+            full_y,
+            camera=_target_transform_camera(target_icrs_to_pixel_payload),
+            icrs_basis=_target_transform_basis(target_icrs_to_pixel_payload),
+        )
     icrs_vectors[~valid_projection] = np.nan
     source_pixels, valid_source = _source_pixel_points_from_icrs_vectors(source_model, icrs_vectors)
     return source_pixels, valid_projection & valid_source
@@ -694,7 +726,9 @@ def _source_pixel_points_from_target_output_pixels(
 def _accumulate_source_tile_row_to_inverse_map(
     *,
     source_model: object,
-    target_icrs_to_pixel_payload: dict[str, object],
+    target_icrs_to_pixel_payload: dict[str, object] | None,
+    target_model: object | None,
+    geometry: MosaicExportGeometry,
     accum_x: np.ndarray,
     accum_y: np.ndarray,
     weights: np.ndarray,
@@ -711,6 +745,8 @@ def _accumulate_source_tile_row_to_inverse_map(
         _accumulate_equal_width_source_tiles_to_inverse_map(
             source_model=source_model,
             target_icrs_to_pixel_payload=target_icrs_to_pixel_payload,
+            target_model=target_model,
+            geometry=geometry,
             accum_x=accum_x,
             accum_y=accum_y,
             weights=weights,
@@ -724,6 +760,8 @@ def _accumulate_source_tile_row_to_inverse_map(
         _accumulate_equal_width_source_tiles_to_inverse_map(
             source_model=source_model,
             target_icrs_to_pixel_payload=target_icrs_to_pixel_payload,
+            target_model=target_model,
+            geometry=geometry,
             accum_x=accum_x,
             accum_y=accum_y,
             weights=weights,
@@ -737,7 +775,9 @@ def _accumulate_source_tile_row_to_inverse_map(
 def _accumulate_equal_width_source_tiles_to_inverse_map(
     *,
     source_model: object,
-    target_icrs_to_pixel_payload: dict[str, object],
+    target_icrs_to_pixel_payload: dict[str, object] | None,
+    target_model: object | None,
+    geometry: MosaicExportGeometry,
     accum_x: np.ndarray,
     accum_y: np.ndarray,
     weights: np.ndarray,
@@ -754,6 +794,8 @@ def _accumulate_equal_width_source_tiles_to_inverse_map(
         exact_pixels = _source_tile_row_pixels_to_target_pixels_exact(
             source_model=source_model,
             target_icrs_to_pixel_payload=target_icrs_to_pixel_payload,
+            target_model=target_model,
+            geometry=geometry,
             x0_values=x0_values,
             y0=y0,
             width=tile_width,
@@ -785,6 +827,8 @@ def _accumulate_equal_width_source_tiles_to_inverse_map(
         source_model,
         sample_points.reshape((-1, 2)),
         target_icrs_to_pixel_payload,
+        target_model=target_model,
+        geometry=geometry,
     )
     sample_target = sample_target.reshape((tile_count, 5, 2))
     sample_valid = sample_valid.reshape((tile_count, 5))
@@ -842,7 +886,9 @@ def _source_tile_coordinate_blocks(
 def _source_tile_row_pixels_to_target_pixels_exact(
     *,
     source_model: object,
-    target_icrs_to_pixel_payload: dict[str, object],
+    target_icrs_to_pixel_payload: dict[str, object] | None,
+    target_model: object | None,
+    geometry: MosaicExportGeometry,
     x0_values: np.ndarray,
     y0: int,
     width: int,
@@ -856,18 +902,70 @@ def _source_tile_row_pixels_to_target_pixels_exact(
     )
     tile_y = np.full((x0_values.size, height, width), float(y0), dtype=np.float64) + local_y[None, :, None]
     points = np.column_stack((tile_x.reshape(-1), tile_y.reshape(-1)))
-    return _source_pixels_to_target_pixels(source_model, points, target_icrs_to_pixel_payload)
+    return _source_pixels_to_target_pixels(
+        source_model,
+        points,
+        target_icrs_to_pixel_payload,
+        target_model=target_model,
+        geometry=geometry,
+    )
 
 
 def _source_pixels_to_target_pixels(
     source_model: object,
     source_pixels: np.ndarray,
-    target_icrs_to_pixel_payload: dict[str, object],
+    target_icrs_to_pixel_payload: dict[str, object] | None,
+    *,
+    target_model: object | None = None,
+    geometry: MosaicExportGeometry | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     pixels = np.asarray(source_pixels, dtype=np.float64)
     radec = np.asarray(source_model.pixel_to_sky_points(pixels), dtype=np.float64)
     vectors = radec_to_unit_vectors(radec[:, 0], radec[:, 1])
+    if target_model is not None:
+        target_pixels = _source_pixels_from_icrs_vectors(target_model, vectors)
+        crop_left_px, crop_top_px = _target_output_crop_offsets(target_icrs_to_pixel_payload, geometry)
+        target_pixels[:, 0] -= crop_left_px
+        target_pixels[:, 1] -= crop_top_px
+        valid = np.all(np.isfinite(radec), axis=1) & np.all(np.isfinite(target_pixels), axis=1)
+        target_pixels[~valid] = np.nan
+        return target_pixels.astype(np.float64), valid.astype(bool)
+    if target_icrs_to_pixel_payload is None:
+        raise ValueError("缺少目标 ICRS 变换或底图模型。")
     return target_icrs_vectors_to_output_pixel_points(vectors, target_icrs_to_pixel_payload)
+
+
+def _target_output_crop_offsets(
+    target_icrs_to_pixel_payload: dict[str, object] | None,
+    geometry: MosaicExportGeometry | None,
+) -> tuple[float, float]:
+    """读取目标画布相对于完整图像左上角的裁剪偏移。"""
+
+    if geometry is not None:
+        return float(geometry.crop_left_px), float(geometry.crop_top_px)
+    if target_icrs_to_pixel_payload is not None:
+        return (
+            float(target_icrs_to_pixel_payload.get("crop_left_px", 0.0)),
+            float(target_icrs_to_pixel_payload.get("crop_top_px", 0.0)),
+        )
+    return 0.0, 0.0
+
+
+def _model_pixel_points_to_icrs_vectors(
+    model: object,
+    pixel_points: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """通过 Pixel→ICRS 模型把图像像素转换为单位方向。"""
+
+    pixels = np.asarray(pixel_points, dtype=np.float64)
+    radec = np.asarray(model.pixel_to_sky_points(pixels), dtype=np.float64)
+    if radec.shape != (pixels.shape[0], 2):
+        raise ValueError(f"底图模型 Pixel→ICRS 输出形状异常：{radec.shape}")
+    valid = np.all(np.isfinite(radec), axis=1)
+    vectors = np.full((pixels.shape[0], 3), np.nan, dtype=np.float64)
+    if np.any(valid):
+        vectors[valid] = radec_to_unit_vectors(radec[valid, 0], radec[valid, 1])
+    return vectors, valid.astype(bool)
 
 
 def _accumulate_source_pixels_to_inverse_map(
@@ -1279,15 +1377,16 @@ def write_mosaic_reprojection_tiff(
     output_path: str | Path,
     source_model: object,
     source_image: MosaicExportSourceImage,
-    camera: CameraSettings,
-    view: ViewSettings,
-    observer: ObserverSettings,
+    camera: CameraSettings | None,
+    view: ViewSettings | None,
+    observer: ObserverSettings | None,
     geometry: MosaicExportGeometry,
     framing_payload: dict[str, object] | None = None,
     block_rows: int = MOSAIC_EXPORT_DEFAULT_BLOCK_ROWS,
     progress_callback: Callable[[int], None] | None = None,
     export_progress_callback: MosaicExportProgressCallback | None = None,
     target_icrs_to_pixel_payload: dict[str, object] | None = None,
+    target_model: object | None = None,
     map_tile_size_px: int = 4,
     exact_remap_repair: bool = False,
     tiff_lzw_compression: bool = True,
@@ -1298,11 +1397,22 @@ def write_mosaic_reprojection_tiff(
         raise RuntimeError("当前环境缺少 tifffile，无法写入 16-bit TIFF。")
     if geometry.output_width_px <= 0 or geometry.output_height_px <= 0:
         raise ValueError("裁剪后的导出尺寸无效。")
+    if target_icrs_to_pixel_payload is not None and target_model is not None:
+        raise ValueError("目标 ICRS 变换和底图模型不能同时指定。")
     if target_icrs_to_pixel_payload is not None and not target_icrs_to_pixel_transform_payload_matches(
         target_icrs_to_pixel_payload,
         geometry=geometry,
     ):
         raise ValueError("取景 JSON 中的 ICRS 到全景图像素变换与当前输出几何不匹配。")
+    if target_model is not None:
+        target_width = int(getattr(target_model, "image_width_px", 0) or 0)
+        target_height = int(getattr(target_model, "image_height_px", 0) or 0)
+        if target_width != int(geometry.boundary_width_px) or target_height != int(geometry.boundary_height_px):
+            raise ValueError(
+                "底图模型尺寸与输出边界不一致："
+                f"模型 {target_width} x {target_height} px，"
+                f"边界 {geometry.boundary_width_px} x {geometry.boundary_height_px} px。"
+            )
     description = _mosaic_export_description(framing_payload)
     blocks = list(
         mosaic_reprojection_blocks(
@@ -1316,6 +1426,7 @@ def write_mosaic_reprojection_tiff(
             progress_callback=progress_callback,
             export_progress_callback=export_progress_callback,
             target_icrs_to_pixel_payload=target_icrs_to_pixel_payload,
+            target_model=target_model,
             map_tile_size_px=map_tile_size_px,
             exact_remap_repair=exact_remap_repair,
         )

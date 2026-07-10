@@ -52,6 +52,7 @@ class _Harness(StarPairJsonTaskMixin):
         self._auto_match_group_expanded_by_id = {"A": False}
         self._auto_match_next_group_index = 1
         self._excluded_reference_star_ids = ["deleted-old"]
+        self._mask_excluded_reference_star_ids = {"masked-old"}
         self._sky_alignment_transform = object()
         self._source_astrometric_model = object()
         self._reference_alignment_error_message = "旧参考错误"
@@ -97,6 +98,7 @@ def test_new_input_reset_clears_unmatched_reference_state() -> None:
     assert harness._auto_match_group_expanded_by_id == {}
     assert harness._auto_match_next_group_index == 0
     assert harness._excluded_reference_star_ids == []
+    assert harness._mask_excluded_reference_star_ids == set()
     assert harness._manual_match_group_expanded is True
     assert harness._sky_alignment_transform is None
     assert harness._source_astrometric_model is None

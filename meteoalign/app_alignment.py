@@ -161,6 +161,7 @@ class AlignmentMixin:
             default_dir = profile_path.parent
         elif self.current_image_preview is not None:
             default_dir = Path(self.current_image_preview.path).expanduser().resolve().parent
+        default_dir = self._import_dialog_directory(default_dir)
         file_path, _selected_filter = QFileDialog.getOpenFileName(
             self,
             "从模型 JSON 导入 Camera Profile",
@@ -169,6 +170,7 @@ class AlignmentMixin:
         )
         if not file_path:
             return
+        self._remember_import_path(file_path)
         try:
             json_path = Path(file_path).expanduser().resolve()
             payload = json.loads(json_path.read_text(encoding="utf-8"))

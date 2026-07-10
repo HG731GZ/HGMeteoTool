@@ -80,6 +80,37 @@ class _CountingTargetProjectionSourceModel(_TargetProjectionSourceModel):
         return super().pixel_to_sky_points(pixel_points)
 
 
+class _LinearAstrometricModel:
+    """用于验证 Pixel→ICRS→Pixel 桥接的可逆线性模型。"""
+
+    def __init__(self, width: int, height: int, ra_offset_deg: float, dec_offset_deg: float) -> None:
+        self.image_width_px = int(width)
+        self.image_height_px = int(height)
+        self.ra_offset_deg = float(ra_offset_deg)
+        self.dec_offset_deg = float(dec_offset_deg)
+
+    def pixel_to_sky_points(self, pixel_points: np.ndarray) -> np.ndarray:
+        pixels = np.asarray(pixel_points, dtype=np.float64)
+        return np.column_stack(
+            (
+                pixels[:, 0] + self.ra_offset_deg,
+                pixels[:, 1] + self.dec_offset_deg,
+            )
+        )
+
+    def sky_to_pixel_points(self, ra_dec_points: np.ndarray) -> np.ndarray:
+        radec = np.asarray(ra_dec_points, dtype=np.float64)
+        return np.column_stack(
+            (
+                radec[:, 0] - self.ra_offset_deg,
+                radec[:, 1] - self.dec_offset_deg,
+            )
+        )
+
+    def icrs_vectors_to_pixel_points(self, vectors: np.ndarray) -> np.ndarray:
+        return self.sky_to_pixel_points(unit_vectors_to_radec(vectors))
+
+
 def test_mosaic_export_cropped_geometry_subtracts_all_margins() -> None:
     geometry = mosaic_export_cropped_geometry(
         boundary_width_px=6000,
@@ -327,6 +358,63 @@ def test_mosaic_export_uses_target_icrs_to_pixel_transform_payload(tmp_path) -> 
     assert exported.shape == (4, 6, 4)
     assert exported[1, 1, 3] == 65535
     assert np.max(np.abs(exported[1, 1, :3].astype(np.int32) - source_rgb[2, 2].astype(np.int32))) < 8
+
+
+def test_mosaic_export_uses_base_image_model_as_pixel_target(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    source_width, source_height = 16, 12
+    target_width, target_height = 64, 48
+    source_rgb = np.zeros((source_height, source_width, 3), dtype=np.uint16)
+    for y_value in range(source_height):
+        for x_value in range(source_width):
+            source_rgb[y_value, x_value] = (
+                1000 + x_value * 1000,
+                2000 + y_value * 2000,
+                30000,
+            )
+
+    # 两个模型的赤经、赤纬零点不同，因此源图会在底图画布上向右 20、向下 15 像素。
+    source_model = _LinearAstrometricModel(source_width, source_height, 30.0, 20.0)
+    base_model = _LinearAstrometricModel(target_width, target_height, 10.0, 5.0)
+    geometry = MosaicExportGeometry(
+        boundary_width_px=target_width,
+        boundary_height_px=target_height,
+        crop_left_px=0,
+        crop_top_px=0,
+        output_width_px=target_width,
+        output_height_px=target_height,
+    )
+    output_path = tmp_path / "base_model_export.tif"
+
+    write_mosaic_reprojection_tiff(
+        output_path=output_path,
+        source_model=source_model,
+        source_image=MosaicExportSourceImage(
+            path=tmp_path / "source.tif",
+            rgb_u16=source_rgb,
+            exif_tags=(),
+            icc_profile=None,
+        ),
+        camera=None,
+        view=None,
+        observer=None,
+        geometry=geometry,
+        target_model=base_model,
+        map_tile_size_px=4,
+    )
+
+    with tifffile.TiffFile(output_path) as tiff:
+        exported = tiff.asarray()
+        compression = tiff.pages[0].tags["Compression"].value
+
+    assert exported.shape == (target_height, target_width, 4)
+    assert exported.dtype == np.uint16
+    assert compression == 5
+    assert np.array_equal(exported[0, 0], np.asarray([0, 0, 0, 0], dtype=np.uint16))
+    assert np.array_equal(exported[15, 20, :3], source_rgb[0, 0])
+    assert exported[15, 20, 3] == 65535
+    assert np.array_equal(exported[26, 35, :3], source_rgb[11, 15])
+    assert exported[26, 35, 3] == 65535
+    assert np.all(exported[47, :, 3] == 0)
 
 
 def test_mosaic_export_fixed_tile_forward_path_projects_fewer_source_points(tmp_path) -> None:  # type: ignore[no-untyped-def]

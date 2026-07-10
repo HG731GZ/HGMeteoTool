@@ -77,6 +77,7 @@ class StarPairIOMixin(
     _manual_reference_star_ids: list
     _imported_reference_star_by_id: dict
     _excluded_reference_star_ids: list
+    _mask_excluded_reference_star_ids: set
     _current_star_map: object | None
     _sky_alignment_transform: object | None
     _source_astrometric_model: object | None

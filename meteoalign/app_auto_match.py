@@ -39,6 +39,7 @@ class AutoMatchMixin:
     _auto_match_group_expanded_by_id: dict
     _auto_match_next_group_index: int
     _excluded_reference_star_ids: list
+    _mask_excluded_reference_star_ids: set
     _manual_reference_star_ids: list
     _active_star_pair_row: int | None
     _star_pick_circle_diameter_px: int
@@ -342,7 +343,12 @@ class AutoMatchMixin:
         if self.current_sky_mask is not None:
             mask_allowed = np.zeros(len(star_map), dtype=bool)
             for index in np.where(inside)[0]:
-                mask_allowed[index] = self._sky_mask_allows_point(float(predicted[index, 0]), float(predicted[index, 1]))
+                point_allowed = self._sky_mask_allows_point(float(predicted[index, 0]), float(predicted[index, 1]))
+                mask_allowed[index] = point_allowed
+                if not point_allowed:
+                    star_id = str(star_map.star_ids[index]).strip()
+                    if star_id:
+                        self._mask_excluded_reference_star_ids.add(star_id)
             inside &= mask_allowed
 
         candidate_indices = np.where(inside)[0]
@@ -351,12 +357,7 @@ class AutoMatchMixin:
 
         order = np.argsort(star_map.mag_v[candidate_indices], kind="stable")
         candidate_indices = candidate_indices[order]
-        existing_star_ids = {
-            self._star_pair_star_id(row)
-            for row in range(self.ui.tableWidgetStarPairs.rowCount())
-            if self._star_pair_star_id(row)
-        }
-        blocked_star_ids = existing_star_ids | set(self._auto_match_reference_star_ids) | set(self._excluded_reference_star_ids)
+        blocked_star_ids = self._auto_match_blocked_reference_star_ids()
         new_star_limit = max(1, int(self.ui.spinBoxAutoMatchCount.value()))
 
         candidates: list[ReferenceStar] = []
@@ -373,6 +374,20 @@ class AutoMatchMixin:
             if len(candidates) >= new_star_limit:
                 break
         return candidates, predicted_by_id
+
+    def _auto_match_blocked_reference_star_ids(self) -> set[str]:
+        """返回当前不能再次进入自动匹配候选池的星号。"""
+
+        existing_star_ids = {
+            self._star_pair_star_id(row)
+            for row in range(self.ui.tableWidgetStarPairs.rowCount())
+            if self._star_pair_star_id(row)
+        }
+        return (
+            existing_star_ids
+            | set(self._auto_match_reference_star_ids)
+            | set(self._mask_excluded_reference_star_ids)
+        )
 
     def _ensure_auto_match_candidates_visible(self, candidates: list[ReferenceStar], group_id: str) -> set[str]:
         visible_star_ids = {
@@ -391,9 +406,11 @@ class AutoMatchMixin:
                 not star_id
                 or star_id in visible_star_ids
                 or star_id in self._auto_match_reference_star_ids
-                or star_id in self._excluded_reference_star_ids
+                or star_id in self._mask_excluded_reference_star_ids
             ):
                 continue
+            if star_id in self._excluded_reference_star_ids:
+                self._excluded_reference_star_ids.remove(star_id)
             self._auto_match_reference_star_ids.append(star_id)
             self._auto_match_group_by_star_id[star_id] = group_id
 
@@ -425,6 +442,8 @@ class AutoMatchMixin:
         ]
         for star_id in remove_star_ids:
             self._auto_match_group_by_star_id.pop(star_id, None)
+            if star_id not in self._excluded_reference_star_ids:
+                self._excluded_reference_star_ids.append(star_id)
         self._normalize_auto_match_groups()
         self._refresh_reference_stars_from_current_map()
         return len(remove_star_ids)
@@ -463,7 +482,7 @@ class AutoMatchMixin:
             return
 
         auto_group_id = self._create_auto_match_group()
-        self._ensure_auto_match_candidates_visible(candidates, auto_group_id)
+        candidate_star_ids = self._ensure_auto_match_candidates_visible(candidates, auto_group_id)
         image = self.current_image_preview.image
         search_radius_px = self.ui.spinBoxAutoMatchRadius.value()
         annotate_matches = len(candidates) <= AUTO_MATCH_ANNOTATION_LIMIT
@@ -511,6 +530,7 @@ class AutoMatchMixin:
                     continue
                 predicted_x, predicted_y = predicted_position
                 if not self._sky_mask_allows_point(predicted_x, predicted_y):
+                    self._mask_excluded_reference_star_ids.add(star_id)
                     skipped_mask += 1
                     continue
 
@@ -530,6 +550,7 @@ class AutoMatchMixin:
                     failed_count += 1
                     continue
                 if not self._sky_mask_allows_point(fitted_position.x, fitted_position.y):
+                    self._mask_excluded_reference_star_ids.add(star_id)
                     skipped_mask += 1
                     continue
                 fitted_xy = (float(fitted_position.x), float(fitted_position.y))
@@ -547,6 +568,7 @@ class AutoMatchMixin:
             progress.setValue(len(candidates))
             progress.close()
 
+        self._remove_unmatched_auto_match_candidates(candidate_star_ids)
         self._refresh_star_pair_table_styles()
         self._update_reference_alignment_transform()
         status_prefix = "自动扩展匹配已取消" if canceled else "自动扩展匹配完成"

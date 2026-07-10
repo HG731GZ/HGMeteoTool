@@ -367,14 +367,16 @@ class SequenceExportMixin:
             QMessageBox.warning(self, "无法导入序列蒙版", str(exc))
             return
 
+        default_dir = self._import_dialog_directory(first_item.path.parent)
         file_path, _selected_filter = QFileDialog.getOpenFileName(
             self,
             "导入序列蒙版",
-            str(first_item.path.parent),
+            str(default_dir),
             IMAGE_FILE_FILTER,
         )
         if not file_path:
             return
+        self._remember_import_path(file_path)
         self.start_sky_mask_import(file_path)
 
     def clear_image_sequence_sky_mask(self) -> None:

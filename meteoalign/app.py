@@ -42,6 +42,7 @@ from .catalog_download import ensure_catalogs_ready_or_handle
 from .catalog import load_default_catalog, project_root
 from .camera_calibration import CameraCalibrationProfile
 from .config import StarMapUiConfig, load_star_map_ui_config
+from .preference_manager import ensure_preference_file, recent_import_directory, remember_import_path
 from .coordinates import radec_to_unit_vectors
 from .image_preview import IMAGE_FILE_FILTER, ImagePreview, load_image_preview
 from .milky_way import MilkyWayCatalog, load_milky_way
@@ -147,6 +148,16 @@ class MainWindow(
     - RenderingMixin: 渲染与模拟
     - ViewControlsMixin: 视图缩放与事件处理
     """
+
+    def _import_dialog_directory(self, fallback: str | Path) -> Path:
+        """让所有导入对话框共享最近一次选择的目录。"""
+
+        return recent_import_directory(fallback)
+
+    def _remember_import_path(self, selected: str | Path | list[str] | tuple[str, ...]) -> None:
+        """保存最近一次文件导入目录；写入失败不阻断实际导入。"""
+
+        remember_import_path(selected)
 
     def __init__(self) -> None:
         super().__init__()
@@ -262,6 +273,7 @@ class MainWindow(
         self._star_pair_sort_key: str | None = None
         self._star_pair_sort_descending = True
         self._excluded_reference_star_ids: list[str] = []
+        self._mask_excluded_reference_star_ids: set[str] = set()
         self._star_pick_native_zoom_remainder = 0.0
         self.current_sky_mask_path: Path | None = None
         self.current_sky_mask: np.ndarray | None = None
@@ -463,6 +475,7 @@ def main(argv: list[str] | None = None) -> int:
 
     启动 Qt 应用，检查星表数据是否就绪，然后显示主窗口。
     """
+    ensure_preference_file()
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(argv or sys.argv)

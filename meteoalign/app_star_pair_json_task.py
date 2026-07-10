@@ -45,6 +45,7 @@ class StarPairJsonTaskMixin:
         self._auto_match_group_expanded_by_id = {}
         self._auto_match_next_group_index = 0
         self._excluded_reference_star_ids = []
+        self._mask_excluded_reference_star_ids = set()
 
         self._sky_alignment_transform = None
         self._source_astrometric_model = None

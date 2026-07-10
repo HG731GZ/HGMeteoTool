@@ -23,6 +23,7 @@ class ReferenceJsonIOMixin:
         default_dir = project_root() / "outputs"
         if not default_dir.exists():
             default_dir = project_root()
+        default_dir = self._import_dialog_directory(default_dir)
         file_path, _selected_filter = QFileDialog.getOpenFileName(
             self,
             "导入预览 JSON",
@@ -31,6 +32,7 @@ class ReferenceJsonIOMixin:
         )
         if not file_path:
             return
+        self._remember_import_path(file_path)
         self.load_reference_json(file_path)
 
     def load_reference_json(self, file_path: str | Path) -> None:
@@ -217,6 +219,7 @@ class ReferenceJsonIOMixin:
         self._auto_match_group_expanded_by_id = {}
         self._auto_match_next_group_index = 0
         self._excluded_reference_star_ids = []
+        self._mask_excluded_reference_star_ids = set()
         self._update_reference_label_controls()
         self._update_lens_model_controls()
         self.ui.tabWidgetMain.setCurrentWidget(self.ui.tabSimulator)

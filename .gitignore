@@ -32,6 +32,8 @@ Thumbs.db
 .codex/
 
 # Local generated outputs
+/preference.json
+/preference.json.tmp
 reference_star_map.png
 reference_star_list.json
 /pytest.ini

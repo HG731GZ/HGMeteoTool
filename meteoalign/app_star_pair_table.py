@@ -41,6 +41,7 @@ class StarPairTableMixin(
     _current_star_map: object | None
     _manual_reference_star_ids: list
     _excluded_reference_star_ids: list
+    _mask_excluded_reference_star_ids: set
     current_image_preview: object | None
     real_image_scene: object
     reference_scene: object

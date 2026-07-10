@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from .runtime_paths import frozen_app_sibling_dir, is_frozen_app, source_project_root
+from .preference_manager import default_preference_path, ensure_preference_file
 
 
 @dataclass(frozen=True)
@@ -39,50 +38,7 @@ class StarMapUiConfig:
 
 
 def default_config_path() -> Path:
-    if is_frozen_app():
-        return frozen_app_sibling_dir() / "preference.json"
-    return source_project_root() / "preference.json"
-
-
-def _strip_json_comments(text: str) -> str:
-    """移除 JSONC 风格注释，保留字符串内部的斜杠字符。"""
-
-    result: list[str] = []
-    index = 0
-    in_string = False
-    escaped = False
-    while index < len(text):
-        char = text[index]
-        next_char = text[index + 1] if index + 1 < len(text) else ""
-        if in_string:
-            result.append(char)
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-            index += 1
-            continue
-        if char == '"':
-            in_string = True
-            result.append(char)
-            index += 1
-            continue
-        if char == "/" and next_char == "/":
-            index += 2
-            while index < len(text) and text[index] not in "\r\n":
-                index += 1
-            continue
-        if char == "/" and next_char == "*":
-            index += 2
-            while index + 1 < len(text) and not (text[index] == "*" and text[index + 1] == "/"):
-                index += 1
-            index = min(index + 2, len(text))
-            continue
-        result.append(char)
-        index += 1
-    return "".join(result)
+    return default_preference_path()
 
 
 def _read_int(config: dict[str, object], key: str, default_value: int, minimum: int, maximum: int) -> int:
@@ -128,15 +84,7 @@ def _read_bool(config: dict[str, object], key: str, default_value: bool) -> bool
 
 def load_star_map_ui_config(path: Path | None = None) -> StarMapUiConfig:
     config_path = path or default_config_path()
-    if not config_path.exists():
-        return StarMapUiConfig()
-
-    try:
-        raw_config = json.loads(_strip_json_comments(config_path.read_text(encoding="utf-8")))
-    except (OSError, json.JSONDecodeError):
-        return StarMapUiConfig()
-    if not isinstance(raw_config, dict):
-        return StarMapUiConfig()
+    raw_config = ensure_preference_file(config_path)
 
     circle_min = _read_int(raw_config, "star_pick_circle_min_diameter_px", 20, 4, 1000)
     circle_max = _read_int(raw_config, "star_pick_circle_max_diameter_px", 200, circle_min, 2000)

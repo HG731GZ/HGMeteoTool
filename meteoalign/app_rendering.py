@@ -70,6 +70,7 @@ class RenderingMixin:
     _imported_reference_star_by_id: dict
     _auto_match_reference_star_ids: list
     _excluded_reference_star_ids: list
+    _mask_excluded_reference_star_ids: set
     current_image_preview: ImagePreview | None
     current_sky_mask: np.ndarray | None
     current_sky_masked_image: object
@@ -205,7 +206,9 @@ class RenderingMixin:
         # 手动点选的参考星以星表编号保存；每次渲染后用当前投影坐标重新生成行。
         ordered_stars: list[ReferenceStar] = []
         seen_star_ids: set[str] = set()
-        excluded_star_ids = set(self._excluded_reference_star_ids)
+        excluded_star_ids = set(self._excluded_reference_star_ids) | set(
+            getattr(self, "_mask_excluded_reference_star_ids", set())
+        )
         auto_match_star_ids = set(self._auto_match_reference_star_ids)
         for star in auto_reference_stars:
             star_id = star.star_id.strip()
