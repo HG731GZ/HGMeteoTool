@@ -67,6 +67,20 @@ def runtime_catalog_dir() -> Path:
     return source_project_root() / "catalog"
 
 
+def runtime_icon_path() -> Path:
+    """定位应用图标，兼容源码目录与打包后的资源目录。"""
+
+    if not is_frozen_app():
+        return source_project_root() / "icon256.png"
+
+    for root in frozen_resource_roots():
+        icon_path = root / "icon256.png"
+        if icon_path.exists():
+            return icon_path
+
+    return frozen_app_sibling_dir() / "icon256.png"
+
+
 def _unique_paths(paths: list[Path]) -> tuple[Path, ...]:
     unique: list[Path] = []
     for path in paths:

@@ -43,6 +43,7 @@ from ..catalog import load_default_catalog, project_root
 from ..camera_calibration import CameraCalibrationProfile
 from ..config import StarMapUiConfig, load_star_map_ui_config
 from ..preference_manager import ensure_preference_file, recent_import_directory, remember_import_path
+from ..runtime_paths import runtime_icon_path
 from ..coordinates import radec_to_unit_vectors
 from ..image_preview import IMAGE_FILE_FILTER, ImagePreview, load_image_preview
 from ..milky_way import MilkyWayCatalog, load_milky_way
@@ -480,8 +481,7 @@ def main(argv: list[str] | None = None) -> int:
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(argv or sys.argv)
 
-    icon_path = Path(__file__).resolve().parent.parent / "icon256.png"
-    app.setWindowIcon(QIcon(str(icon_path)))
+    app.setWindowIcon(QIcon(str(runtime_icon_path())))
 
     if not ensure_catalogs_ready_or_handle():
         return 0
