@@ -5,12 +5,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
-from PyQt5.QtGui import QColor, QImage
 
 from meteoalign.alignment.constants import SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT
 from meteoalign.app_reference_json_io import ReferenceJsonIOMixin
 from meteoalign.app_mosaic import MosaicProjectionMixin, MosaicSourceItem
 from meteoalign.config import load_star_map_ui_config
+from meteoalign.mosaic.render_coordinator import MosaicRenderCoordinator
 from meteoalign.mosaic_framing import MOSAIC_FRAMING_SCHEMA
 from meteoalign.mosaic_common import (
     MOSAIC_OVERLAY_MODE_SOURCE_IMAGE,
@@ -253,7 +253,7 @@ def test_mosaic_interaction_grid_reduction_keeps_image_edges() -> None:
         valid=np.ones((6, 5), dtype=bool),
     )
 
-    reduced = MosaicProjectionMixin._reduced_mosaic_coverage_cache(cache)
+    reduced = MosaicRenderCoordinator.reduced_coverage_cache(cache)
 
     assert reduced.grid_rows == 4
     assert reduced.grid_columns == 3
@@ -367,31 +367,29 @@ def test_mosaic_single_and_multi_modes_replace_each_other_without_merging() -> N
     assert MosaicProjectionMixin._mosaic_current_source_items(window) == [first, second]
 
 
-def test_mosaic_source_items_paint_later_items_on_top() -> None:
-    first = object()
-    second = object()
+def test_mosaic_mixin_stores_business_state_in_session_state() -> None:
+    """Mixin 的旧属性入口必须代理到唯一的拼图会话状态。"""
+
+    item = _mosaic_source_item("single_model.json")
     window = MosaicProjectionMixin.__new__(MosaicProjectionMixin)
-    image = QImage(2, 1, QImage.Format_ARGB32)
-    image.fill(QColor(0, 0, 0))
 
-    def fake_overlay(item, **_kwargs):  # type: ignore[no-untyped-def]
-        if item is first:
-            return np.asarray([[[255, 0, 0, 255], [255, 0, 0, 255]]], dtype=np.uint8)
-        return np.asarray([[[0, 255, 0, 255], [0, 0, 0, 0]]], dtype=np.uint8)
+    MosaicProjectionMixin._activate_single_mosaic_source_item(window, item)
+    window._mosaic_center_az_deg = 123.0
+    window._mosaic_center_alt_deg = 35.0
+    window._mosaic_roll_deg = -12.0
+    window._mosaic_output_boundary_width_px = 4096
+    window._mosaic_output_boundary_height_px = 2048
 
-    window._mosaic_source_item_overlay_rgba = fake_overlay  # type: ignore[attr-defined]
-
-    MosaicProjectionMixin._paint_mosaic_source_items(
-        window,
-        image,
-        camera=SimpleNamespace(),
-        view=SimpleNamespace(),
-        items=[first, second],  # type: ignore[list-item]
-        observer=SimpleNamespace(),  # type: ignore[arg-type]
-    )
-
-    assert image.pixelColor(0, 0).green() == 255
-    assert image.pixelColor(1, 0).red() == 255
+    assert window.mosaic_state.sources == [item]
+    assert window.mosaic_state.active_source is item
+    assert not window.mosaic_state.multi_model_mode
+    assert window.mosaic_state.view.center_az_deg == 123.0
+    assert window.mosaic_state.view.center_alt_deg == 35.0
+    assert window.mosaic_state.view.roll_deg == -12.0
+    assert window.mosaic_state.view.output_boundary_width_px == 4096
+    assert window.mosaic_state.view.output_boundary_height_px == 2048
+    assert "_mosaic_source_items" not in window.__dict__
+    assert "_mosaic_center_az_deg" not in window.__dict__
 
 
 class _MosaicWithReferenceJsonMixin(ReferenceJsonIOMixin, MosaicProjectionMixin):

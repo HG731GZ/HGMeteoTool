@@ -11,6 +11,21 @@ from .alignment.constants import (
     SKY_MATCHING_MODEL_POLYNOMIAL,
     SKY_MATCHING_MODEL_RECTILINEAR,
 )
+from .matching_constants import (
+    AUTO_MATCH_ANNOTATION_LIMIT,
+    AUTO_MATCH_CONSTRAINT_ANCHOR,
+    AUTO_MATCH_CONSTRAINT_MODES,
+    AUTO_MATCH_CONSTRAINT_SOFT,
+    AUTO_MATCH_DEFAULT_SOFT_WEIGHT,
+    AUTO_MATCH_DUPLICATE_MIN_DISTANCE_PX,
+    AUTO_MATCH_MIN_ALTITUDE_DEG,
+    AUTO_MATCH_MIN_AMPLITUDE,
+    AUTO_MATCH_SEARCH_MAG_LIMIT,
+    AUTO_PAIR_MAX_SEARCH_RADIUS_PX,
+    AUTO_PAIR_RMS_RADIUS_SCALE,
+    MIN_PSF_RADIUS_PX,
+    REFERENCE_STAR_PICK_SCREEN_RADIUS_PX,
+)
 from .simulator import FISHEYE_EQUISOLID, RECTILINEAR_LENS_MODEL
 
 # ---------------------------------------------------------------------------
@@ -59,15 +74,6 @@ STAR_PICK_TOUCHPAD_STEPS_PER_ZOOM_UNIT = 12.0
 STAR_PICK_CIRCLE_STEP_PX = 10
 
 # ---------------------------------------------------------------------------
-# PSF 与自动配对
-# ---------------------------------------------------------------------------
-
-MIN_PSF_RADIUS_PX = 4
-AUTO_PAIR_MAX_SEARCH_RADIUS_PX = 120
-AUTO_PAIR_RMS_RADIUS_SCALE = 3.0
-REFERENCE_STAR_PICK_SCREEN_RADIUS_PX = 32
-
-# ---------------------------------------------------------------------------
 # 星对表格列索引与角色
 # ---------------------------------------------------------------------------
 
@@ -114,22 +120,6 @@ RESIDUAL_SEVERE_RMS_SCALE = 2.0
 
 STAR_RADIUS_ZOOM_EXPONENT = 0.32
 STAR_RADIUS_MIN_ZOOM_SCALE = 0.48
-
-# ---------------------------------------------------------------------------
-# 自动匹配参数
-# ---------------------------------------------------------------------------
-
-AUTO_MATCH_SEARCH_MAG_LIMIT = 8.0
-AUTO_MATCH_CONSTRAINT_ANCHOR = "anchor"
-AUTO_MATCH_CONSTRAINT_SOFT = "soft"
-AUTO_MATCH_CONSTRAINT_MODES = (
-    AUTO_MATCH_CONSTRAINT_ANCHOR,
-    AUTO_MATCH_CONSTRAINT_SOFT,
-)
-AUTO_MATCH_DEFAULT_SOFT_WEIGHT = 0.3
-AUTO_MATCH_MIN_AMPLITUDE = 2.0
-AUTO_MATCH_DUPLICATE_MIN_DISTANCE_PX = 4.0
-AUTO_MATCH_ANNOTATION_LIMIT = 250
 
 # ---------------------------------------------------------------------------
 # 星点标注

@@ -8,9 +8,10 @@ from PyQt5.QtWidgets import QApplication, QGraphicsView, QMessageBox, QProgressD
 
 from .alignment.constants import MIN_ALIGNMENT_PAIRS
 from .alignment.models import SkyAlignmentTransform
-from .app_constants import (
+from .matching_constants import (
     AUTO_MATCH_ANNOTATION_LIMIT,
     AUTO_MATCH_DUPLICATE_MIN_DISTANCE_PX,
+    AUTO_MATCH_MIN_ALTITUDE_DEG,
     AUTO_MATCH_MIN_AMPLITUDE,
     AUTO_MATCH_SEARCH_MAG_LIMIT,
     AUTO_PAIR_MAX_SEARCH_RADIUS_PX,
@@ -20,9 +21,6 @@ from .app_constants import (
 )
 from .simulator import ProjectedStarMap, ReferenceStar
 from .star_fitting import FittedStarPosition, fit_star_position
-
-
-AUTO_MATCH_MIN_ALTITUDE_DEG = -5.0
 
 
 class AutoMatchMixin:

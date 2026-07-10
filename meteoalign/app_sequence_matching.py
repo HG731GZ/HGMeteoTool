@@ -12,10 +12,10 @@ from .alignment.constants import (
     SKY_MATCHING_MODEL_FISHEYE_EQUISOLID,
     SKY_MATCHING_MODEL_RECTILINEAR,
 )
-from .app_auto_match import AUTO_MATCH_MIN_ALTITUDE_DEG
-from .app_constants import (
+from .matching_constants import (
     AUTO_MATCH_CONSTRAINT_SOFT,
     AUTO_MATCH_DUPLICATE_MIN_DISTANCE_PX,
+    AUTO_MATCH_MIN_ALTITUDE_DEG,
     AUTO_MATCH_MIN_AMPLITUDE,
     AUTO_MATCH_SEARCH_MAG_LIMIT,
 )

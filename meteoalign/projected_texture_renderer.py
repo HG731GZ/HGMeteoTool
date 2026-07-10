@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 from PyQt5.QtGui import QImage, QPainter
 
-from .projection_grid import project_altaz_grid_to_screen
+from .projection.grid import project_altaz_grid_to_screen
 from .simulator import CameraSettings, ViewSettings
 from .texture_projection import (
     rgba_array_to_qimage,

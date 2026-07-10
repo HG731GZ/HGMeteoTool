@@ -7,23 +7,37 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 import numpy as np
-from astropy import units as u
-from astropy.coordinates import AltAz, EarthLocation, SkyCoord
-from astropy.time import Time
 from PIL import Image, ImageOps
 
-from .coordinates import normalize_vector, radec_to_unit_vectors, unit_vectors_to_radec
+from .coordinates import radec_to_unit_vectors, unit_vectors_to_radec
+from .mosaic.export.geometry import MosaicExportGeometry, mosaic_export_cropped_geometry
+from .mosaic.export.remap_builder import (
+    MosaicReprojectionMap,
+    build_reprojection_map,
+    iter_reprojection_map_blocks,
+    source_pixel_points_from_icrs_vectors as _source_pixel_points_from_icrs_vectors,
+    source_pixels_from_icrs_vectors as _source_pixels_from_icrs_vectors,
+)
+from .mosaic.export.remap_repair import (
+    MOSAIC_FORWARD_REMAP_LOW_WEIGHT_THRESHOLD,
+    finalize_forward_inverse_map,
+)
+from .mosaic.export.target_transform import (
+    MOSAIC_TARGET_ICRS_TO_PIXEL_VERSION,
+    _icrs_camera_basis_from_view,
+    _target_transform_basis,
+    _target_transform_camera,
+    build_target_icrs_to_pixel_transform_payload,
+    target_camera_vectors_to_image_points,
+    target_icrs_to_pixel_transform_payload_matches,
+    target_icrs_vectors_to_output_pixel_points,
+    target_image_points_to_camera_vectors,
+    target_image_points_to_icrs_vectors,
+)
 from .simulator import (
-    CYLINDRICAL_LENS_MODELS,
-    FISHEYE_LENS_MODELS,
     CameraSettings,
     ObserverSettings,
-    MERCATOR_LENS_MODEL,
-    RECTILINEAR_LENS_MODEL,
     ViewSettings,
-    _fisheye_radius_ratio,
-    _fisheye_theta_from_radius_ratio,
-    _projection_horizontal_scale_px,
 )
 
 try:
@@ -40,8 +54,6 @@ except ImportError:  # pragma: no cover - tifffile 由环境声明，兜底用�
 MOSAIC_EXPORT_TIFF_FILTER = "16-bit RGBA TIFF (*.tif *.tiff)"
 MOSAIC_EXPORT_DEFAULT_BLOCK_ROWS = 1024
 MOSAIC_EXPORT_MAX_U16 = 65535
-MOSAIC_TARGET_ICRS_TO_PIXEL_VERSION = 1
-MOSAIC_FORWARD_REMAP_LOW_WEIGHT_THRESHOLD = 0.25
 MOSAIC_FORWARD_REMAP_EXACT_FILL_BATCH_PIXELS = 1_000_000
 MosaicExportProgressCallback = Callable[[str, int, int], None]
 
@@ -71,18 +83,6 @@ class MosaicExportSourceImage:
         return int(self.rgb_u16.shape[0])
 
 
-@dataclass(frozen=True)
-class MosaicExportGeometry:
-    """完整边界与裁剪后的实际导出区域。"""
-
-    boundary_width_px: int
-    boundary_height_px: int
-    crop_left_px: int
-    crop_top_px: int
-    output_width_px: int
-    output_height_px: int
-
-
 def _emit_export_progress(
     callback: MosaicExportProgressCallback | None,
     label: str,
@@ -106,141 +106,6 @@ def mosaic_export_block_rows(config: object, default_value: int = MOSAIC_EXPORT_
     except (TypeError, ValueError):
         value = int(default_value)
     return max(8, min(4096, value))
-
-
-def mosaic_export_cropped_geometry(
-    *,
-    boundary_width_px: int,
-    boundary_height_px: int,
-    crop: dict[str, object],
-) -> MosaicExportGeometry:
-    """根据完整输出边界和四边裁剪量计算实际导出区域。"""
-
-    boundary_width = max(0, int(round(float(boundary_width_px))))
-    boundary_height = max(0, int(round(float(boundary_height_px))))
-    left = _crop_margin_px(crop.get("left_px"), boundary_width)
-    right = _crop_margin_px(crop.get("right_px"), max(0, boundary_width - left))
-    top = _crop_margin_px(crop.get("top_px"), boundary_height)
-    bottom = _crop_margin_px(crop.get("bottom_px"), max(0, boundary_height - top))
-    return MosaicExportGeometry(
-        boundary_width_px=boundary_width,
-        boundary_height_px=boundary_height,
-        crop_left_px=left,
-        crop_top_px=top,
-        output_width_px=max(0, boundary_width - left - right),
-        output_height_px=max(0, boundary_height - top - bottom),
-    )
-
-
-def _crop_margin_px(value: object, maximum: int) -> int:
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        numeric = 0.0
-    if not np.isfinite(numeric):
-        numeric = 0.0
-    return max(0, min(int(round(numeric)), max(0, int(maximum))))
-
-
-def build_target_icrs_to_pixel_transform_payload(
-    *,
-    camera: CameraSettings,
-    view: ViewSettings,
-    observer: ObserverSettings,
-    geometry: MosaicExportGeometry,
-) -> dict[str, object]:
-    """导出源图无关的 ICRS 到全景图像素变换。"""
-
-    right, up, forward = _icrs_camera_basis_from_view(view, observer)
-    return {
-        "version": MOSAIC_TARGET_ICRS_TO_PIXEL_VERSION,
-        "type": "icrs_to_cropped_output_pixel",
-        "pixel_convention": "0-based_pixel_center",
-        "boundary_width_px": int(geometry.boundary_width_px),
-        "boundary_height_px": int(geometry.boundary_height_px),
-        "crop_left_px": int(geometry.crop_left_px),
-        "crop_top_px": int(geometry.crop_top_px),
-        "output_width_px": int(geometry.output_width_px),
-        "output_height_px": int(geometry.output_height_px),
-        "camera": {
-            "lens_model": str(camera.lens_model),
-            "sensor_width_mm": float(camera.sensor_width_mm),
-            "sensor_height_mm": float(camera.sensor_height_mm),
-            "image_width_px": int(camera.image_width_px),
-            "image_height_px": int(camera.image_height_px),
-            "focal_length_mm": float(camera.focal_length_mm),
-            "fisheye_fov_deg": float(camera.fisheye_fov_deg),
-        },
-        "icrs_camera_basis": {
-            "right": [float(value) for value in right],
-            "up": [float(value) for value in up],
-            "forward": [float(value) for value in forward],
-        },
-    }
-
-
-def target_icrs_to_pixel_transform_payload_matches(
-    payload: object,
-    *,
-    geometry: MosaicExportGeometry,
-) -> bool:
-    """检查 ICRS 到全景图像素变换是否匹配当前裁剪输出几何。"""
-
-    if not isinstance(payload, dict):
-        return False
-    if int(payload.get("version", 0) or 0) != MOSAIC_TARGET_ICRS_TO_PIXEL_VERSION:
-        return False
-    if str(payload.get("type") or "") != "icrs_to_cropped_output_pixel":
-        return False
-    expected = {
-        "boundary_width_px": geometry.boundary_width_px,
-        "boundary_height_px": geometry.boundary_height_px,
-        "crop_left_px": geometry.crop_left_px,
-        "crop_top_px": geometry.crop_top_px,
-        "output_width_px": geometry.output_width_px,
-        "output_height_px": geometry.output_height_px,
-    }
-    for key, expected_value in expected.items():
-        try:
-            actual_value = int(payload.get(key, -1))
-        except (TypeError, ValueError):
-            return False
-        if actual_value != int(expected_value):
-            return False
-    return isinstance(payload.get("camera"), dict) and isinstance(payload.get("icrs_camera_basis"), dict)
-
-
-def _target_transform_camera(payload: dict[str, object]) -> CameraSettings:
-    camera_payload = payload.get("camera")
-    if not isinstance(camera_payload, dict):
-        raise ValueError("取景 JSON 缺少 target_icrs_to_pixel.camera。")
-    return CameraSettings(
-        sensor_width_mm=float(camera_payload.get("sensor_width_mm", 36.0)),
-        sensor_height_mm=float(camera_payload.get("sensor_height_mm", 24.0)),
-        image_width_px=int(camera_payload.get("image_width_px", payload.get("boundary_width_px", 0))),
-        image_height_px=int(camera_payload.get("image_height_px", payload.get("boundary_height_px", 0))),
-        focal_length_mm=float(camera_payload.get("focal_length_mm", 24.0)),
-        lens_model=str(camera_payload.get("lens_model", RECTILINEAR_LENS_MODEL)),
-        fisheye_fov_deg=float(camera_payload.get("fisheye_fov_deg", 180.0)),
-    )
-
-
-def _target_transform_basis(payload: dict[str, object]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    basis_payload = payload.get("icrs_camera_basis")
-    if not isinstance(basis_payload, dict):
-        raise ValueError("取景 JSON 缺少 target_icrs_to_pixel.icrs_camera_basis。")
-    return (
-        _payload_vector3(basis_payload.get("right"), "target_icrs_to_pixel.icrs_camera_basis.right"),
-        _payload_vector3(basis_payload.get("up"), "target_icrs_to_pixel.icrs_camera_basis.up"),
-        _payload_vector3(basis_payload.get("forward"), "target_icrs_to_pixel.icrs_camera_basis.forward"),
-    )
-
-
-def _payload_vector3(value: object, field_name: str) -> np.ndarray:
-    vector = np.asarray(value, dtype=np.float64)
-    if vector.shape != (3,) or not np.all(np.isfinite(vector)):
-        raise ValueError(f"取景 JSON 字段 {field_name} 必须是 3 个有限数值。")
-    return vector.astype(np.float64)
 
 
 def load_mosaic_export_source_image(image_path: str | Path) -> MosaicExportSourceImage:
@@ -537,112 +402,39 @@ def _finalize_forward_inverse_map(
     exact_remap_repair: bool,
     export_progress_callback: MosaicExportProgressCallback | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """把正向累积的源坐标整理成 cv2.remap 可用的全景图到源图 map。"""
+    """兼容旧入口，空洞处理和快速修补已迁入 remap_repair。"""
 
-    map_x = np.full(weights.shape, -1.0, dtype=np.float32)
-    map_y = np.full(weights.shape, -1.0, dtype=np.float32)
-    covered = weights > 1e-6
-    if np.any(covered):
-        map_x[covered] = accum_x[covered] / weights[covered]
-        map_y[covered] = accum_y[covered] / weights[covered]
-        target_mask = _forward_inverse_map_target_mask(covered, tile_size)
-        if exact_remap_repair:
-            low_weight = covered & (weights < MOSAIC_FORWARD_REMAP_LOW_WEIGHT_THRESHOLD)
-            exact_mask = target_mask & (~covered | low_weight)
-            exact_valid = _fill_forward_inverse_map_exact(
-                map_x,
-                map_y,
-                exact_mask,
-                source_model=source_model,
-                target_icrs_to_pixel_payload=target_icrs_to_pixel_payload,
-                target_model=target_model,
-                geometry=geometry,
-                progress_callback=lambda value, maximum: _emit_export_progress(
-                    export_progress_callback,
-                    "正在精确修复亮星小黑点...",
-                    value,
-                    maximum,
-                ),
-            )
-            covered = covered | exact_valid
-        else:
-            covered = _fill_forward_inverse_map_holes_fast(
-                map_x,
-                map_y,
-                covered,
-                target_mask,
-                progress_callback=lambda value, maximum: _emit_export_progress(
-                    export_progress_callback,
-                    "正在快速整理全景图透明区域...",
-                    value,
-                    maximum,
-                ),
-            )
-    map_x[~covered] = -1.0
-    map_y[~covered] = -1.0
-    return np.ascontiguousarray(map_x, dtype=np.float32), np.ascontiguousarray(map_y, dtype=np.float32)
-
-
-def _forward_inverse_map_target_mask(
-    covered: np.ndarray,
-    tile_size: int,
-) -> np.ndarray:
-    """用正向覆盖区域估计源图在全景图上的内部投影范围。"""
-
-    if cv2 is None or not np.any(covered):
-        return covered
-    radius = max(1, min(32, int(tile_size) * 2))
-    close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (radius * 2 + 1, radius * 2 + 1))
-    return cv2.morphologyEx(covered.astype(np.uint8), cv2.MORPH_CLOSE, close_kernel).astype(bool)
-
-
-def _fill_forward_inverse_map_holes_fast(
-    map_x: np.ndarray,
-    map_y: np.ndarray,
-    covered: np.ndarray,
-    target_mask: np.ndarray,
-    progress_callback: Callable[[int, int], None] | None = None,
-) -> np.ndarray:
-    """快速用邻域坐标补小缝隙，不做额外精确反算。"""
-
-    if cv2 is None:
-        return covered
-    missing = target_mask & ~covered
-    if not np.any(missing):
-        return covered
-
-    filled = covered.copy()
-    neighbor_kernel = np.ones((3, 3), dtype=np.float32)
-    max_iterations = 32
-    if progress_callback is not None:
-        progress_callback(0, max_iterations)
-    for index in range(max_iterations):
-        missing = target_mask & ~filled
-        if not np.any(missing):
-            break
-        valid_float = filled.astype(np.float32)
-        count = cv2.filter2D(valid_float, cv2.CV_32F, neighbor_kernel, borderType=cv2.BORDER_CONSTANT)
-        sum_x = cv2.filter2D(
-            np.where(filled, map_x, 0.0).astype(np.float32),
-            cv2.CV_32F,
-            neighbor_kernel,
-            borderType=cv2.BORDER_CONSTANT,
+    def exact_repair(map_x: np.ndarray, map_y: np.ndarray, exact_mask: np.ndarray) -> np.ndarray:
+        return _fill_forward_inverse_map_exact(
+            map_x,
+            map_y,
+            exact_mask,
+            source_model=source_model,
+            target_icrs_to_pixel_payload=target_icrs_to_pixel_payload,
+            target_model=target_model,
+            geometry=geometry,
+            progress_callback=lambda value, maximum: _emit_export_progress(
+                export_progress_callback,
+                "正在精确修复亮星小黑点...",
+                value,
+                maximum,
+            ),
         )
-        sum_y = cv2.filter2D(
-            np.where(filled, map_y, 0.0).astype(np.float32),
-            cv2.CV_32F,
-            neighbor_kernel,
-            borderType=cv2.BORDER_CONSTANT,
-        )
-        fillable = missing & (count > 0.0)
-        if not np.any(fillable):
-            break
-        map_x[fillable] = sum_x[fillable] / count[fillable]
-        map_y[fillable] = sum_y[fillable] / count[fillable]
-        filled[fillable] = True
-        if progress_callback is not None:
-            progress_callback(index + 1, max_iterations)
-    return filled
+
+    return finalize_forward_inverse_map(
+        accum_x,
+        accum_y,
+        weights,
+        tile_size,
+        exact_remap_repair=exact_remap_repair,
+        exact_repair=exact_repair,
+        fast_progress_callback=lambda value, maximum: _emit_export_progress(
+            export_progress_callback,
+            "正在快速整理全景图透明区域...",
+            value,
+            maximum,
+        ),
+    )
 
 
 def _fill_forward_inverse_map_exact(
@@ -1011,84 +803,6 @@ def _accumulate_source_pixels_to_inverse_map(
             np.add.at(accum_y, target_index, src_y[inside] * contribution[inside])
 
 
-def target_icrs_vectors_to_output_pixel_points(
-    vectors: np.ndarray,
-    target_icrs_to_pixel_payload: dict[str, object],
-) -> tuple[np.ndarray, np.ndarray]:
-    """把 ICRS 单位方向投到裁剪后全景图像素坐标。"""
-
-    vector_array = np.asarray(vectors, dtype=np.float64)
-    norm = np.linalg.norm(vector_array, axis=1)
-    valid = np.all(np.isfinite(vector_array), axis=1) & np.isfinite(norm) & (norm > 1e-12)
-    normalized = np.full_like(vector_array, np.nan, dtype=np.float64)
-    normalized[valid] = vector_array[valid] / norm[valid, None]
-    right, up, forward = _target_transform_basis(target_icrs_to_pixel_payload)
-    camera_vectors = np.column_stack((normalized @ right, normalized @ up, normalized @ forward))
-    camera = _target_transform_camera(target_icrs_to_pixel_payload)
-    full_pixels, projection_valid = target_camera_vectors_to_image_points(camera_vectors, camera)
-    output_pixels = full_pixels.copy()
-    output_pixels[:, 0] -= float(target_icrs_to_pixel_payload.get("crop_left_px", 0.0))
-    output_pixels[:, 1] -= float(target_icrs_to_pixel_payload.get("crop_top_px", 0.0))
-    valid &= projection_valid & np.all(np.isfinite(output_pixels), axis=1)
-    output_pixels[~valid] = np.nan
-    return output_pixels.astype(np.float64), valid.astype(bool)
-
-
-def target_camera_vectors_to_image_points(
-    camera_vectors: np.ndarray,
-    camera: CameraSettings,
-) -> tuple[np.ndarray, np.ndarray]:
-    """把目标相机坐标系方向投影到完整全景图边界像素。"""
-
-    vectors = np.asarray(camera_vectors, dtype=np.float64)
-    cam_x = vectors[:, 0]
-    cam_y = vectors[:, 1]
-    cam_z = vectors[:, 2]
-    if camera.lens_model == RECTILINEAR_LENS_MODEL:
-        valid = np.isfinite(cam_x) & np.isfinite(cam_y) & np.isfinite(cam_z) & (cam_z > 1e-6)
-        x_px = np.full_like(cam_z, np.nan, dtype=np.float64)
-        y_px = np.full_like(cam_z, np.nan, dtype=np.float64)
-        if np.any(valid):
-            x_mm = camera.focal_length_mm * cam_x[valid] / cam_z[valid]
-            y_mm = camera.focal_length_mm * cam_y[valid] / cam_z[valid]
-            x_px[valid] = camera.image_width_px * 0.5 + (x_mm / camera.sensor_width_mm) * camera.image_width_px
-            y_px[valid] = camera.image_height_px * 0.5 - (y_mm / camera.sensor_height_mm) * camera.image_height_px
-    elif camera.lens_model in FISHEYE_LENS_MODELS:
-        norm = np.linalg.norm(vectors, axis=1)
-        unit_z = np.divide(cam_z, norm, out=np.full_like(cam_z, np.nan), where=norm > 1e-12)
-        theta = np.arccos(np.clip(unit_z, -1.0, 1.0))
-        theta_max = np.deg2rad(camera.fisheye_fov_deg * 0.5)
-        rho = _fisheye_radius_ratio(theta, theta_max, camera.lens_model)
-        r_limit = min(camera.image_width_px, camera.image_height_px) * 0.5 - 0.5
-        r_px = r_limit * rho
-        plane_norm = np.hypot(cam_x, cam_y)
-        unit_x = np.divide(cam_x, plane_norm, out=np.zeros_like(cam_x), where=plane_norm > 1e-12)
-        unit_y = np.divide(cam_y, plane_norm, out=np.zeros_like(cam_y), where=plane_norm > 1e-12)
-        x_px = camera.image_width_px * 0.5 + unit_x * r_px
-        y_px = camera.image_height_px * 0.5 - unit_y * r_px
-        valid = (theta <= theta_max + 1e-9) & np.isfinite(x_px) & np.isfinite(y_px)
-    elif camera.lens_model in CYLINDRICAL_LENS_MODELS:
-        norm = np.linalg.norm(vectors, axis=1)
-        unit_y = np.divide(cam_y, norm, out=np.zeros_like(cam_y), where=norm > 1e-12)
-        longitude = np.arctan2(cam_x, cam_z)
-        latitude = np.arcsin(np.clip(unit_y, -1.0, 1.0))
-        scale_px = _projection_horizontal_scale_px(camera)
-        if camera.lens_model == MERCATOR_LENS_MODEL:
-            valid = np.isfinite(longitude) & np.isfinite(latitude) & (np.abs(latitude) < (np.pi * 0.5 - 1e-8))
-            plane_y = np.arctanh(np.clip(np.sin(latitude), -1.0 + 1e-12, 1.0 - 1e-12))
-        else:
-            valid = np.isfinite(longitude) & np.isfinite(latitude)
-            plane_y = latitude
-        x_px = camera.image_width_px * 0.5 + scale_px * longitude
-        y_px = camera.image_height_px * 0.5 - scale_px * plane_y
-    else:
-        raise ValueError(f"不支持的目标投影模型：{camera.lens_model}")
-    pixels = np.column_stack((x_px, y_px)).astype(np.float64)
-    valid &= np.all(np.isfinite(pixels), axis=1)
-    pixels[~valid] = np.nan
-    return pixels, valid.astype(bool)
-
-
 def mosaic_reprojection_map_blocks(
     *,
     source_model: object,
@@ -1099,116 +813,17 @@ def mosaic_reprojection_map_blocks(
     block_rows: int = MOSAIC_EXPORT_DEFAULT_BLOCK_ROWS,
     progress_callback: Callable[[int], None] | None = None,
 ) -> Iterator[dict[str, object]]:
-    """逐块生成目标像素到源图像素的 map_x/map_y。"""
+    """兼容旧入口，实际 map 构建已迁入 remap_builder。"""
 
-    output_width = int(geometry.output_width_px)
-    output_height = int(geometry.output_height_px)
-    safe_block_rows = max(1, int(block_rows))
-    full_x = (geometry.crop_left_px + np.arange(output_width, dtype=np.float64)).astype(np.float64)
-    basis = _icrs_camera_basis_from_view(view, observer)
-    completed_rows = 0
-
-    for row_start in range(0, output_height, safe_block_rows):
-        rows = min(safe_block_rows, output_height - row_start)
-        full_y = geometry.crop_top_px + row_start + np.arange(rows, dtype=np.float64)
-        grid_x, grid_y = np.meshgrid(full_x, full_y)
-        map_x, map_y = _build_mosaic_reprojection_map_block(
-            source_model=source_model,
-            x_px=grid_x.ravel(),
-            y_px=grid_y.ravel(),
-            rows=rows,
-            columns=output_width,
-            camera=camera,
-            icrs_basis=basis,
-        )
-        completed_rows += rows
-        if progress_callback is not None:
-            progress_callback(completed_rows)
-        yield {
-            "row_start": int(row_start),
-            "map_x": map_x,
-            "map_y": map_y,
-        }
-
-
-def _build_mosaic_reprojection_map_block(
-    *,
-    source_model: object,
-    x_px: np.ndarray,
-    y_px: np.ndarray,
-    rows: int,
-    columns: int,
-    camera: CameraSettings,
-    icrs_basis: tuple[np.ndarray, np.ndarray, np.ndarray],
-) -> tuple[np.ndarray, np.ndarray]:
-    icrs_vectors, valid_projection = target_image_points_to_icrs_vectors(
-        x_px,
-        y_px,
-        camera=camera,
-        icrs_basis=icrs_basis,
-    )
-    icrs_vectors[~valid_projection] = np.nan
-    return _source_pixel_map_from_icrs_vectors(
+    yield from iter_reprojection_map_blocks(
         source_model=source_model,
-        icrs_vectors=icrs_vectors,
-        rows=rows,
-        columns=columns,
+        camera=camera,
+        view=view,
+        observer=observer,
+        geometry=geometry,
+        block_rows=block_rows,
+        progress_callback=progress_callback,
     )
-
-
-def _source_pixel_map_from_icrs_vectors(
-    *,
-    source_model: object,
-    icrs_vectors: np.ndarray,
-    rows: int,
-    columns: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    """把 ICRS 单位向量投到源图像素，生成 OpenCV remap 坐标。"""
-
-    vector_count = int(np.asarray(icrs_vectors).shape[0])
-    map_x = np.full(vector_count, -1.0, dtype=np.float32)
-    map_y = np.full(vector_count, -1.0, dtype=np.float32)
-    source_pixels, valid = _source_pixel_points_from_icrs_vectors(source_model, icrs_vectors)
-    if np.any(valid):
-        map_x[valid] = source_pixels[valid, 0].astype(np.float32)
-        map_y[valid] = source_pixels[valid, 1].astype(np.float32)
-    return map_x.reshape((rows, columns)), map_y.reshape((rows, columns))
-
-
-def _source_pixel_points_from_icrs_vectors(source_model: object, icrs_vectors: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """把 ICRS 单位向量投到源图，返回像素点和有效掩码。"""
-
-    vectors = np.asarray(icrs_vectors, dtype=np.float64)
-    pixels = np.full((vectors.shape[0], 2), np.nan, dtype=np.float64)
-    vector_valid = np.all(np.isfinite(vectors), axis=1)
-    if not np.any(vector_valid):
-        return pixels, np.zeros(vectors.shape[0], dtype=bool)
-
-    projected = _source_pixels_from_icrs_vectors(source_model, vectors[vector_valid])
-    projected_valid = np.all(np.isfinite(projected), axis=1)
-    source_width = getattr(source_model, "image_width_px", None)
-    source_height = getattr(source_model, "image_height_px", None)
-    if source_width is not None and source_height is not None:
-        projected_valid &= (
-            (projected[:, 0] >= -0.5)
-            & (projected[:, 0] <= float(source_width) - 0.5)
-            & (projected[:, 1] >= -0.5)
-            & (projected[:, 1] <= float(source_height) - 0.5)
-        )
-    vector_indices = np.flatnonzero(vector_valid)
-    accepted = vector_indices[projected_valid]
-    pixels[accepted] = projected[projected_valid]
-    valid = np.zeros(vectors.shape[0], dtype=bool)
-    valid[accepted] = True
-    return pixels, valid
-
-
-def _source_pixels_from_icrs_vectors(source_model: object, icrs_vectors: np.ndarray) -> np.ndarray:
-    direct_project = getattr(source_model, "icrs_vectors_to_pixel_points", None)
-    if callable(direct_project):
-        return np.asarray(direct_project(icrs_vectors), dtype=np.float64)
-    radec = unit_vectors_to_radec(icrs_vectors)
-    return np.asarray(source_model.sky_to_pixel_points(radec), dtype=np.float64)
 
 
 def _render_mosaic_reprojection_block_from_map(
@@ -1241,135 +856,6 @@ def _render_mosaic_reprojection_block_from_map(
     remapped[~valid_alpha] = 0
     rgba = np.dstack((remapped, alpha))
     return np.ascontiguousarray(rgba, dtype=np.uint16)
-
-
-def target_image_points_to_icrs_vectors(
-    x_px: np.ndarray,
-    y_px: np.ndarray,
-    *,
-    camera: CameraSettings,
-    icrs_basis: tuple[np.ndarray, np.ndarray, np.ndarray],
-) -> tuple[np.ndarray, np.ndarray]:
-    """把全景图像素直接反解为 ICRS 单位方向。"""
-
-    camera_vectors, valid = target_image_points_to_camera_vectors(x_px, y_px, camera)
-    right, up, forward = icrs_basis
-    icrs_x = camera_vectors[:, 0, None] * right[None, :]
-    icrs_y = camera_vectors[:, 1, None] * up[None, :]
-    icrs_z = camera_vectors[:, 2, None] * forward[None, :]
-    vectors = icrs_x + icrs_y + icrs_z
-    norm = np.linalg.norm(vectors, axis=1)
-    valid &= np.isfinite(norm) & (norm > 1e-12)
-    vectors[valid] /= norm[valid, None]
-    vectors[~valid] = np.nan
-    return vectors.astype(np.float64), valid.astype(bool)
-
-
-def target_image_points_to_camera_vectors(
-    x_px: np.ndarray,
-    y_px: np.ndarray,
-    camera: CameraSettings,
-) -> tuple[np.ndarray, np.ndarray]:
-    """把全景图像素反解为目标相机坐标系下的方向。"""
-
-    x_values = np.asarray(x_px, dtype=np.float64)
-    y_values = np.asarray(y_px, dtype=np.float64)
-    if x_values.shape != y_values.shape:
-        raise ValueError("全景图像素 x/y 数组形状必须一致。")
-
-    if camera.lens_model == RECTILINEAR_LENS_MODEL:
-        x_mm = (x_values - camera.image_width_px * 0.5) * camera.sensor_width_mm / camera.image_width_px
-        y_mm = (camera.image_height_px * 0.5 - y_values) * camera.sensor_height_mm / camera.image_height_px
-        cam_x = x_mm / camera.focal_length_mm
-        cam_y = y_mm / camera.focal_length_mm
-        cam_z = np.ones_like(cam_x, dtype=np.float64)
-        valid = np.isfinite(cam_x) & np.isfinite(cam_y)
-    elif camera.lens_model in FISHEYE_LENS_MODELS:
-        center_x = camera.image_width_px * 0.5
-        center_y = camera.image_height_px * 0.5
-        screen_x = x_values - center_x
-        screen_y = center_y - y_values
-        r_px = np.hypot(screen_x, screen_y)
-        r_limit = min(camera.image_width_px, camera.image_height_px) * 0.5 - 0.5
-        rho = np.divide(r_px, r_limit, out=np.full_like(r_px, np.inf), where=r_limit > 1e-12)
-        theta_max = np.deg2rad(camera.fisheye_fov_deg * 0.5)
-        theta = _fisheye_theta_from_radius_ratio(np.clip(rho, 0.0, 1.0), theta_max, camera.lens_model)
-        plane_norm = np.sin(theta)
-        unit_x = np.divide(screen_x, r_px, out=np.zeros_like(screen_x), where=r_px > 1e-12)
-        unit_y = np.divide(screen_y, r_px, out=np.zeros_like(screen_y), where=r_px > 1e-12)
-        cam_x = unit_x * plane_norm
-        cam_y = unit_y * plane_norm
-        cam_z = np.cos(theta)
-        valid = (rho <= 1.0 + 1e-9) & np.isfinite(cam_x) & np.isfinite(cam_y) & np.isfinite(cam_z)
-    elif camera.lens_model in CYLINDRICAL_LENS_MODELS:
-        center_x = camera.image_width_px * 0.5
-        center_y = camera.image_height_px * 0.5
-        scale_px = _projection_horizontal_scale_px(camera)
-        longitude = (x_values - center_x) / max(scale_px, 1e-12)
-        plane_y = (center_y - y_values) / max(scale_px, 1e-12)
-        if camera.lens_model == MERCATOR_LENS_MODEL:
-            latitude = np.arcsin(np.clip(np.tanh(plane_y), -1.0, 1.0))
-            valid = np.isfinite(longitude) & np.isfinite(latitude)
-        else:
-            latitude = plane_y
-            valid = np.isfinite(longitude) & np.isfinite(latitude) & (np.abs(latitude) <= np.pi * 0.5 + 1e-8)
-        cos_lat = np.cos(latitude)
-        cam_x = cos_lat * np.sin(longitude)
-        cam_y = np.sin(latitude)
-        cam_z = cos_lat * np.cos(longitude)
-    else:
-        raise ValueError(f"不支持的目标投影模型：{camera.lens_model}")
-
-    vectors = np.column_stack((cam_x, cam_y, cam_z)).astype(np.float64)
-    norm = np.linalg.norm(vectors, axis=1)
-    valid &= np.isfinite(norm) & (norm > 1e-12)
-    vectors[valid] /= norm[valid, None]
-    vectors[~valid] = np.nan
-    return vectors.astype(np.float64), valid.astype(bool)
-
-
-def _icrs_camera_basis_from_view(
-    view: ViewSettings,
-    observer: ObserverSettings,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    center, zenith, north = _reference_icrs_vectors_from_view(view, observer)
-    right = np.cross(center, zenith)
-    if float(np.linalg.norm(right)) < 1e-8:
-        right = np.cross(center, north)
-    right = normalize_vector(right)
-    up = normalize_vector(np.cross(right, center))
-
-    roll = np.deg2rad(view.roll_deg)
-    cos_roll = np.cos(roll)
-    sin_roll = np.sin(roll)
-    rolled_right = right * cos_roll + up * sin_roll
-    rolled_up = -right * sin_roll + up * cos_roll
-    return (
-        normalize_vector(rolled_right),
-        normalize_vector(rolled_up),
-        normalize_vector(center),
-    )
-
-
-def _reference_icrs_vectors_from_view(
-    view: ViewSettings,
-    observer: ObserverSettings,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    alt_deg = np.asarray([view.center_alt_deg, 90.0, 0.0], dtype=np.float64)
-    az_deg = np.asarray([view.center_az_deg, view.center_az_deg, 0.0], dtype=np.float64)
-    location = EarthLocation.from_geodetic(
-        lon=observer.longitude_deg * u.deg,
-        lat=observer.latitude_deg * u.deg,
-        height=observer.elevation_m * u.m,
-    )
-    altaz = SkyCoord(
-        alt=alt_deg * u.deg,
-        az=az_deg * u.deg,
-        frame=AltAz(obstime=Time(observer.observation_time_utc), location=location),
-    )
-    icrs = altaz.icrs
-    vectors = radec_to_unit_vectors(icrs.ra.degree, icrs.dec.degree)
-    return normalize_vector(vectors[0]), normalize_vector(vectors[1]), normalize_vector(vectors[2])
 
 
 def write_mosaic_reprojection_tiff(

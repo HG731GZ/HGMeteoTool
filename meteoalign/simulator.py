@@ -1383,3 +1383,38 @@ def select_reference_stars(
             )
         )
     return tuple(reference_stars)
+
+
+# ---------------------------------------------------------------------------
+# 兼容 facade
+# ---------------------------------------------------------------------------
+# 设置与投影数学已迁入独立模块；保留 simulator 的旧导入路径和函数名称。
+from .domain.settings import CameraSettings, ObserverSettings, ViewSettings
+from .projection.camera_models import (
+    CYLINDRICAL_EQUIDISTANT_LENS_MODEL,
+    CYLINDRICAL_LENS_MODELS,
+    FISHEYE_EQUIDISTANT,
+    FISHEYE_EQUISOLID,
+    FISHEYE_LENS_MODELS,
+    MERCATOR_LENS_MODEL,
+    RECTILINEAR_LENS_MODEL,
+    SUPPORTED_LENS_MODELS,
+    _camera_basis,
+    _camera_longitudes_from_altaz,
+    _fisheye_radius_ratio,
+    _fisheye_theta_from_radius_ratio,
+    _local_vectors_from_altaz,
+    _normalize,
+    _project_altaz_points,
+    _project_altaz_points_cylindrical,
+    _project_altaz_points_fisheye,
+    _project_altaz_points_rectilinear,
+    _project_vectors_onto_camera_basis,
+    _projection_horizontal_scale_px,
+    camera_basis_from_view,
+    horizontal_fov_deg,
+    image_points_to_local_vectors,
+    local_vectors_from_altaz,
+    local_vectors_to_altaz,
+    vertical_fov_deg,
+)

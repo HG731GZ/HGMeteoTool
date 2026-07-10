@@ -29,13 +29,13 @@ from .frame_astrometry import FrameAstrometricModel
 from .geometry2d import cell_crosses_angle_break, expand_polygon_radially, grid_cell_quad
 from .image_preview import load_image_preview
 from .projected_texture_renderer import ProjectedTextureRenderer
-from .projection_grid import (
+from .projection.grid import (
     build_pixel_radec_grid,
     grid_shape_for_long_side,
     project_altaz_grid_to_screen,
     radec_grid_to_altaz,
 )
-from .projection_view_state import ProjectionViewState
+from .projection.view_state import ProjectionViewState
 from .sky_scene_service import SkyPreviewRenderService, SkyPreviewStyle, SkySceneData
 from .texture_projection import (
     qimage_to_rgb_array,
