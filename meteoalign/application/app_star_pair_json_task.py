@@ -49,6 +49,11 @@ class StarPairJsonTaskMixin:
 
         self._sky_alignment_transform = None
         self._source_astrometric_model = None
+        if hasattr(self, "_clear_adjacent_rough_framing"):
+            self._clear_adjacent_rough_framing(
+                status_text="输入已重置，请重新计算粗略取景",
+                refresh_alignment=False,
+            )
         self._reference_alignment_error_message = ""
         self._sky_alignment_error_message = ""
         self._source_model_error_message = ""

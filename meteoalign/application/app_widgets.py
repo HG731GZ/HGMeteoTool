@@ -31,6 +31,12 @@ class AppWidgetMixin:
         status_font.setPointSize(ui_config.status_bar_font_size_pt)
         statusbar.setFont(status_font)
 
+        image_context_label = getattr(self.ui, "labelStatusImageContext", None)
+        if image_context_label is not None and not bool(statusbar.property("imageContextWidgetAdded")):
+            # 常驻控件固定在状态栏右侧，不会被普通操作提示覆盖。
+            statusbar.addPermanentWidget(image_context_label)
+            statusbar.setProperty("imageContextWidgetAdded", True)
+
     def _set_plain_label_text(self, label: QLabel, text: str, tooltip: str | None = None) -> None:
         """设置标签纯文本，并同步设置 tooltip。"""
         display_text = text.strip()
@@ -85,6 +91,10 @@ class AppWidgetMixin:
     def _refresh_all_elided_labels(self) -> None:
         """刷新所有带省略号标签的显示。"""
         self._refresh_elided_label(self.ui.labelImportedImagePath)
+        if hasattr(self.ui, "labelAdjacentImageModel"):
+            self._refresh_elided_label(self.ui.labelAdjacentImageModel)
+        if hasattr(self.ui, "labelAdjacentFramingStatus"):
+            self._refresh_elided_label(self.ui.labelAdjacentFramingStatus)
         if hasattr(self.ui, "labelImageSequenceStatus"):
             self._refresh_elided_label(self.ui.labelImageSequenceStatus)
         if hasattr(self.ui, "labelImageSequenceSummary"):

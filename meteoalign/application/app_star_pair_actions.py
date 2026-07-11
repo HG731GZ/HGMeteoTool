@@ -335,10 +335,21 @@ class StarPairActionsMixin:
         return cleared_count
 
     def clear_all_star_pair_positions(self) -> None:
-        cleared_count = self._clear_star_pair_positions()
-        if cleared_count <= 0:
+        pair_count = self._star_pair_position_count()
+        if pair_count <= 0:
             self.ui.statusbar.showMessage("当前没有可清除的星点匹配。")
             return
+        reply = QMessageBox.question(
+            self,
+            "确认清除所有匹配",
+            f"确定要清除当前全部 {pair_count} 个星点匹配吗？\n\n此操作会删除手工和自动匹配记录。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            self.ui.statusbar.showMessage("已取消清除所有星点匹配。")
+            return
+        cleared_count = self._clear_star_pair_positions()
         self.ui.statusbar.showMessage(f"已清除 {cleared_count} 个星点匹配。")
 
     def _clear_star_pair_position(self, row: int) -> None:

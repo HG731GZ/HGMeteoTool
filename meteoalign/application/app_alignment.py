@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import QFileDialog, QTableWidgetItem, QGraphicsView, QMessa
 from ..alignment.constants import MIN_ALIGNMENT_PAIRS, SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION
 from ..alignment.fitting import fit_sky_alignment
 from ..alignment.models import SkyAlignmentTransform
+from ..adjacent_alignment import RoughFramingTransform
 from ..camera_calibration import CameraCalibrationProfile
 from ..coordinates import radec_to_unit_vectors
 from ..frame_astrometry import FrameAstrometricModel
@@ -47,7 +48,7 @@ class AlignmentMixin:
     """配准管理 Mixin：天球配准变换、残差计算、参考星图联动。"""
 
     ui: object
-    _sky_alignment_transform: SkyAlignmentTransform | None
+    _sky_alignment_transform: SkyAlignmentTransform | RoughFramingTransform | None
     _source_astrometric_model: SourceAstrometricModel | FixedProfilePoseSourceModel | None
     _imported_camera_calibration_profile: CameraCalibrationProfile | None
     _imported_camera_calibration_profile_path: Path | None
@@ -103,6 +104,8 @@ class AlignmentMixin:
         self.ui.comboBoxSkyAlignmentModel.setCurrentIndex(SKY_ALIGNMENT_MODELS.index(model_text))
 
     def _handle_alignment_model_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        if hasattr(self, "_update_status_image_context"):
+            self._update_status_image_context()
         self._update_reference_alignment_transform()
 
     def _profile_reuse_enabled(self) -> bool:
@@ -335,6 +338,60 @@ class AlignmentMixin:
             return None
         return rotation_matrix.astype(np.float64)
 
+    def _rough_framing_initial_rotation_matrix(self) -> np.ndarray | None:
+        """提取粗略取景的 ICRS→相机姿态，仅作为手工已知投影拟合的初值。"""
+
+        rough_transform = getattr(self, "_rough_alignment_transform", None)
+        if not isinstance(rough_transform, RoughFramingTransform):
+            return None
+        rotation_matrix = np.asarray(
+            rough_transform.frame_model.frame_pose.icrs_to_camera,
+            dtype=np.float64,
+        )
+        if rotation_matrix.shape != (3, 3) or not np.all(np.isfinite(rotation_matrix)):
+            return None
+        return rotation_matrix.copy()
+
+    def _manual_projection_initial_rotation_matrix(self) -> np.ndarray | None:
+        """为四颗及以上手工匹配选择稳定初值，最终模型仍只由手工匹配求解。"""
+
+        # 粗略姿态不会作为最终变换或残差锚点参与计算，只避免 TAN 在小视场下落入错误局部解。
+        rough_rotation = self._rough_framing_initial_rotation_matrix()
+        if rough_rotation is not None:
+            return rough_rotation
+        return self._initial_projection_rotation_matrix()
+
+    def _has_rough_framing(self) -> bool:
+        """判断当前图像是否保留可回退的相邻图像粗略取景。"""
+
+        return (
+            self.current_image_preview is not None
+            and isinstance(getattr(self, "_rough_alignment_transform", None), RoughFramingTransform)
+            and getattr(self, "_rough_source_astrometric_model", None) is not None
+        )
+
+    def _should_use_rough_framing(self, manual_pair_count: int) -> bool:
+        """四颗手工匹配前使用粗略取景，删回阈值以下时自动回退。"""
+
+        return manual_pair_count < MIN_ALIGNMENT_PAIRS and self._has_rough_framing()
+
+    def _show_adjacent_framing_workflow_status(self, manual_pair_count: int, using_rough_framing: bool) -> None:
+        """在底部状态栏说明粗略取景和手工匹配之间的当前切换状态。"""
+
+        if not self._has_rough_framing():
+            return
+        if using_rough_framing:
+            message = (
+                f"已记录 {manual_pair_count} 对手工匹配，暂不执行手工配准；"
+                f"参考星图同步拖拽由相邻图像粗略取景提供，达到 {MIN_ALIGNMENT_PAIRS} 对后将切换。"
+            )
+        else:
+            message = (
+                f"已记录 {manual_pair_count} 对手工匹配，已停止使用相邻图像粗略取景显示；"
+                "当前结果仅由手工匹配求解，粗略姿态仅作为已知投影的初始值。"
+            )
+        self.ui.statusbar.showMessage(message)
+
     def _star_pair_alignment_residual(self, row: int) -> tuple[float, float, float] | None:
         transform = self._sky_alignment_transform
         if transform is None:
@@ -406,15 +463,32 @@ class AlignmentMixin:
         self._refresh_star_pair_table_styles()
 
     def _update_reference_alignment_transform(self) -> None:
+        if self._suspend_alignment_updates:
+            return
+        sky_points, sky_target_points, fit_weights, anchor_mask = self._matched_sky_alignment_data()
+        self._update_simulator_controls_lock(int(sky_points.shape[0]))
+
+        manual_pair_count = int(sky_points.shape[0])
+        rough_transform = getattr(self, "_rough_alignment_transform", None)
+        rough_source_model = getattr(self, "_rough_source_astrometric_model", None)
+        using_rough_framing = self._should_use_rough_framing(manual_pair_count)
+        if using_rough_framing:
+            # 四颗前只保存用户点选的数值；参考星图同步与拖拽完全由粗略取景承担。
+            self._sky_alignment_transform = rough_transform
+            self._source_astrometric_model = rough_source_model
+            self._reference_alignment_error_message = ""
+            self._sky_alignment_error_message = ""
+            self._source_model_error_message = ""
+            self._update_star_pair_residual_columns()
+            self._update_reference_alignment_display()
+            self._show_adjacent_framing_workflow_status(manual_pair_count, using_rough_framing=True)
+            return
+
         self._sky_alignment_transform = None
         self._source_astrometric_model = None
         self._reference_alignment_error_message = ""
         self._sky_alignment_error_message = ""
         self._source_model_error_message = ""
-        if self._suspend_alignment_updates:
-            return
-        sky_points, sky_target_points, fit_weights, anchor_mask = self._matched_sky_alignment_data()
-        self._update_simulator_controls_lock(int(sky_points.shape[0]))
         if self.current_image_preview is None:
             self._reference_alignment_error_message = "导入真实图像后可计算实时星空叠加。"
             self._sky_alignment_error_message = "导入真实图像后可计算天球残差。"
@@ -423,15 +497,15 @@ class AlignmentMixin:
             self._update_reference_alignment_display()
             return
 
-        if sky_points.shape[0] < MIN_ALIGNMENT_PAIRS:
+        if manual_pair_count < MIN_ALIGNMENT_PAIRS:
             self._reference_alignment_error_message = (
-                f"已配对 {sky_points.shape[0]} 颗星；至少 {MIN_ALIGNMENT_PAIRS} 颗后可实时叠加星空。"
+                f"已配对 {manual_pair_count} 颗星；至少 {MIN_ALIGNMENT_PAIRS} 颗后可实时叠加星空。"
             )
             self._sky_alignment_error_message = (
-                f"已配对 {sky_points.shape[0]} 颗星；至少 {MIN_ALIGNMENT_PAIRS} 颗后可计算天球残差。"
+                f"已配对 {manual_pair_count} 颗星；至少 {MIN_ALIGNMENT_PAIRS} 颗后可计算天球残差。"
             )
             self._source_model_error_message = (
-                f"已配对 {sky_points.shape[0]} 颗星；至少 {MIN_ALIGNMENT_PAIRS} 颗后可生成 xy→RA/Dec 映射。"
+                f"已配对 {manual_pair_count} 颗星；至少 {MIN_ALIGNMENT_PAIRS} 颗后可生成 xy→RA/Dec 映射。"
             )
             self._update_star_pair_residual_columns()
             self._update_reference_alignment_display()
@@ -439,7 +513,7 @@ class AlignmentMixin:
 
         try:
             image = self.current_image_preview.image
-            initial_rotation_matrix = self._initial_projection_rotation_matrix()
+            initial_rotation_matrix = self._manual_projection_initial_rotation_matrix()
             # 源图基础投影由真实图像配对拟合，避免复用星空模拟页的镜头投影或鱼眼视场。
             source_projection_fov_deg = None
             self._sky_alignment_transform = fit_sky_alignment(
@@ -457,7 +531,7 @@ class AlignmentMixin:
         if self._sky_alignment_transform is not None and self.current_image_preview is not None:
             try:
                 image = self.current_image_preview.image
-                initial_rotation_matrix = self._initial_projection_rotation_matrix()
+                initial_rotation_matrix = self._manual_projection_initial_rotation_matrix()
                 imported_profile = getattr(self, "_imported_camera_calibration_profile", None)
                 if self._profile_reuse_enabled():
                     if imported_profile is None:
@@ -488,6 +562,7 @@ class AlignmentMixin:
                 self._source_model_error_message = str(exc)
         self._update_star_pair_residual_columns()
         self._update_reference_alignment_display()
+        self._show_adjacent_framing_workflow_status(manual_pair_count, using_rough_framing=False)
 
     def _update_reference_overlay_opacity_label(self) -> None:
         opacity = self.ui.doubleSpinBoxReferenceOverlayOpacity.value()
@@ -654,6 +729,8 @@ class AlignmentMixin:
             number_reference_stars = self._show_reference_annotations()
             display_star_map = self._build_aligned_reference_star_map(transform, target_size)
             self._current_reference_star_map = display_star_map
+            if isinstance(transform, RoughFramingTransform):
+                self._refresh_reference_stars_for_rough_framing(display_star_map)
             self.reference_star_map_item.set_star_map(
                 display_star_map,
                 reference_stars=self._current_reference_stars,
@@ -708,6 +785,24 @@ class AlignmentMixin:
         self._update_live_star_map_zoom_scale(self.ui.realImageView)
         if self.ui.checkBoxSyncReferenceAndRealView.isChecked() and self._can_sync_reference_real_views():
             self._sync_reference_real_view_from(self.ui.realImageView, force=True)
+
+    def _refresh_reference_stars_for_rough_framing(self, aligned_star_map: object) -> None:
+        """粗略取景生效时，按当前估计视野重新选择标记星并刷新参考星列表。"""
+
+        reference_stars = self._select_current_reference_stars(aligned_star_map)
+        previous_ids = tuple(star.star_id for star in self._current_reference_stars)
+        selected_ids = tuple(star.star_id for star in reference_stars)
+        if selected_ids == previous_ids:
+            self._current_reference_stars = tuple(reference_stars)
+            return
+
+        # 表格刷新会请求重新计算配准；此时必须保留刚刚得到的粗略取景，防止递归刷新。
+        previous_suspension = self._suspend_alignment_updates
+        self._suspend_alignment_updates = True
+        try:
+            self._update_star_pair_table(reference_stars)
+        finally:
+            self._suspend_alignment_updates = previous_suspension
 
     def _can_sync_reference_real_views(self) -> bool:
         return (

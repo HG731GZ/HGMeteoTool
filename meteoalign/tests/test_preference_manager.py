@@ -4,7 +4,12 @@ import json
 from dataclasses import fields
 from pathlib import Path
 
-from meteoalign.config import StarMapUiConfig
+from meteoalign.config import (
+    AdjacentLandscapeAlignmentConfig,
+    AdjacentStarAlignmentConfig,
+    StarMapUiConfig,
+    load_adjacent_alignment_config,
+)
 from meteoalign.preference_manager import (
     DEFAULT_PREFERENCE_VALUES,
     LAST_IMPORT_DIRECTORY_KEY,
@@ -40,6 +45,43 @@ def test_preference_defaults_cover_every_ui_config_field() -> None:
 
     assert config_field_names.issubset(DEFAULT_PREFERENCE_VALUES)
     assert set(PREFERENCE_COMMENTS) == set(DEFAULT_PREFERENCE_VALUES)
+
+
+def test_adjacent_alignment_hyperparameters_are_loaded_and_bounded(tmp_path: Path) -> None:
+    """相邻图像两种配准模式都应从 preference.json 获取超参数并限制有效范围。"""
+
+    preference_path = tmp_path / "preference.json"
+    preference_path.write_text(
+        """
+        {
+          "adjacent_alignment_max_correspondences": 72,
+          "adjacent_star_detection_sigma": 3.5,
+          "adjacent_star_max_detected_stars": 480,
+          "adjacent_star_final_match_distance_px": 2.25,
+          "adjacent_landscape_sift_max_features": 24000,
+          "adjacent_landscape_ratio_test_threshold": 0.72,
+          "adjacent_landscape_normalization_low_percentile": 95.0,
+          "adjacent_landscape_normalization_high_percentile": 10.0
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    config = load_adjacent_alignment_config(preference_path)
+
+    assert config.max_correspondences == 72
+    assert config.stars.detection_sigma == 3.5
+    assert config.stars.max_detected_stars == 480
+    assert config.stars.final_match_distance_px == 2.25
+    assert config.landscape.sift_max_features == 24000
+    assert config.landscape.ratio_test_threshold == 0.72
+    assert config.landscape.normalization_low_percentile == 95.0
+    assert config.landscape.normalization_high_percentile > config.landscape.normalization_low_percentile
+    assert isinstance(config.stars, AdjacentStarAlignmentConfig)
+    assert isinstance(config.landscape, AdjacentLandscapeAlignmentConfig)
+    assert AdjacentLandscapeAlignmentConfig().sift_max_features == 30000
+    assert AdjacentLandscapeAlignmentConfig().flann_checks == 500
+    assert AdjacentLandscapeAlignmentConfig().min_inlier_matches == 6
 
 
 def test_existing_preference_only_adds_missing_keys_and_preserves_extensions(tmp_path: Path) -> None:

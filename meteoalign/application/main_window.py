@@ -46,6 +46,7 @@ from ..preference_manager import ensure_preference_file, recent_import_directory
 from ..runtime_paths import runtime_icon_path
 from ..coordinates import radec_to_unit_vectors
 from ..image_preview import IMAGE_FILE_FILTER, ImagePreview, load_image_preview
+from ..adjacent_framing_worker import AdjacentFramingWorker
 from ..milky_way import MilkyWayCatalog, load_milky_way
 from ..reference import build_reference_payload, save_reference_outputs
 from ..renderer import StarMapRenderer
@@ -93,6 +94,7 @@ from .app_workers import (
     StarPairSessionImportWorker,
 )
 from .app_widgets import AppWidgetMixin
+from .app_adjacent_framing import AdjacentFramingMixin
 from .app_star_pair_table import StarPairTableMixin
 from .app_alignment import AlignmentMixin
 from .app_star_pair_io import StarPairIOMixin
@@ -126,6 +128,7 @@ from .app_utils import (
 class MainWindow(
     QMainWindow,
     AppWidgetMixin,
+    AdjacentFramingMixin,
     StarPairTableMixin,
     AlignmentMixin,
     StarPairIOMixin,
@@ -141,6 +144,7 @@ class MainWindow(
 
     采用 Mixin 多重继承模式将不同功能拆分到独立模块：
     - AppWidgetMixin: UI 辅助（标签、字体）
+    - AdjacentFramingMixin: 相邻图像粗略取景
     - StarPairTableMixin: 星对表格管理
     - AlignmentMixin: 天球配准与残差
     - StarPairIOMixin: JSON 导入导出
@@ -234,6 +238,13 @@ class MainWindow(
         self._json_import_thread: object | None = None
         self._json_import_worker: QObject | None = None
         self._json_import_progress: QProgressDialog | None = None
+        self._adjacent_framing_thread: object | None = None
+        self._adjacent_framing_worker: AdjacentFramingWorker | None = None
+        self._adjacent_framing_progress: QProgressDialog | None = None
+        self._adjacent_model_json_path: Path | None = None
+        self._adjacent_framing_result = None
+        self._rough_alignment_transform = None
+        self._rough_source_astrometric_model = None
         self._star_pair_session_import_switch_to_reference = True
         self._star_pair_session_import_clear_input_name = "新的配对 JSON"
         self._mask_import_thread: object | None = None
@@ -323,7 +334,8 @@ class MainWindow(
         self.ui.comboBoxReferenceLabelMode.setCurrentIndex(0)
         self.ui.spinBoxReferenceStarCount.setValue(12)
         self.ui.doubleSpinBoxReferenceMagLimit.setValue(3.0)
-        self.ui.comboBoxSkyAlignmentModel.setCurrentIndex(0)
+        self.ui.comboBoxSkyAlignmentModel.setCurrentIndex(1)
+        self._init_adjacent_framing_defaults()
         if hasattr(self.ui, "comboBoxProfileSolveMode"):
             self.ui.comboBoxProfileSolveMode.setCurrentIndex(1)
         self.ui.spinBoxAutoMatchCount.setValue(self.ui_config.auto_match_default_new_count)
@@ -377,6 +389,14 @@ class MainWindow(
         self.ui.pushButtonSwapOrientation.clicked.connect(self._swap_camera_orientation)
         self.ui.pushButtonExportReference.clicked.connect(self.export_reference_map)
         self.ui.pushButtonImportSingleImage.clicked.connect(self.import_single_image)
+        if hasattr(self.ui, "pushButtonImportAdjacentImage"):
+            self.ui.pushButtonImportAdjacentImage.clicked.connect(self.import_adjacent_image)
+        if hasattr(self.ui, "pushButtonCalculateAdjacentFraming"):
+            self.ui.pushButtonCalculateAdjacentFraming.clicked.connect(self.calculate_adjacent_rough_framing)
+        if hasattr(self.ui, "comboBoxAdjacentAlignmentMode"):
+            self.ui.comboBoxAdjacentAlignmentMode.currentIndexChanged.connect(
+                self._handle_adjacent_alignment_mode_changed
+            )
         self.ui.pushButtonImportImageSequence.clicked.connect(self.import_image_sequence)
         self.ui.pushButtonProcessImageSequence.clicked.connect(self.process_image_sequence)
         if hasattr(self.ui, "pushButtonImportImageSequenceSkyMask"):

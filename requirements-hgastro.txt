@@ -14,6 +14,11 @@ imagecodecs==2025.3.30
 sep==1.4.1
 gwcs==0.24.0
 asdf==5.3.1
+astroalign==2.6.2
+scikit-image==0.25.2
+networkx==3.4.2
+imageio==2.37.3
+lazy-loader==0.5
 PyYAML==6.0.3
 pytest==9.1.1
 pyinstaller==6.21.0

@@ -47,6 +47,7 @@ class ImageMixin:
         self.ui.labelImportedImagePath.setProperty("fullPath", "")
         self._set_elided_label_text(self.ui.labelImportedImagePath, "未导入", "")
         self.ui.labelImportedImageSize.setText("-")
+        self._update_status_image_context()
 
     def _update_imported_image_labels(self, preview: ImagePreview) -> None:
         image_path = Path(preview.path).expanduser().resolve()
@@ -66,6 +67,39 @@ class ImageMixin:
         else:
             self._set_elided_label_text(self.ui.labelImportedImagePath, image_path.name, image_path_text)
         self.ui.labelImportedImageSize.setText(f"{preview.original_width} x {preview.original_height} px")
+        self._update_status_image_context()
+
+    def _update_status_image_context(self) -> None:
+        """刷新状态栏右侧的当前图像文件名与蒙版使用状态。"""
+
+        status_label = getattr(self.ui, "labelStatusImageContext", None)
+        if status_label is None:
+            return
+        projection_combo = getattr(self.ui, "comboBoxSkyAlignmentModel", None)
+        projection_text = ""
+        if projection_combo is not None:
+            projection_text = str(projection_combo.currentText()).strip()
+        projection_context = f"  |  投影：{projection_text}" if projection_text else ""
+        preview = self.current_image_preview
+        if preview is None:
+            status_label.setText(f"图像：未导入  |  蒙版：未使用{projection_context}")
+            status_label.setToolTip("")
+            return
+
+        image_path = Path(preview.path).expanduser().resolve()
+        if self.current_sky_mask is None:
+            mask_text = "蒙版：未使用"
+            mask_tooltip = "未使用蒙版"
+        else:
+            mask_text = "蒙版：已使用"
+            mask_tooltip = (
+                str(self.current_sky_mask_path)
+                if self.current_sky_mask_path is not None
+                else "正在使用内存蒙版"
+            )
+        status_label.setText(f"图像：{image_path.name}  |  {mask_text}{projection_context}")
+        projection_tooltip = f"\n当前投影模型：{projection_text}" if projection_text else ""
+        status_label.setToolTip(f"真实图像：{image_path}\n{mask_tooltip}{projection_tooltip}")
 
     def _apply_single_image_exif_observation_time(self, image_path: str | Path) -> str:
         """读取单张图像 EXIF 时间，并同步到星空模拟页的拍摄时间。"""
@@ -104,6 +138,7 @@ class ImageMixin:
         if hasattr(self, "_invalidate_image_sequence_mask_cache"):
             self._invalidate_image_sequence_mask_cache()
         self._set_elided_label_text(self.ui.labelSkyMaskStatus, "未使用蒙版", "")
+        self._update_status_image_context()
         if hasattr(self, "_update_image_sequence_controls"):
             self._update_image_sequence_controls()
 
@@ -119,6 +154,7 @@ class ImageMixin:
             f"蒙版有效区域 {valid_fraction * 100.0:.1f}%",
             path_text,
         )
+        self._update_status_image_context()
         if hasattr(self, "_invalidate_image_sequence_mask_cache"):
             self._invalidate_image_sequence_mask_cache()
         if hasattr(self, "_update_image_sequence_controls"):
@@ -171,6 +207,40 @@ class ImageMixin:
         self.ui.checkBoxShowSkyMask.setEnabled(enabled and self.current_sky_mask is not None)
         if hasattr(self, "_update_image_sequence_controls"):
             self._update_image_sequence_controls()
+
+    def _companion_sky_mask_path(self, image_path: str | Path) -> Path | None:
+        """查找与真实图像同目录、同名且带 _Mask 后缀的唯一约定蒙版。"""
+
+        source_path = Path(image_path).expanduser().resolve()
+        file_name_prefix = f"{source_path.stem}_Mask."
+        try:
+            candidates = sorted(
+                path
+                for path in source_path.parent.iterdir()
+                if path.is_file() and path.name.startswith(file_name_prefix) and bool(path.suffix)
+            )
+        except OSError:
+            return None
+        return candidates[0] if candidates else None
+
+    def _maybe_auto_import_sky_mask_for_image(self, image_path: str | Path) -> bool:
+        """按“图像名_Mask.后缀”约定自动导入当前图像对应的蒙版。"""
+
+        if self._mask_import_thread is not None:
+            return False
+        mask_path = self._companion_sky_mask_path(image_path)
+        if mask_path is None:
+            return False
+        current_mask_path = self.current_sky_mask_path
+        if (
+            self.current_sky_mask is not None
+            and current_mask_path is not None
+            and current_mask_path.expanduser().resolve() == mask_path
+        ):
+            return False
+        self.ui.statusbar.showMessage(f"发现同名蒙版，正在自动导入: {mask_path}")
+        self.start_sky_mask_import(mask_path)
+        return True
 
     def import_single_image(self) -> None:
         if self._image_import_thread is not None:
@@ -237,6 +307,11 @@ class ImageMixin:
     def _reset_image_import_results(self, *, preserve_sequence_status: bool) -> None:
         if not preserve_sequence_status and hasattr(self, "_reset_image_sequence_status"):
             self._reset_image_sequence_status()
+        if hasattr(self, "_clear_adjacent_rough_framing"):
+            self._clear_adjacent_rough_framing(
+                status_text="当前图像已改变，请重新计算粗略取景",
+                refresh_alignment=False,
+            )
         self._reset_sky_mask_status()
         self._sky_alignment_transform = None
         self._source_astrometric_model = None
@@ -265,12 +340,22 @@ class ImageMixin:
     ) -> None:
         preserve_sequence_status = bool(getattr(self, "_preserve_sequence_on_next_image_load", False))
         self._preserve_sequence_on_next_image_load = False
+        previous_image_path = (
+            Path(self.current_image_preview.path).expanduser().resolve()
+            if self.current_image_preview is not None
+            else None
+        )
         if clear_existing_pairs:
             self._clear_star_pair_positions_for_new_input("新的真实图像")
             self._reset_image_import_results(preserve_sequence_status=preserve_sequence_status)
         self.current_image_preview = preview
         if not clear_existing_pairs:
-            self._clear_sky_mask_if_size_mismatch(preview.image.width(), preview.image.height())
+            current_image_path = Path(preview.path).expanduser().resolve()
+            if previous_image_path is not None and previous_image_path != current_image_path:
+                # 导入另一张图的配对 JSON 时，即使尺寸相同也不能沿用旧图蒙版。
+                self._reset_sky_mask_status()
+            else:
+                self._clear_sky_mask_if_size_mismatch(preview.image.width(), preview.image.height())
         self._display_real_image_preview(preview)
         if switch_to_reference:
             self.ui.tabWidgetMain.setCurrentWidget(self.ui.tabReferenceImage)
@@ -296,6 +381,9 @@ class ImageMixin:
             self._update_reference_alignment_controls()
         if hasattr(self, "_update_image_sequence_controls"):
             self._update_image_sequence_controls()
+        if hasattr(self, "_update_adjacent_framing_controls"):
+            self._update_adjacent_framing_controls()
+        self._maybe_auto_import_sky_mask_for_image(preview.path)
 
     def _handle_single_image_import_finished(self, preview: object) -> None:
         if self._image_import_progress is not None:

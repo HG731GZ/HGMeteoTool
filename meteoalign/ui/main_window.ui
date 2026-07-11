@@ -947,12 +947,12 @@
            <item>
             <widget class="QGroupBox" name="groupBoxImportedImage">
              <property name="title">
-              <string>真实图像</string>
+              <string>图像导入</string>
              </property>
              <property name="maximumSize">
               <size>
                <width>16777215</width>
-               <height>300</height>
+               <height>480</height>
               </size>
              </property>
              <layout class="QVBoxLayout" name="verticalLayoutImportedImage">
@@ -1053,6 +1053,35 @@
                   </property>
                  </widget>
                 </item>
+                <item row="4" column="0">
+                 <widget class="QLabel" name="labelSkyMaskStatusTitle">
+                  <property name="text">
+                   <string>蒙版</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="4" column="1">
+                 <widget class="QLabel" name="labelSkyMaskStatus">
+                  <property name="sizePolicy">
+                   <sizepolicy hsizetype="Ignored" vsizetype="Preferred">
+                    <horstretch>0</horstretch>
+                    <verstretch>0</verstretch>
+                   </sizepolicy>
+                  </property>
+                  <property name="minimumSize">
+                   <size>
+                    <width>0</width>
+                    <height>0</height>
+                   </size>
+                  </property>
+                  <property name="text">
+                   <string>未使用蒙版</string>
+                  </property>
+                  <property name="wordWrap">
+                   <bool>false</bool>
+                  </property>
+                 </widget>
+                </item>
                </layout>
               </item>
               <item>
@@ -1068,6 +1097,24 @@
                  <widget class="QPushButton" name="pushButtonImportCameraProfile">
                   <property name="text">
                    <string>导入Profile</string>
+                  </property>
+                 </widget>
+                </item>
+               </layout>
+              </item>
+              <item>
+               <layout class="QHBoxLayout" name="horizontalLayoutSkyMaskButtons">
+                <item>
+                 <widget class="QPushButton" name="pushButtonImportSkyMask">
+                  <property name="text">
+                   <string>导入蒙版</string>
+                  </property>
+                 </widget>
+                </item>
+                <item>
+                 <widget class="QPushButton" name="pushButtonClearSkyMask">
+                  <property name="text">
+                   <string>清除蒙版</string>
                   </property>
                  </widget>
                 </item>
@@ -1102,6 +1149,107 @@
                  </widget>
                 </item>
                </layout>
+              </item>
+              <item>
+               <widget class="QGroupBox" name="groupBoxAdjacentImageFraming">
+                <property name="title">
+                 <string>相邻图像粗略取景</string>
+                </property>
+                <layout class="QVBoxLayout" name="verticalLayoutAdjacentImageFraming">
+                 <item>
+                  <layout class="QFormLayout" name="formLayoutAdjacentImageFraming">
+                   <item row="0" column="0">
+                    <widget class="QLabel" name="labelAdjacentImageModelTitle">
+                     <property name="text">
+                      <string>相邻图像</string>
+                     </property>
+                    </widget>
+                   </item>
+                   <item row="0" column="1">
+                    <widget class="QLabel" name="labelAdjacentImageModel">
+                     <property name="sizePolicy">
+                      <sizepolicy hsizetype="Ignored" vsizetype="Preferred">
+                       <horstretch>0</horstretch>
+                       <verstretch>0</verstretch>
+                      </sizepolicy>
+                     </property>
+                     <property name="text">
+                      <string>未导入 model.json</string>
+                     </property>
+                     <property name="wordWrap">
+                      <bool>false</bool>
+                     </property>
+                    </widget>
+                   </item>
+                   <item row="1" column="0">
+                    <widget class="QLabel" name="labelAdjacentAlignmentMode">
+                     <property name="text">
+                      <string>工作模式</string>
+                     </property>
+                    </widget>
+                   </item>
+                   <item row="1" column="1">
+                    <widget class="QComboBox" name="comboBoxAdjacentAlignmentMode">
+                     <item>
+                      <property name="text">
+                       <string>星点对齐模式</string>
+                      </property>
+                     </item>
+                     <item>
+                      <property name="text">
+                       <string>地景对齐模式</string>
+                      </property>
+                     </item>
+                    </widget>
+                   </item>
+                   <item row="2" column="0">
+                    <widget class="QLabel" name="labelAdjacentFramingStatusTitle">
+                     <property name="text">
+                      <string>粗略取景</string>
+                     </property>
+                    </widget>
+                   </item>
+                   <item row="2" column="1">
+                    <widget class="QLabel" name="labelAdjacentFramingStatus">
+                     <property name="sizePolicy">
+                      <sizepolicy hsizetype="Ignored" vsizetype="Preferred">
+                       <horstretch>0</horstretch>
+                       <verstretch>0</verstretch>
+                      </sizepolicy>
+                     </property>
+                     <property name="text">
+                      <string>未计算粗略取景</string>
+                     </property>
+                     <property name="wordWrap">
+                      <bool>false</bool>
+                     </property>
+                    </widget>
+                   </item>
+                  </layout>
+                 </item>
+                 <item>
+                  <layout class="QHBoxLayout" name="horizontalLayoutAdjacentImageFramingButtons">
+                   <item>
+                    <widget class="QPushButton" name="pushButtonImportAdjacentImage">
+                     <property name="text">
+                      <string>导入相邻图像模型</string>
+                     </property>
+                    </widget>
+                   </item>
+                   <item>
+                    <widget class="QPushButton" name="pushButtonCalculateAdjacentFraming">
+                     <property name="enabled">
+                      <bool>false</bool>
+                     </property>
+                     <property name="text">
+                      <string>计算粗略取景</string>
+                     </property>
+                    </widget>
+                   </item>
+                  </layout>
+                 </item>
+                </layout>
+               </widget>
               </item>
              </layout>
             </widget>
@@ -1220,50 +1368,10 @@
            </item>
            <item>
             <widget class="QGroupBox" name="groupBoxAstrometricModel">
-             <property name="title">
-              <string>源图映射</string>
-             </property>
-             <layout class="QVBoxLayout" name="verticalLayoutAstrometricModel">
-              <item>
-               <layout class="QHBoxLayout" name="horizontalLayoutSkyMaskButtons">
-                <item>
-                 <widget class="QPushButton" name="pushButtonImportSkyMask">
-                  <property name="text">
-                   <string>导入蒙版</string>
-                  </property>
-                 </widget>
-                </item>
-                <item>
-                 <widget class="QPushButton" name="pushButtonClearSkyMask">
-                  <property name="text">
-                   <string>清除蒙版</string>
-                  </property>
-                 </widget>
-                </item>
-               </layout>
-              </item>
-              <item>
-               <widget class="QLabel" name="labelSkyMaskStatus">
-                <property name="sizePolicy">
-                 <sizepolicy hsizetype="Ignored" vsizetype="Preferred">
-                  <horstretch>0</horstretch>
-                  <verstretch>0</verstretch>
-                 </sizepolicy>
-                </property>
-                <property name="minimumSize">
-                 <size>
-                  <width>0</width>
-                  <height>0</height>
-                 </size>
-                </property>
-                <property name="text">
-                 <string>未使用蒙版</string>
-                </property>
-                <property name="wordWrap">
-                 <bool>false</bool>
-                </property>
-               </widget>
-              </item>
+            <property name="title">
+             <string>源图映射</string>
+            </property>
+            <layout class="QVBoxLayout" name="verticalLayoutAstrometricModel">
               <item>
                <layout class="QFormLayout" name="formLayoutAutoMatch">
                 <item row="0" column="0">
@@ -1275,6 +1383,9 @@
                 </item>
                 <item row="0" column="1">
                  <widget class="QComboBox" name="comboBoxSkyAlignmentModel">
+                  <property name="currentIndex">
+                   <number>1</number>
+                  </property>
                   <item>
                    <property name="text">
                     <string>普适锚点插值</string>
@@ -1583,6 +1694,22 @@
              </layout>
             </item>
             <item>
+             <spacer name="verticalSpacerReferencePreviewHeader">
+              <property name="orientation">
+               <enum>Qt::Vertical</enum>
+              </property>
+              <property name="sizeType">
+               <enum>QSizePolicy::Fixed</enum>
+              </property>
+              <property name="sizeHint" stdset="0">
+               <size>
+                <width>20</width>
+                <height>0</height>
+               </size>
+              </property>
+             </spacer>
+            </item>
+            <item>
              <widget class="QGraphicsView" name="referenceImageView">
               <property name="backgroundBrush">
                <brush brushstyle="SolidPattern">
@@ -1657,6 +1784,22 @@
                </spacer>
               </item>
              </layout>
+            </item>
+            <item>
+             <spacer name="verticalSpacerRealImagePreviewHeader">
+              <property name="orientation">
+               <enum>Qt::Vertical</enum>
+              </property>
+              <property name="sizeType">
+               <enum>QSizePolicy::Fixed</enum>
+              </property>
+              <property name="sizeHint" stdset="0">
+               <size>
+                <width>20</width>
+                <height>0</height>
+               </size>
+              </property>
+             </spacer>
             </item>
             <item>
              <widget class="QGraphicsView" name="realImageView">
@@ -2871,7 +3014,16 @@
     </item>
    </layout>
   </widget>
-  <widget class="QStatusBar" name="statusbar"/>
+  <widget class="QStatusBar" name="statusbar">
+   <widget class="QLabel" name="labelStatusImageContext">
+    <property name="text">
+     <string>图像：未导入  |  蒙版：未使用  |  投影：普通透视镜头(TAN)</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignRight|Qt::AlignVCenter</set>
+    </property>
+   </widget>
+  </widget>
  </widget>
  <resources/>
  <connections/>

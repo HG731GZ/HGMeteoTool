@@ -28,6 +28,7 @@ MODULES = {
     "sep": "sep",
     "gwcs": "gwcs",
     "asdf": "asdf",
+    "astroalign": "astroalign",
     "PyYAML": "yaml",
     "pytest": "pytest",
     "pyinstaller": "PyInstaller",

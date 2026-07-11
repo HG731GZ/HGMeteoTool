@@ -4,7 +4,7 @@ import math
 from collections.abc import Callable
 
 from PyQt5.QtCore import QEvent, QPoint, QPointF, Qt, QTimer
-from PyQt5.QtWidgets import QApplication, QGraphicsView, QMainWindow, QMessageBox
+from PyQt5.QtWidgets import QApplication, QGraphicsView, QMainWindow, QMessageBox, QSizePolicy
 
 from .app_constants import (
     IMAGE_VIEW_ZOOM_IN_FACTOR,
@@ -79,6 +79,10 @@ class ViewControlsMixin:
 
     def _configure_reference_preview_splitter(self) -> None:
         splitter = self.ui.splitterReferenceAndRealImage
+        for preview_group in (self.ui.groupBoxReferencePreview, self.ui.groupBoxRealImagePreview):
+            # 参考图标题栏控件较多；忽略其内容最小宽度，避免挤占真实图像的显示区域。
+            preview_group.setMinimumWidth(0)
+            preview_group.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         splitter.setChildrenCollapsible(False)
         splitter.setCollapsible(0, False)
         splitter.setCollapsible(1, False)
@@ -88,9 +92,38 @@ class ViewControlsMixin:
         splitter.splitterMoved.connect(lambda _pos, _index: self._set_equal_reference_preview_sizes())
         QTimer.singleShot(0, self._set_equal_reference_preview_sizes)
 
+    def _synchronize_reference_preview_header_heights(self) -> None:
+        """补齐较短标题栏下方的空白，使两侧图像视口上下边缘严格对齐。"""
+
+        reference_layout = self.ui.verticalLayoutReferencePreview
+        real_layout = self.ui.verticalLayoutRealImagePreview
+        reference_spacer = reference_layout.itemAt(1).spacerItem()
+        real_spacer = real_layout.itemAt(1).spacerItem()
+        if reference_spacer is None or real_spacer is None:
+            return
+
+        reference_header_height = max(0, reference_layout.itemAt(0).sizeHint().height())
+        real_header_height = max(0, real_layout.itemAt(0).sizeHint().height())
+        common_header_height = max(reference_header_height, real_header_height)
+        reference_spacer.changeSize(
+            0,
+            common_header_height - reference_header_height,
+            QSizePolicy.Minimum,
+            QSizePolicy.Fixed,
+        )
+        real_spacer.changeSize(
+            0,
+            common_header_height - real_header_height,
+            QSizePolicy.Minimum,
+            QSizePolicy.Fixed,
+        )
+        reference_layout.invalidate()
+        real_layout.invalidate()
+
     def _set_equal_reference_preview_sizes(self) -> None:
         if self._syncing_reference_preview_splitter:
             return
+        self._synchronize_reference_preview_header_heights()
         splitter = self.ui.splitterReferenceAndRealImage
         total_width = sum(splitter.sizes())
         if total_width <= 0:
