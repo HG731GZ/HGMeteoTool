@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from meteoalign.application.app_mosaic_batch import MosaicBatchMixin
+from meteoalign.meteor_selection import MeteorBox, save_meteor_selection
 
 
 class _Control:
@@ -40,6 +41,14 @@ class _StatusBar:
 
     def showMessage(self, message: str) -> None:  # noqa: N802 - Qt 控件接口命名
         self.message = str(message)
+
+
+class _CheckBox:
+    def __init__(self, checked: bool) -> None:
+        self.checked = bool(checked)
+
+    def isChecked(self) -> bool:  # noqa: N802 - Qt 控件接口命名
+        return self.checked
 
 
 def _batch_window(mode_index: int) -> MosaicBatchMixin:
@@ -110,3 +119,29 @@ def test_mosaic_batch_base_geometry_enables_export_and_clear_unlocks_mode() -> N
     assert window.ui.comboBoxMosaicBatchMode.enabled
     assert not window.ui.pushButtonStartMosaicBatch.enabled
 
+
+def test_mosaic_batch_detects_sibling_meteor_selection_json(tmp_path) -> None:
+    """导入源图模型时应自动读取同名流星框选 JSON。"""
+
+    image_path = tmp_path / "IMG_0001.TIF"
+    save_meteor_selection(image_path, 6000, 4000, [MeteorBox(10.0, 20.0, 100.0, 200.0)])
+    source_model = SimpleNamespace(source_image_path=image_path)
+
+    item = MosaicBatchMixin._mosaic_batch_item_from_source_model(source_model)
+    window = _batch_window(0)
+    text, tooltip = window._mosaic_batch_meteor_selection_text(item)
+
+    assert item.meteor_selection_path == tmp_path / "IMG_0001_Meteor.json"
+    assert item.meteor_boxes == (MeteorBox(10.0, 20.0, 100.0, 200.0),)
+    assert text == "有（1）"
+    assert "IMG_0001_Meteor.json" in tooltip
+
+
+def test_mosaic_batch_meteor_only_uses_detected_box_regions() -> None:
+    """流星区域模式只向导出层传递框选源图矩形。"""
+
+    window = _batch_window(0)
+    window.ui.checkBoxMosaicBatchMeteorOnly = _CheckBox(True)
+    item = SimpleNamespace(meteor_boxes=(MeteorBox(10.2, 20.4, 100.6, 200.8),))
+
+    assert window._mosaic_batch_item_source_regions(item) == ((10, 20, 101, 201),)

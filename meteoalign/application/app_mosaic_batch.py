@@ -28,13 +28,15 @@ from ..mosaic.export.geometry import MosaicExportGeometry
 from ..mosaic.export.target_transform import target_icrs_to_pixel_transform_payload_matches
 from ..mosaic.framing import MOSAIC_FRAMING_SCHEMA
 from ..mosaic.model_io import MosaicSourceModel, _load_mosaic_source_model
+from ..meteor_selection import MeteorBox, load_meteor_selection, meteor_json_path
 from ..simulator import CameraSettings, ObserverSettings, RECTILINEAR_LENS_MODEL, ViewSettings
 
 
 MOSAIC_BATCH_FRAMING_JSON_FILTER = "自由投影取景 JSON (*.json);;JSON 文件 (*.json);;所有文件 (*)"
 MOSAIC_BATCH_MODE_SKY_INDEX = 0
 MOSAIC_BATCH_IMAGE_NAME_COLUMN = 0
-MOSAIC_BATCH_STATUS_COLUMN = 1
+MOSAIC_BATCH_METEOR_COLUMN = 1
+MOSAIC_BATCH_STATUS_COLUMN = 2
 
 
 @dataclass(frozen=True)
@@ -51,6 +53,9 @@ class MosaicBatchFraming:
 @dataclass
 class MosaicBatchImageItem:
     source_model: MosaicSourceModel
+    meteor_boxes: tuple[MeteorBox, ...] = ()
+    meteor_selection_path: Path | None = None
+    meteor_selection_error: str = ""
     status: str = "待处理"
     output_path: Path | None = None
     error_message: str = ""
@@ -69,6 +74,8 @@ class MosaicBatchMixin:
         self._mosaic_batch_base_model: MosaicSourceModel | None = None
         self._mosaic_batch_items: list[MosaicBatchImageItem] = []
         self.ui.comboBoxMosaicBatchMode.setCurrentIndex(MOSAIC_BATCH_MODE_SKY_INDEX)
+        if hasattr(self.ui, "doubleSpinBoxMosaicBatchMapTileSize"):
+            self.ui.doubleSpinBoxMosaicBatchMapTileSize.setValue(float(self._mosaic_batch_config_map_tile_size_px()))
         self._configure_mosaic_batch_table()
         for label_name in (
             "labelMosaicBatchFramingPath",
@@ -86,12 +93,15 @@ class MosaicBatchMixin:
         self.ui.pushButtonImportMosaicBatchImageJson.clicked.connect(self.import_mosaic_batch_image_json)
         self.ui.pushButtonClearMosaicBatchImports.clicked.connect(self.clear_mosaic_batch_imports)
         self.ui.pushButtonStartMosaicBatch.clicked.connect(self.start_mosaic_batch_processing)
+        if hasattr(self.ui, "checkBoxMosaicBatchMeteorOnly"):
+            self.ui.checkBoxMosaicBatchMeteorOnly.toggled.connect(self._update_mosaic_batch_controls)
 
     def _configure_mosaic_batch_table(self) -> None:
         table = self.ui.tableWidgetMosaicBatchImages
         header = table.horizontalHeader()
         header.setStretchLastSection(False)
         header.setSectionResizeMode(MOSAIC_BATCH_IMAGE_NAME_COLUMN, QHeaderView.Stretch)
+        header.setSectionResizeMode(MOSAIC_BATCH_METEOR_COLUMN, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(MOSAIC_BATCH_STATUS_COLUMN, QHeaderView.ResizeToContents)
         table.verticalHeader().setVisible(False)
         table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -141,10 +151,30 @@ class MosaicBatchMixin:
         self.ui.pushButtonImportMosaicBatchFramingJson.setEnabled(True)
         self.ui.pushButtonImportMosaicBatchImageJson.setEnabled(True)
         self.ui.pushButtonClearMosaicBatchImports.setEnabled(has_imports)
-        can_start = self._mosaic_batch_target_geometry() is not None and bool(self._mosaic_batch_items)
+        target_geometry = self._mosaic_batch_target_geometry()
+        can_start = target_geometry is not None and bool(self._mosaic_batch_processable_rows())
         self.ui.pushButtonStartMosaicBatch.setEnabled(can_start)
-        self.ui.pushButtonStartMosaicBatch.setToolTip("")
+        if can_start:
+            start_tooltip = ""
+        elif target_geometry is None:
+            start_tooltip = f"请先导入{target_name} JSON。"
+        elif self._mosaic_batch_meteor_only_enabled():
+            start_tooltip = "需要至少导入一张带流星框选的图片。"
+        else:
+            start_tooltip = "请先导入图像模型 JSON。"
+        self.ui.pushButtonStartMosaicBatch.setToolTip(start_tooltip)
         self._update_mosaic_batch_summary_labels()
+
+    def _mosaic_batch_meteor_only_enabled(self) -> bool:
+        return bool(
+            hasattr(self.ui, "checkBoxMosaicBatchMeteorOnly")
+            and self.ui.checkBoxMosaicBatchMeteorOnly.isChecked()
+        )
+
+    def _mosaic_batch_processable_rows(self) -> list[int]:
+        if not self._mosaic_batch_meteor_only_enabled():
+            return list(range(len(self._mosaic_batch_items)))
+        return [row for row, item in enumerate(self._mosaic_batch_items) if item.meteor_boxes]
 
     def _update_mosaic_batch_summary_labels(self) -> None:
         target = self._mosaic_batch_framing if self._mosaic_batch_is_sky_mode() else self._mosaic_batch_base_model
@@ -276,7 +306,7 @@ class MosaicBatchMixin:
                 except Exception as exc:  # noqa: BLE001 - 单个模型坏了不阻断其他模型导入。
                     errors.append(f"{json_path.name}: {exc}")
                     continue
-                self._mosaic_batch_items.append(MosaicBatchImageItem(source_model=source_model))
+                self._mosaic_batch_items.append(self._mosaic_batch_item_from_source_model(source_model))
                 existing_paths.add(resolved_path)
                 imported_count += 1
         finally:
@@ -290,6 +320,30 @@ class MosaicBatchMixin:
                 "\n".join(errors[:12]) + ("\n..." if len(errors) > 12 else ""),
             )
         self.ui.statusbar.showMessage(f"已导入 {imported_count} 个批处理图像模型 JSON")
+
+    @staticmethod
+    def _mosaic_batch_item_from_source_model(source_model: MosaicSourceModel) -> MosaicBatchImageItem:
+        """自动读取源图同目录的流星框选 JSON；读取失败不阻断模型导入。"""
+
+        image_path = source_model.source_image_path
+        if image_path is None:
+            return MosaicBatchImageItem(source_model=source_model)
+        selection_path = meteor_json_path(image_path)
+        if not selection_path.exists():
+            return MosaicBatchImageItem(source_model=source_model)
+        try:
+            meteor_boxes = tuple(load_meteor_selection(image_path))
+        except ValueError as exc:
+            return MosaicBatchImageItem(
+                source_model=source_model,
+                meteor_selection_path=selection_path,
+                meteor_selection_error=str(exc),
+            )
+        return MosaicBatchImageItem(
+            source_model=source_model,
+            meteor_boxes=meteor_boxes,
+            meteor_selection_path=selection_path,
+        )
 
     def clear_mosaic_batch_imports(self) -> None:
         self._mosaic_batch_framing = None
@@ -305,12 +359,16 @@ class MosaicBatchMixin:
         for row, item in enumerate(self._mosaic_batch_items):
             name_item = self._read_only_mosaic_batch_item(self._mosaic_batch_display_name(item.source_model))
             name_item.setToolTip(str(item.source_model.source_image_path or item.source_model.json_path))
+            meteor_text, meteor_tooltip = self._mosaic_batch_meteor_selection_text(item)
+            meteor_item = self._read_only_mosaic_batch_item(meteor_text)
+            meteor_item.setToolTip(meteor_tooltip)
             status_item = self._read_only_mosaic_batch_item(item.status)
             if item.output_path is not None:
                 status_item.setToolTip(str(item.output_path))
             elif item.error_message:
                 status_item.setToolTip(item.error_message)
             table.setItem(row, MOSAIC_BATCH_IMAGE_NAME_COLUMN, name_item)
+            table.setItem(row, MOSAIC_BATCH_METEOR_COLUMN, meteor_item)
             table.setItem(row, MOSAIC_BATCH_STATUS_COLUMN, status_item)
             self._set_mosaic_batch_row_state(row, self._mosaic_batch_state_from_status(item.status))
 
@@ -318,6 +376,18 @@ class MosaicBatchMixin:
         item = QTableWidgetItem(text)
         item.setFlags(item.flags() & ~Qt.ItemIsEditable)
         return item
+
+    def _mosaic_batch_meteor_selection_text(self, item: MosaicBatchImageItem) -> tuple[str, str]:
+        """生成表格中流星框选状态的文本与说明。"""
+
+        if item.meteor_selection_error:
+            return "异常", item.meteor_selection_error
+        if item.meteor_selection_path is None:
+            return "无", "未找到同名流星框选 JSON。"
+        return (
+            f"有（{len(item.meteor_boxes)}）",
+            f"流星框选：{item.meteor_selection_path}\n框选数：{len(item.meteor_boxes)}",
+        )
 
     def _mosaic_batch_display_name(self, source_model: MosaicSourceModel) -> str:
         if source_model.source_image_path is not None:
@@ -374,8 +444,10 @@ class MosaicBatchMixin:
             target_name = "取景" if self._mosaic_batch_is_sky_mode() else "底图"
             QMessageBox.warning(self, "批处理失败", f"请先导入{target_name} JSON。")
             return
-        if not self._mosaic_batch_items:
-            QMessageBox.warning(self, "批处理失败", "请先导入图像模型 JSON。")
+        processable_rows = self._mosaic_batch_processable_rows()
+        if not processable_rows:
+            message = "请先导入图像模型 JSON。" if not self._mosaic_batch_items else "当前没有可导出的流星框选。"
+            QMessageBox.warning(self, "批处理失败", message)
             return
         if not mosaic_export_available():
             QMessageBox.critical(self, "批处理失败", "当前环境缺少 OpenCV 或 tifffile，无法写入 16-bit TIFF。")
@@ -388,12 +460,14 @@ class MosaicBatchMixin:
         if not output_dir_text:
             return
         output_dir = Path(output_dir_text).expanduser()
-        total_count = len(self._mosaic_batch_items)
+        total_count = len(processable_rows)
+        meteor_only_text = "\n仅导出已框选的流星区域，其他区域将透明。\n" if self._mosaic_batch_meteor_only_enabled() else ""
         if QMessageBox.question(
             self,
             "确认开始批处理",
             (
-                f"将处理 {total_count} 张图像。\n\n"
+                f"将处理 {total_count} 张图像。\n"
+                f"{meteor_only_text}\n"
                 f"输出目录：\n{output_dir}\n\n"
                 f"尺寸：{geometry.output_width_px} x {geometry.output_height_px} px\n"
                 f"格式：{MOSAIC_EXPORT_TIFF_FILTER}"
@@ -419,11 +493,16 @@ class MosaicBatchMixin:
         progress.setAutoReset(False)
         progress.setValue(0)
         progress.show()
-        for row in range(len(self._mosaic_batch_items)):
-            self._set_mosaic_batch_item_status(row, "待处理")
+        processable_rows = self._mosaic_batch_processable_rows()
+        for row, item in enumerate(self._mosaic_batch_items):
+            if row in processable_rows:
+                self._set_mosaic_batch_item_status(row, "待处理")
+            else:
+                self._set_mosaic_batch_item_status(row, "跳过：无流星框选")
         try:
             QApplication.setOverrideCursor(Qt.WaitCursor)
-            for row, item in enumerate(self._mosaic_batch_items):
+            for current_index, row in enumerate(processable_rows):
+                item = self._mosaic_batch_items[row]
                 if progress.wasCanceled():
                     raise InterruptedError("用户取消了批处理。")
                 output_path = self._mosaic_batch_unique_output_path(
@@ -434,15 +513,21 @@ class MosaicBatchMixin:
                 )
                 self._set_mosaic_batch_item_status(row, "处理中")
 
-                def update_export_progress(label: str, value: int, maximum: int, *, current_row: int = row) -> None:
-                    file_prefix = f"[{current_row + 1}/{len(self._mosaic_batch_items)}] "
+                def update_export_progress(
+                    label: str,
+                    value: int,
+                    maximum: int,
+                    *,
+                    progress_index: int = current_index,
+                ) -> None:
+                    file_prefix = f"[{progress_index + 1}/{len(processable_rows)}] "
                     progress.setLabelText(file_prefix + label)
                     if maximum <= 0:
                         progress.setRange(0, 0)
                     else:
-                        progress.setRange(0, max(1, len(self._mosaic_batch_items) * 1000))
+                        progress.setRange(0, max(1, len(processable_rows) * 1000))
                         file_progress = int(round(1000.0 * max(0, min(int(value), int(maximum))) / max(1, int(maximum))))
-                        progress.setValue(current_row * 1000 + file_progress)
+                        progress.setValue(progress_index * 1000 + file_progress)
                     QApplication.processEvents()
                     if progress.wasCanceled():
                         raise InterruptedError("用户取消了批处理。")
@@ -463,8 +548,8 @@ class MosaicBatchMixin:
                     continue
                 success_count += 1
                 self._set_mosaic_batch_item_status(row, "已完成", output_path=output_path)
-            progress.setRange(0, max(1, len(self._mosaic_batch_items) * 1000))
-            progress.setValue(len(self._mosaic_batch_items) * 1000)
+            progress.setRange(0, max(1, len(processable_rows) * 1000))
+            progress.setValue(len(processable_rows) * 1000)
         except InterruptedError as exc:
             self.ui.statusbar.showMessage(str(exc))
             return
@@ -517,6 +602,7 @@ class MosaicBatchMixin:
                 map_tile_size_px=self._mosaic_batch_map_tile_size_px(),
                 exact_remap_repair=self._mosaic_batch_exact_remap_repair_enabled(),
                 tiff_lzw_compression=self._mosaic_tiff_lzw_compression_enabled(),
+                source_pixel_regions=self._mosaic_batch_item_source_regions(item),
             )
             update_export_progress("正在完成文件写入...", 0, 0)
             temp_path.replace(output_path)
@@ -530,16 +616,47 @@ class MosaicBatchMixin:
             raise
 
     def _mosaic_batch_map_tile_size_px(self) -> int:
+        if hasattr(self.ui, "doubleSpinBoxMosaicBatchMapTileSize"):
+            configured = self.ui.doubleSpinBoxMosaicBatchMapTileSize.value()
+            try:
+                return max(1, min(512, int(configured)))
+            except (TypeError, ValueError):
+                return self._mosaic_batch_config_map_tile_size_px()
         method = getattr(self, "_mosaic_map_tile_size_px", None)
         if callable(method):
             return int(method())
         return 4
 
     def _mosaic_batch_exact_remap_repair_enabled(self) -> bool:
+        if hasattr(self.ui, "checkBoxMosaicBatchExactRemapRepair"):
+            return bool(self.ui.checkBoxMosaicBatchExactRemapRepair.isChecked())
         method = getattr(self, "_mosaic_exact_remap_repair_enabled", None)
         if callable(method):
             return bool(method())
         return False
+
+    def _mosaic_batch_config_map_tile_size_px(self) -> int:
+        configured = getattr(self.ui_config, "mosaic_map_tile_size_px", 4)
+        try:
+            value = int(configured)
+        except (TypeError, ValueError):
+            value = 4
+        return max(1, min(512, value))
+
+    def _mosaic_batch_item_source_regions(self, item: MosaicBatchImageItem) -> tuple[tuple[int, int, int, int], ...] | None:
+        """在流星区域模式下返回需导出的源图像素矩形。"""
+
+        if not self._mosaic_batch_meteor_only_enabled():
+            return None
+        return tuple(
+            (
+                int(round(box.left)),
+                int(round(box.top)),
+                int(round(box.right)),
+                int(round(box.bottom)),
+            )
+            for box in item.meteor_boxes
+        )
 
     def _mosaic_batch_unique_output_path(
         self,

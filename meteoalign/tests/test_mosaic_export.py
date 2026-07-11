@@ -14,8 +14,10 @@ from meteoalign.mosaic_export import (
     _icrs_camera_basis_from_view,
     _render_mosaic_reprojection_block_from_map,
     build_target_icrs_to_pixel_transform_payload,
+    mosaic_reprojection_blocks,
     mosaic_export_cropped_geometry,
     mosaic_reprojection_map_blocks,
+    restrict_reprojection_map_to_source_regions,
     target_image_points_to_icrs_vectors,
     write_mosaic_reprojection_tiff,
 )
@@ -264,6 +266,73 @@ def test_mosaic_render_block_marks_invalid_pixels_transparent() -> None:
     assert rendered.shape == (1, 2, 4)
     assert np.array_equal(rendered[0, 0], np.asarray([1000, 2000, 3000, 65535], dtype=np.uint16))
     assert np.array_equal(rendered[0, 1], np.asarray([0, 0, 0, 0], dtype=np.uint16))
+
+
+def test_reprojection_region_mask_keeps_only_selected_source_pixels() -> None:
+    """流星区域模式应将框外源图采样点变为透明。"""
+
+    map_x = np.asarray([[0.0, 1.0, 2.0, 3.0]], dtype=np.float32)
+    map_y = np.asarray([[0.0, 0.0, 0.0, 0.0]], dtype=np.float32)
+
+    restricted_x, restricted_y = restrict_reprojection_map_to_source_regions(
+        map_x,
+        map_y,
+        ((1, 0, 3, 1),),
+    )
+
+    assert restricted_x.tolist() == [[-1.0, 1.0, 2.0, -1.0]]
+    assert restricted_y.tolist() == [[-1.0, 0.0, 0.0, -1.0]]
+
+
+def test_mosaic_reprojection_only_projects_selected_source_region() -> None:
+    """天空模式的流星区域导出不应计算框外源图到 ICRS 的映射。"""
+
+    width, height = 12, 8
+    observer = ObserverSettings(
+        observation_time_utc=datetime(2025, 12, 14, 18, 11, 45, tzinfo=timezone.utc),
+        latitude_deg=25.0,
+        longitude_deg=102.0,
+        elevation_m=200.0,
+    )
+    camera = CameraSettings(
+        sensor_width_mm=36.0,
+        sensor_height_mm=24.0,
+        image_width_px=width,
+        image_height_px=height,
+        focal_length_mm=24.0,
+        lens_model=RECTILINEAR_LENS_MODEL,
+        fisheye_fov_deg=90.0,
+    )
+    view = ViewSettings(center_az_deg=180.0, center_alt_deg=45.0, roll_deg=0.0)
+    source_model = _CountingTargetProjectionSourceModel(camera, view, observer)
+    geometry = MosaicExportGeometry(
+        boundary_width_px=width,
+        boundary_height_px=height,
+        crop_left_px=0,
+        crop_top_px=0,
+        output_width_px=width,
+        output_height_px=height,
+    )
+    source_rgb = np.zeros((height, width, 3), dtype=np.uint16)
+    source_rgb[2:5, 3:7] = (50000, 1000, 2000)
+
+    blocks = list(
+        mosaic_reprojection_blocks(
+            source_model=source_model,
+            source_rgb_u16=source_rgb,
+            camera=camera,
+            view=view,
+            observer=observer,
+            geometry=geometry,
+            map_tile_size_px=1,
+            source_pixel_regions=((3, 2, 7, 5),),
+        )
+    )
+    exported = np.vstack(blocks)
+
+    assert source_model.projected_source_pixel_count == 12
+    assert np.any(exported[:, :, 3] > 0)
+    assert not np.any((exported[:, :, 3] > 0) & (exported[:, :, 0] != 50000))
 
 
 def test_mosaic_export_map_blocks_bridge_target_pixels_to_source_pixels(tmp_path) -> None:  # type: ignore[no-untyped-def]

@@ -64,6 +64,7 @@ MOSAIC_EXPORT_DEFAULT_BLOCK_ROWS = 1024
 MOSAIC_EXPORT_MAX_U16 = 65535
 MOSAIC_FORWARD_REMAP_EXACT_FILL_BATCH_PIXELS = 1_000_000
 MosaicExportProgressCallback = Callable[[str, int, int], None]
+SourcePixelRegion = tuple[int, int, int, int]
 
 # 这些标签由导出图自身决定，继续复制原图值会造成尺寸、压缩或方向冲突。
 _EXIF_EXCLUDED_TAGS = {
@@ -283,6 +284,50 @@ def _rational_pair(value: object) -> tuple[int, int] | None:
     return num, den
 
 
+def normalize_source_pixel_regions(
+    regions: tuple[SourcePixelRegion, ...] | list[SourcePixelRegion],
+    *,
+    source_width_px: int,
+    source_height_px: int,
+) -> tuple[SourcePixelRegion, ...]:
+    """将源图像素矩形规范为位于图像内的左上闭、右下开区域。"""
+
+    width = max(0, int(source_width_px))
+    height = max(0, int(source_height_px))
+    normalized: list[SourcePixelRegion] = []
+    for region in regions:
+        if len(region) != 4:
+            continue
+        left, top, right, bottom = (int(value) for value in region)
+        left, right = sorted((max(0, min(left, width)), max(0, min(right, width))))
+        top, bottom = sorted((max(0, min(top, height)), max(0, min(bottom, height))))
+        if right > left and bottom > top:
+            normalized.append((left, top, right, bottom))
+    return tuple(normalized)
+
+
+def restrict_reprojection_map_to_source_regions(
+    map_x: np.ndarray,
+    map_y: np.ndarray,
+    regions: tuple[SourcePixelRegion, ...],
+) -> tuple[np.ndarray, np.ndarray]:
+    """将未落入任一源图区域的重投影采样点置为透明边界。"""
+
+    allowed = np.zeros(map_x.shape, dtype=bool)
+    for left, top, right, bottom in regions:
+        allowed |= (
+            (map_x >= float(left) - 0.5)
+            & (map_x <= float(right) - 0.5)
+            & (map_y >= float(top) - 0.5)
+            & (map_y <= float(bottom) - 0.5)
+        )
+    restricted_x = np.asarray(map_x, dtype=np.float32).copy()
+    restricted_y = np.asarray(map_y, dtype=np.float32).copy()
+    restricted_x[~allowed] = -1.0
+    restricted_y[~allowed] = -1.0
+    return restricted_x, restricted_y
+
+
 def mosaic_reprojection_blocks(
     *,
     source_model: object,
@@ -298,6 +343,7 @@ def mosaic_reprojection_blocks(
     target_model: object | None = None,
     map_tile_size_px: int = 4,
     exact_remap_repair: bool = False,
+    source_pixel_regions: tuple[SourcePixelRegion, ...] | None = None,
 ) -> Iterator[np.ndarray]:
     """逐块生成裁剪后全景图像的 RGBA uint16 像素。"""
 
@@ -306,6 +352,31 @@ def mosaic_reprojection_blocks(
     if target_icrs_to_pixel_payload is not None and target_model is not None:
         raise ValueError("目标 ICRS 变换和底图模型不能同时指定。")
     source = np.ascontiguousarray(source_rgb_u16, dtype=np.uint16)
+    normalized_regions = (
+        None
+        if source_pixel_regions is None
+        else normalize_source_pixel_regions(
+            source_pixel_regions,
+            source_width_px=int(source.shape[1]),
+            source_height_px=int(source.shape[0]),
+        )
+    )
+    if normalized_regions is not None and not normalized_regions:
+        empty = np.zeros(
+            (int(geometry.output_height_px), int(geometry.output_width_px), 4),
+            dtype=np.uint16,
+        )
+        yield empty
+        return
+    if normalized_regions is not None and target_icrs_to_pixel_payload is None and target_model is None:
+        if camera is None or view is None or observer is None:
+            raise ValueError("天球模式缺少目标相机、取景或观测者参数。")
+        target_icrs_to_pixel_payload = build_target_icrs_to_pixel_transform_payload(
+            camera=camera,
+            view=view,
+            observer=observer,
+            geometry=geometry,
+        )
     if target_icrs_to_pixel_payload is None and target_model is None:
         if camera is None or view is None or observer is None:
             raise ValueError("天球模式缺少目标相机、取景或观测者参数。")
@@ -351,6 +422,7 @@ def mosaic_reprojection_blocks(
         exact_remap_repair=exact_remap_repair,
         progress_callback=progress_callback,
         export_progress_callback=export_progress_callback,
+        source_pixel_regions=normalized_regions,
     )
 
 
@@ -365,6 +437,7 @@ def _render_mosaic_forward_remap_from_source_to_target(
     exact_remap_repair: bool,
     progress_callback: Callable[[int], None] | None = None,
     export_progress_callback: MosaicExportProgressCallback | None = None,
+    source_pixel_regions: tuple[SourcePixelRegion, ...] | None = None,
 ) -> np.ndarray:
     """按源图的固定 tile 建立全景图到源图的近似 remap，再由 OpenCV 反向采样。"""
 
@@ -375,7 +448,21 @@ def _render_mosaic_forward_remap_from_source_to_target(
     accum_x = np.zeros((output_height, output_width), dtype=np.float32)
     accum_y = np.zeros((output_height, output_width), dtype=np.float32)
     weights = np.zeros((output_height, output_width), dtype=np.float32)
-    if tile_size <= 1:
+    if source_pixel_regions is not None:
+        _accumulate_forward_source_regions(
+            source_model=source_model,
+            target_icrs_to_pixel_payload=target_icrs_to_pixel_payload,
+            target_model=target_model,
+            geometry=geometry,
+            accum_x=accum_x,
+            accum_y=accum_y,
+            weights=weights,
+            source_pixel_regions=source_pixel_regions,
+            tile_size=tile_size,
+            progress_callback=progress_callback,
+            export_progress_callback=export_progress_callback,
+        )
+    elif tile_size <= 1:
         for row_start in range(0, source_height, max(1, int(MOSAIC_EXPORT_DEFAULT_BLOCK_ROWS))):
             row_end = min(source_height, row_start + int(MOSAIC_EXPORT_DEFAULT_BLOCK_ROWS))
             ys = np.arange(row_start, row_end, dtype=np.float64)
@@ -444,6 +531,8 @@ def _render_mosaic_forward_remap_from_source_to_target(
         exact_remap_repair=exact_remap_repair,
         export_progress_callback=export_progress_callback,
     )
+    if source_pixel_regions is not None:
+        map_x, map_y = restrict_reprojection_map_to_source_regions(map_x, map_y, source_pixel_regions)
     _emit_export_progress(export_progress_callback, "正在重采样源图...", 0, 0)
     rendered = _render_mosaic_reprojection_block_from_map(
         source_rgb_u16=source_rgb_u16,
@@ -452,6 +541,152 @@ def _render_mosaic_forward_remap_from_source_to_target(
     )
     _emit_export_progress(export_progress_callback, "正在写入 TIFF...", 0, 0)
     return rendered
+
+
+def _accumulate_forward_source_regions(
+    *,
+    source_model: object,
+    target_icrs_to_pixel_payload: dict[str, object] | None,
+    target_model: object | None,
+    geometry: MosaicExportGeometry,
+    accum_x: np.ndarray,
+    accum_y: np.ndarray,
+    weights: np.ndarray,
+    source_pixel_regions: tuple[SourcePixelRegion, ...],
+    tile_size: int,
+    progress_callback: Callable[[int], None] | None,
+    export_progress_callback: MosaicExportProgressCallback | None,
+) -> None:
+    """只用选定源图区域建立正向 remap，减少无关区域的天球计算。"""
+
+    total_rows = sum(bottom - top for _left, top, _right, bottom in source_pixel_regions)
+    completed_rows = 0
+    output_height = int(geometry.output_height_px)
+    for left, top, right, bottom in source_pixel_regions:
+        if tile_size <= 1:
+            for row_start in range(top, bottom, max(1, int(MOSAIC_EXPORT_DEFAULT_BLOCK_ROWS))):
+                row_end = min(bottom, row_start + int(MOSAIC_EXPORT_DEFAULT_BLOCK_ROWS))
+                ys = np.arange(row_start, row_end, dtype=np.float64)
+                xs = np.arange(left, right, dtype=np.float64)
+                grid_x, grid_y = np.meshgrid(xs, ys)
+                target_pixels, valid = _source_pixels_to_target_pixels(
+                    source_model,
+                    np.column_stack((grid_x.ravel(), grid_y.ravel())),
+                    target_icrs_to_pixel_payload,
+                    target_model=target_model,
+                    geometry=geometry,
+                )
+                _accumulate_source_pixels_to_inverse_map(
+                    accum_x,
+                    accum_y,
+                    weights,
+                    target_pixels,
+                    grid_x.ravel(),
+                    grid_y.ravel(),
+                    valid,
+                )
+                completed_rows += row_end - row_start
+                _emit_region_remap_progress(
+                    progress_callback,
+                    export_progress_callback,
+                    completed_rows,
+                    total_rows,
+                    output_height,
+                )
+            continue
+
+        for y0 in range(top, bottom, tile_size):
+            y1 = min(bottom, y0 + tile_size)
+            _accumulate_source_region_tile_row(
+                source_model=source_model,
+                target_icrs_to_pixel_payload=target_icrs_to_pixel_payload,
+                target_model=target_model,
+                geometry=geometry,
+                accum_x=accum_x,
+                accum_y=accum_y,
+                weights=weights,
+                left=left,
+                right=right,
+                y0=y0,
+                y1=y1,
+                tile_size=tile_size,
+            )
+            completed_rows += y1 - y0
+            _emit_region_remap_progress(
+                progress_callback,
+                export_progress_callback,
+                completed_rows,
+                total_rows,
+                output_height,
+            )
+
+
+def _emit_region_remap_progress(
+    progress_callback: Callable[[int], None] | None,
+    export_progress_callback: MosaicExportProgressCallback | None,
+    completed_rows: int,
+    total_rows: int,
+    output_height: int,
+) -> None:
+    progress_value = int(round(output_height * completed_rows / max(total_rows, 1)))
+    if progress_callback is not None:
+        progress_callback(progress_value)
+    _emit_export_progress(
+        export_progress_callback,
+        "正在计算流星区域到全景图的坐标映射...",
+        progress_value,
+        output_height,
+    )
+
+
+def _accumulate_source_region_tile_row(
+    *,
+    source_model: object,
+    target_icrs_to_pixel_payload: dict[str, object] | None,
+    target_model: object | None,
+    geometry: MosaicExportGeometry,
+    accum_x: np.ndarray,
+    accum_y: np.ndarray,
+    weights: np.ndarray,
+    left: int,
+    right: int,
+    y0: int,
+    y1: int,
+    tile_size: int,
+) -> None:
+    """累积单个流星框中一行固定尺寸网格。"""
+
+    width = right - left
+    full_tile_count = width // tile_size
+    if full_tile_count:
+        _accumulate_equal_width_source_tiles_to_inverse_map(
+            source_model=source_model,
+            target_icrs_to_pixel_payload=target_icrs_to_pixel_payload,
+            target_model=target_model,
+            geometry=geometry,
+            accum_x=accum_x,
+            accum_y=accum_y,
+            weights=weights,
+            x0_values=left + np.arange(full_tile_count, dtype=np.int64) * tile_size,
+            y0=y0,
+            y1=y1,
+            tile_width=tile_size,
+        )
+    remainder = width - full_tile_count * tile_size
+    if remainder:
+        _accumulate_equal_width_source_tiles_to_inverse_map(
+            source_model=source_model,
+            target_icrs_to_pixel_payload=target_icrs_to_pixel_payload,
+            target_model=target_model,
+            geometry=geometry,
+            accum_x=accum_x,
+            accum_y=accum_y,
+            weights=weights,
+            x0_values=np.asarray([right - remainder], dtype=np.int64),
+            y0=y0,
+            y1=y1,
+            tile_width=remainder,
+        )
 
 
 def _finalize_forward_inverse_map(
@@ -941,6 +1176,7 @@ def write_mosaic_reprojection_tiff(
     map_tile_size_px: int = 4,
     exact_remap_repair: bool = False,
     tiff_lzw_compression: bool = True,
+    source_pixel_regions: tuple[SourcePixelRegion, ...] | None = None,
 ) -> None:
     """把重投影结果写成 16-bit RGBA TIFF。"""
 
@@ -980,6 +1216,7 @@ def write_mosaic_reprojection_tiff(
             target_model=target_model,
             map_tile_size_px=map_tile_size_px,
             exact_remap_repair=exact_remap_repair,
+            source_pixel_regions=source_pixel_regions,
         )
     )
     if not blocks:
