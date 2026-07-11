@@ -9,7 +9,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import QEvent, QPointF, Qt
-from PyQt5.QtGui import QImage, QMouseEvent
+from PyQt5.QtGui import QImage, QMouseEvent, QPalette
 from PyQt5.QtWidgets import QApplication, QMainWindow
 
 from meteoalign.application.app_meteor_selection import MeteorSelectionMixin
@@ -87,6 +87,7 @@ def test_meteor_selection_view_creates_boxes_in_original_image_coordinates() -> 
     assert abs(box.top - 80.0) < 2.0
     assert abs(box.right - 700.0) < 2.0
     assert abs(box.bottom - 420.0) < 2.0
+    assert view._box_items[0].pen().color().getRgb()[:3] == (52, 211, 153)
 
     view.clear_boxes()
     assert view.boxes() == []
@@ -114,5 +115,11 @@ def test_save_all_meteor_boxes_only_writes_images_with_boxes(tmp_path) -> None:
     assert meteor_json_path(image_with_box).exists()
     assert not meteor_json_path(image_without_box).exists()
     assert load_meteor_selection(image_with_box) == [MeteorBox(12.0, 25.0, 100.0, 201.0)]
+    assert host.ui.tableWidgetMeteorSelectionImages.item(0, 1).background().color().getRgb()[:3] == (220, 252, 231)
+    table_palette = host.ui.tableWidgetMeteorSelectionImages.palette()
+    assert table_palette.color(QPalette.Inactive, QPalette.Highlight) == table_palette.color(
+        QPalette.Active,
+        QPalette.Highlight,
+    )
     host.close()
     app.processEvents()

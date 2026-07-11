@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QBrush, QColor, QPalette
 from PyQt5.QtWidgets import QAbstractItemView, QFileDialog, QHeaderView, QTableWidgetItem
 
 from ..image_preview import IMAGE_FILE_FILTER, load_image_preview
@@ -16,6 +17,7 @@ METEOR_SELECTION_INDEX_COLUMN = 0
 METEOR_SELECTION_NAME_COLUMN = 1
 METEOR_SELECTION_COUNT_COLUMN = 2
 METEOR_SELECTION_INDEX_ROLE = Qt.UserRole + 31
+METEOR_SELECTION_ROW_GREEN = QColor(220, 252, 231)
 
 
 class MeteorSelectionMixin:
@@ -33,11 +35,22 @@ class MeteorSelectionMixin:
         table.setSelectionMode(QAbstractItemView.SingleSelection)
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         table.verticalHeader().setVisible(False)
+        self._keep_meteor_selection_table_highlight_active(table)
         header = table.horizontalHeader()
         header.setSectionResizeMode(METEOR_SELECTION_INDEX_COLUMN, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(METEOR_SELECTION_NAME_COLUMN, QHeaderView.Stretch)
         header.setSectionResizeMode(METEOR_SELECTION_COUNT_COLUMN, QHeaderView.ResizeToContents)
         self._reset_meteor_selection_page()
+
+    def _keep_meteor_selection_table_highlight_active(self, table) -> None:  # type: ignore[no-untyped-def]
+        """让 Windows 下失焦的当前预览行仍使用与鼠标点击相同的蓝色。"""
+
+        palette = table.palette()
+        active_highlight = palette.color(QPalette.Active, QPalette.Highlight)
+        active_highlighted_text = palette.color(QPalette.Active, QPalette.HighlightedText)
+        palette.setColor(QPalette.Inactive, QPalette.Highlight, active_highlight)
+        palette.setColor(QPalette.Inactive, QPalette.HighlightedText, active_highlighted_text)
+        table.setPalette(palette)
 
     def _connect_meteor_selection_inputs(self) -> None:
         """连接流星框选页面控件信号。"""
@@ -274,6 +287,8 @@ class MeteorSelectionMixin:
                 for item in (index_item, name_item, count_item):
                     item.setData(METEOR_SELECTION_INDEX_ROLE, row)
                     item.setToolTip(str(image_path))
+                    if count:
+                        item.setBackground(QBrush(METEOR_SELECTION_ROW_GREEN))
                 table.setItem(row, METEOR_SELECTION_INDEX_COLUMN, index_item)
                 table.setItem(row, METEOR_SELECTION_NAME_COLUMN, name_item)
                 table.setItem(row, METEOR_SELECTION_COUNT_COLUMN, count_item)
