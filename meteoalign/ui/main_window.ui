@@ -61,6 +61,12 @@
            <string>观测信息</string>
           </property>
           <layout class="QFormLayout" name="formLayoutObserver">
+           <property name="fieldGrowthPolicy">
+            <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
+           </property>
+           <property name="labelAlignment">
+            <set>Qt::AlignLeft|Qt::AlignVCenter</set>
+           </property>
            <item row="0" column="0">
             <widget class="QLabel" name="labelObservationTime">
              <property name="text">
@@ -176,6 +182,12 @@
            <string>相机参数</string>
           </property>
           <layout class="QFormLayout" name="formLayoutCamera">
+           <property name="fieldGrowthPolicy">
+            <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
+           </property>
+           <property name="labelAlignment">
+            <set>Qt::AlignLeft|Qt::AlignVCenter</set>
+           </property>
            <item row="0" column="0">
             <widget class="QLabel" name="labelSensorWidth">
              <property name="text">
@@ -368,6 +380,12 @@
            <string>视野方向</string>
           </property>
           <layout class="QFormLayout" name="formLayoutView">
+           <property name="fieldGrowthPolicy">
+            <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
+           </property>
+           <property name="labelAlignment">
+            <set>Qt::AlignLeft|Qt::AlignVCenter</set>
+           </property>
            <item row="0" column="0">
             <widget class="QLabel" name="labelAz">
              <property name="text">
@@ -454,6 +472,12 @@
           <layout class="QVBoxLayout" name="verticalLayoutReference">
            <item>
             <layout class="QFormLayout" name="formLayoutReference">
+             <property name="fieldGrowthPolicy">
+              <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
+             </property>
+             <property name="labelAlignment">
+              <set>Qt::AlignLeft|Qt::AlignVCenter</set>
+             </property>
              <item row="0" column="0">
               <widget class="QLabel" name="labelReferenceLabelMode">
                <property name="text">
@@ -633,6 +657,12 @@
               <layout class="QVBoxLayout" name="verticalLayoutImageSequenceControls">
                <item>
                 <layout class="QFormLayout" name="formLayoutImageSequenceStatus">
+                 <property name="fieldGrowthPolicy">
+                  <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
+                 </property>
+                 <property name="labelAlignment">
+                  <set>Qt::AlignLeft|Qt::AlignVCenter</set>
+                 </property>
                  <item row="0" column="0">
                   <widget class="QLabel" name="labelImageSequenceSummaryTitle">
                    <property name="text">
@@ -643,7 +673,7 @@
                  <item row="0" column="1">
                   <widget class="QLabel" name="labelImageSequenceSummary">
                    <property name="sizePolicy">
-                    <sizepolicy hsizetype="Ignored" vsizetype="Preferred">
+                    <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
                      <horstretch>0</horstretch>
                      <verstretch>0</verstretch>
                     </sizepolicy>
@@ -838,7 +868,7 @@
                 </font>
                </property>
                <property name="sizePolicy">
-                <sizepolicy hsizetype="Ignored" vsizetype="Preferred">
+                <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
                  <horstretch>1</horstretch>
                  <verstretch>0</verstretch>
                 </sizepolicy>
@@ -958,6 +988,12 @@
              <layout class="QVBoxLayout" name="verticalLayoutImportedImage">
               <item>
                <layout class="QFormLayout" name="formLayoutImportedImage">
+                <property name="fieldGrowthPolicy">
+                 <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
+                </property>
+                <property name="labelAlignment">
+                 <set>Qt::AlignLeft|Qt::AlignVCenter</set>
+                </property>
                 <item row="0" column="0">
                  <widget class="QLabel" name="labelImportedImagePathTitle">
                   <property name="text">
@@ -968,7 +1004,7 @@
                 <item row="0" column="1">
                  <widget class="QLabel" name="labelImportedImagePath">
                   <property name="sizePolicy">
-                   <sizepolicy hsizetype="Ignored" vsizetype="Preferred">
+                   <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
                     <horstretch>0</horstretch>
                     <verstretch>0</verstretch>
                    </sizepolicy>
@@ -1011,7 +1047,7 @@
                 <item row="2" column="1">
                  <widget class="QLabel" name="labelImageSequenceStatus">
                   <property name="sizePolicy">
-                   <sizepolicy hsizetype="Ignored" vsizetype="Preferred">
+                   <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
                     <horstretch>0</horstretch>
                     <verstretch>0</verstretch>
                    </sizepolicy>
@@ -1040,7 +1076,7 @@
                 <item row="3" column="1">
                  <widget class="QLabel" name="labelImportedCameraProfile">
                   <property name="sizePolicy">
-                   <sizepolicy hsizetype="Ignored" vsizetype="Preferred">
+                   <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
                     <horstretch>0</horstretch>
                     <verstretch>0</verstretch>
                    </sizepolicy>
@@ -1063,7 +1099,7 @@
                 <item row="4" column="1">
                  <widget class="QLabel" name="labelSkyMaskStatus">
                   <property name="sizePolicy">
-                   <sizepolicy hsizetype="Ignored" vsizetype="Preferred">
+                   <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
                     <horstretch>0</horstretch>
                     <verstretch>0</verstretch>
                    </sizepolicy>
@@ -1122,6 +1158,12 @@
               </item>
               <item>
                <layout class="QFormLayout" name="formLayoutCameraProfileReuse">
+                <property name="fieldGrowthPolicy">
+                 <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
+                </property>
+                <property name="labelAlignment">
+                 <set>Qt::AlignLeft|Qt::AlignVCenter</set>
+                </property>
                 <item row="0" column="0">
                  <widget class="QLabel" name="labelProfileSolveMode">
                   <property name="text">
@@ -1158,6 +1200,12 @@
                 <layout class="QVBoxLayout" name="verticalLayoutAdjacentImageFraming">
                  <item>
                   <layout class="QFormLayout" name="formLayoutAdjacentImageFraming">
+                   <property name="fieldGrowthPolicy">
+                    <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
+                   </property>
+                   <property name="labelAlignment">
+                    <set>Qt::AlignLeft|Qt::AlignVCenter</set>
+                   </property>
                    <item row="0" column="0">
                     <widget class="QLabel" name="labelAdjacentImageModelTitle">
                      <property name="text">
@@ -1168,7 +1216,7 @@
                    <item row="0" column="1">
                     <widget class="QLabel" name="labelAdjacentImageModel">
                      <property name="sizePolicy">
-                      <sizepolicy hsizetype="Ignored" vsizetype="Preferred">
+                      <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
                        <horstretch>0</horstretch>
                        <verstretch>0</verstretch>
                       </sizepolicy>
@@ -1212,7 +1260,7 @@
                    <item row="2" column="1">
                     <widget class="QLabel" name="labelAdjacentFramingStatus">
                      <property name="sizePolicy">
-                      <sizepolicy hsizetype="Ignored" vsizetype="Preferred">
+                      <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
                        <horstretch>0</horstretch>
                        <verstretch>0</verstretch>
                       </sizepolicy>
@@ -1374,6 +1422,12 @@
             <layout class="QVBoxLayout" name="verticalLayoutAstrometricModel">
               <item>
                <layout class="QFormLayout" name="formLayoutAutoMatch">
+                <property name="fieldGrowthPolicy">
+                 <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
+                </property>
+                <property name="labelAlignment">
+                 <set>Qt::AlignLeft|Qt::AlignVCenter</set>
+                </property>
                 <item row="0" column="0">
                  <widget class="QLabel" name="labelSkyAlignmentModel">
                   <property name="text">
@@ -1555,7 +1609,7 @@
               <item>
                <widget class="QLabel" name="labelAlignmentTransformStatus">
                 <property name="sizePolicy">
-                 <sizepolicy hsizetype="Ignored" vsizetype="Preferred">
+                 <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
                   <horstretch>0</horstretch>
                   <verstretch>0</verstretch>
                  </sizepolicy>
@@ -1872,6 +1926,12 @@
               <layout class="QVBoxLayout" name="verticalLayoutMosaicSourceModel">
                <item>
                 <layout class="QFormLayout" name="formLayoutMosaicSourceModel">
+                 <property name="fieldGrowthPolicy">
+                  <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
+                 </property>
+                 <property name="labelAlignment">
+                  <set>Qt::AlignLeft|Qt::AlignVCenter</set>
+                 </property>
                  <item row="0" column="0">
                   <widget class="QLabel" name="labelMosaicModelPathTitle">
                    <property name="text">
@@ -1882,7 +1942,7 @@
                  <item row="0" column="1">
                   <widget class="QLabel" name="labelMosaicModelPath">
                    <property name="sizePolicy">
-                    <sizepolicy hsizetype="Ignored" vsizetype="Preferred">
+                    <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
                      <horstretch>0</horstretch>
                      <verstretch>0</verstretch>
                     </sizepolicy>
@@ -1905,7 +1965,7 @@
                  <item row="1" column="1">
                   <widget class="QLabel" name="labelMosaicSourceImage">
                    <property name="sizePolicy">
-                    <sizepolicy hsizetype="Ignored" vsizetype="Preferred">
+                    <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
                      <horstretch>0</horstretch>
                      <verstretch>0</verstretch>
                     </sizepolicy>
@@ -1928,7 +1988,7 @@
                  <item row="2" column="1">
                   <widget class="QLabel" name="labelMosaicModelInfo">
                    <property name="sizePolicy">
-                    <sizepolicy hsizetype="Ignored" vsizetype="Preferred">
+                    <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
                      <horstretch>0</horstretch>
                      <verstretch>0</verstretch>
                     </sizepolicy>
@@ -1972,6 +2032,12 @@
               <layout class="QVBoxLayout" name="verticalLayoutMosaicObserver">
                <item>
                 <layout class="QFormLayout" name="formLayoutMosaicObserver">
+                 <property name="fieldGrowthPolicy">
+                  <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
+                 </property>
+                 <property name="labelAlignment">
+                  <set>Qt::AlignLeft|Qt::AlignVCenter</set>
+                 </property>
                  <item row="0" column="0">
                   <widget class="QLabel" name="labelMosaicObservationTime">
                    <property name="text">
@@ -2098,6 +2164,12 @@
               <layout class="QVBoxLayout" name="verticalLayoutMosaicProjection">
                <item>
                 <layout class="QFormLayout" name="formLayoutMosaicProjection">
+                 <property name="fieldGrowthPolicy">
+                  <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
+                 </property>
+                 <property name="labelAlignment">
+                  <set>Qt::AlignLeft|Qt::AlignVCenter</set>
+                 </property>
                  <item row="0" column="0">
                   <widget class="QLabel" name="labelMosaicProjection">
                    <property name="text">
@@ -2330,7 +2402,7 @@
                <item>
                 <widget class="QLabel" name="labelMosaicViewInfo">
                  <property name="sizePolicy">
-                  <sizepolicy hsizetype="Ignored" vsizetype="Preferred">
+                  <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
                    <horstretch>0</horstretch>
                    <verstretch>0</verstretch>
                   </sizepolicy>
@@ -2361,6 +2433,12 @@
                </item>
                <item>
                 <layout class="QFormLayout" name="formLayoutMosaicOutputSize">
+                 <property name="fieldGrowthPolicy">
+                  <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
+                 </property>
+                 <property name="labelAlignment">
+                  <set>Qt::AlignLeft|Qt::AlignVCenter</set>
+                 </property>
                  <item row="0" column="0">
                   <widget class="QLabel" name="labelMosaicOptimalWidthTitle">
                    <property name="text">
@@ -2430,6 +2508,12 @@
                </item>
                <item>
                 <layout class="QFormLayout" name="formLayoutMosaicCrop">
+                 <property name="fieldGrowthPolicy">
+                  <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
+                 </property>
+                 <property name="labelAlignment">
+                  <set>Qt::AlignLeft|Qt::AlignVCenter</set>
+                 </property>
                  <item row="0" column="0">
                   <widget class="QLabel" name="labelMosaicCropTop">
                    <property name="text">
@@ -2833,6 +2917,12 @@
               <layout class="QVBoxLayout" name="verticalLayoutMosaicBatchSettings">
                <item>
                 <layout class="QFormLayout" name="formLayoutMosaicBatchSettings">
+                 <property name="fieldGrowthPolicy">
+                  <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
+                 </property>
+                 <property name="labelAlignment">
+                  <set>Qt::AlignLeft|Qt::AlignVCenter</set>
+                 </property>
                  <item row="0" column="0">
                   <widget class="QLabel" name="labelMosaicBatchMode">
                    <property name="text">
@@ -2867,7 +2957,7 @@
                  <item row="1" column="1">
                   <widget class="QLabel" name="labelMosaicBatchFramingPath">
                    <property name="sizePolicy">
-                    <sizepolicy hsizetype="Ignored" vsizetype="Preferred">
+                    <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
                      <horstretch>0</horstretch>
                      <verstretch>0</verstretch>
                     </sizepolicy>

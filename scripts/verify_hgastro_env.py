@@ -1,7 +1,7 @@
 """Smoke-test the hgastro conda environment.
 
 Run with:
-    conda run -n hgastro python scripts/verify_hgastro_env.py
+    conda run -p /Volumes/SSDAPFS/conda-envs/hgastro python scripts/verify_hgastro_env.py
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import importlib.metadata as metadata
 import os
 import site
 import sys
+from pathlib import Path
 
 
 MODULES = {
@@ -40,7 +41,7 @@ def fail(message: str) -> None:
 
 
 def check_paths() -> None:
-    if not sys.prefix.endswith("/envs/hgastro"):
+    if Path(sys.prefix).name != "hgastro":
         fail(f"expected hgastro prefix, got {sys.prefix}")
     if os.environ.get("PYTHONNOUSERSITE") != "1":
         fail("PYTHONNOUSERSITE must be 1")
