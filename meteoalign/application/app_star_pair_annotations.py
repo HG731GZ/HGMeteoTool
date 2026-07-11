@@ -362,7 +362,8 @@ class StarPairAnnotationsMixin:
 
     def _focus_star_pair_theoretical_position(self, row: int) -> None:
         matched_count = self._star_pair_position_count()
-        if matched_count < STAR_PAIR_FOCUS_MIN_MATCHED_COUNT:
+        has_rough_framing = getattr(self, "_rough_alignment_transform", None) is not None
+        if matched_count < STAR_PAIR_FOCUS_MIN_MATCHED_COUNT and not has_rough_framing:
             self.ui.statusbar.showMessage(
                 f"当前已有 {matched_count} 个匹配；至少 {STAR_PAIR_FOCUS_MIN_MATCHED_COUNT} 个后可双击聚焦理论位置。"
             )

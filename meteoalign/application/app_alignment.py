@@ -52,6 +52,7 @@ class AlignmentMixin:
     _source_astrometric_model: SourceAstrometricModel | FixedProfilePoseSourceModel | None
     _imported_camera_calibration_profile: CameraCalibrationProfile | None
     _imported_camera_calibration_profile_path: Path | None
+    _imported_camera_calibration_image_name: str
     _reference_alignment_error_message: str
     _sky_alignment_error_message: str
     _source_model_error_message: str
@@ -128,11 +129,31 @@ class AlignmentMixin:
         if profile is None:
             return "未导入", ""
         path_text = "" if profile_path is None else str(profile_path)
+        image_name = str(getattr(self, "_imported_camera_calibration_image_name", "")).strip()
         projection_text = str(profile.base_projection_type)
+        label_prefix = f"{image_name}  " if image_name else ""
+        tooltip = path_text
+        if image_name:
+            tooltip = f"对应图像：{image_name}\nProfile JSON：{path_text}"
         return (
-            f"{projection_text}  {profile.image_width_px} x {profile.image_height_px}",
-            path_text,
+            f"{label_prefix}{projection_text}  {profile.image_width_px} x {profile.image_height_px}",
+            tooltip,
         )
+
+    @staticmethod
+    def _profile_source_image_name(payload: object) -> str:
+        """从导出的模型 JSON 中提取 Profile 对应原图的文件名。"""
+
+        if not isinstance(payload, dict):
+            return ""
+        source_image = payload.get("source_image")
+        if not isinstance(source_image, dict):
+            return ""
+        for key in ("file_name", "path", "relative_path"):
+            value = str(source_image.get(key, "")).strip()
+            if value:
+                return Path(value).name
+        return ""
 
     def _update_camera_profile_controls(self, *unused) -> None:  # type: ignore[no-untyped-def]
         if not hasattr(self.ui, "pushButtonImportCameraProfile"):
@@ -178,6 +199,7 @@ class AlignmentMixin:
             json_path = Path(file_path).expanduser().resolve()
             payload = json.loads(json_path.read_text(encoding="utf-8"))
             profile = self._load_camera_profile_from_json_payload(payload)
+            image_name = self._profile_source_image_name(payload)
         except Exception as exc:  # noqa: BLE001 - 导入入口需要把 JSON/Profile 错误直接反馈给用户。
             QMessageBox.critical(self, "导入 Camera Profile 失败", str(exc))
             self.ui.statusbar.showMessage(f"导入 Camera Profile 失败: {exc}")
@@ -185,6 +207,7 @@ class AlignmentMixin:
 
         self._imported_camera_calibration_profile = profile
         self._imported_camera_calibration_profile_path = json_path
+        self._imported_camera_calibration_image_name = image_name
         if hasattr(self.ui, "comboBoxProfileSolveMode"):
             self.ui.comboBoxProfileSolveMode.setCurrentIndex(1)
         self._update_camera_profile_controls()
@@ -194,6 +217,7 @@ class AlignmentMixin:
     def clear_camera_calibration_profile(self) -> None:
         self._imported_camera_calibration_profile = None
         self._imported_camera_calibration_profile_path = None
+        self._imported_camera_calibration_image_name = ""
         self._update_camera_profile_controls()
         self._update_reference_alignment_transform()
         self.ui.statusbar.showMessage("已清除导入的 Camera Profile。")

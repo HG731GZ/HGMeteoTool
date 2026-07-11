@@ -266,6 +266,7 @@ class MainWindow(
         self._source_astrometric_model: SourceAstrometricModel | None = None
         self._imported_camera_calibration_profile: CameraCalibrationProfile | None = None
         self._imported_camera_calibration_profile_path: Path | None = None
+        self._imported_camera_calibration_image_name = ""
         self._reference_alignment_error_message = ""
         self._sky_alignment_error_message = ""
         self._source_model_error_message = ""

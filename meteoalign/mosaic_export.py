@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import copy
 import json
+import os
+import tempfile
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,6 +53,11 @@ try:
 except ImportError:  # pragma: no cover - tifffile 由环境声明，兜底用于给界面友好报错。
     tifffile = None
 
+try:
+    import tifftools
+except ImportError:  # pragma: no cover - tifftools 仅用于保留完整 EXIF IFD 树。
+    tifftools = None
+
 
 MOSAIC_EXPORT_TIFF_FILTER = "16-bit RGBA TIFF (*.tif *.tiff)"
 MOSAIC_EXPORT_DEFAULT_BLOCK_ROWS = 1024
@@ -62,6 +70,12 @@ _EXIF_EXCLUDED_TAGS = {
     256, 257, 258, 259, 262, 273, 274, 277, 278, 279, 282, 283, 284, 296,
     305, 317, 320, 322, 323, 324, 325, 338, 339, 33723, 34665, 34675, 34853,
     40962, 40963, 513, 514,
+}
+
+# 这些标签描述输出像素编码本身，不能从原图复用；其他元数据（含 EXIF/GPS 子 IFD）均应保留。
+_TIFF_METADATA_COPY_EXCLUDED_TAGS = {
+    256, 257, 258, 259, 262, 273, 274, 277, 278, 279, 284, 317, 320,
+    322, 323, 324, 325, 338, 339, 40962, 40963, 513, 514,
 }
 
 
@@ -173,6 +187,57 @@ def _safe_exif_tags(exif: object) -> tuple[tuple[int, str, int, object, bool], .
         if converted is not None:
             tags.append(converted)
     return tuple(tags)
+
+
+def _copy_full_tiff_exif_metadata(source_path: Path, output_path: Path) -> None:
+    """把 TIFF 原图的完整 EXIF/GPS 子 IFD 树合并到已写出的 TIFF 中。"""
+
+    if (
+        tifftools is None
+        or not source_path.exists()
+        or source_path.suffix.lower() not in {".tif", ".tiff"}
+    ):
+        return
+    try:
+        source_info = tifftools.read_tiff(str(source_path))
+        output_info = tifftools.read_tiff(str(output_path))
+        source_ifds = source_info.get("ifds", [])
+        output_ifds = output_info.get("ifds", [])
+        if not source_ifds or not output_ifds:
+            return
+
+        source_tags = source_ifds[0].get("tags", {})
+        output_tags = output_ifds[0].get("tags", {})
+        copied_tag_count = 0
+        for tag_code, tag_info in source_tags.items():
+            if int(tag_code) in _TIFF_METADATA_COPY_EXCLUDED_TAGS:
+                continue
+            output_tags[int(tag_code)] = copy.deepcopy(tag_info)
+            copied_tag_count += 1
+        if copied_tag_count <= 0:
+            return
+
+        file_descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{output_path.stem}_exif_",
+            suffix=output_path.suffix,
+            dir=str(output_path.parent),
+        )
+        os.close(file_descriptor)
+        temporary_path = Path(temporary_name)
+        temporary_path.unlink()
+        try:
+            tifftools.write_tiff(
+                output_info,
+                str(temporary_path),
+                bigEndian=bool(output_info.get("bigEndian", False)),
+                bigtiff=bool(output_info.get("bigtiff", False)),
+            )
+            os.replace(temporary_path, output_path)
+        finally:
+            if temporary_path.exists():
+                temporary_path.unlink()
+    except Exception as exc:  # noqa: BLE001 - 元数据写入失败时不能静默产生不完整导出。
+        raise RuntimeError(f"无法将原图完整 EXIF 写入导出 TIFF：{exc}") from exc
 
 
 def _exif_value_to_tiff_tag(tag: int, value: object) -> tuple[int, str, int, object, bool] | None:
@@ -938,6 +1003,7 @@ def write_mosaic_reprojection_tiff(
         iccprofile=source_image.icc_profile,
         extratags=source_image.exif_tags or None,
     )
+    _copy_full_tiff_exif_metadata(source_image.path, output_path)
 
 
 def _mosaic_export_description(framing_payload: dict[str, object] | None) -> str:

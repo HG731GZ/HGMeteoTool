@@ -26,6 +26,7 @@ MODULES = {
     "pandas": "pandas",
     "pyarrow": "pyarrow",
     "pillow": "PIL",
+    "tifftools": "tifftools",
     "sep": "sep",
     "gwcs": "gwcs",
     "asdf": "asdf",

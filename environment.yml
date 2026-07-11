@@ -18,6 +18,7 @@ dependencies:
       - pyarrow==24.0.0
       - pillow==12.3.0
       - tifffile==2025.5.10
+      - tifftools==1.7.0
       - imagecodecs==2025.3.30
       - sep==1.4.1
       - gwcs==0.24.0

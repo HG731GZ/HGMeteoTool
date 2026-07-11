@@ -4,6 +4,7 @@ import math
 from collections.abc import Callable
 
 from PyQt5.QtCore import QEvent, QPoint, QPointF, Qt, QTimer
+from PyQt5.QtGui import QWheelEvent
 from PyQt5.QtWidgets import QApplication, QGraphicsView, QMainWindow, QMessageBox, QSizePolicy
 
 from .app_constants import (
@@ -204,6 +205,8 @@ class ViewControlsMixin:
         QTimer.singleShot(0, self.fit_all_graphics_views)
 
     def eventFilter(self, watched, event) -> bool:  # type: ignore[no-untyped-def]
+        if event.type() == QEvent.Wheel and self._is_wheel_value_control(watched):
+            return self._forward_value_control_wheel_to_scroll_area(watched, event)
         if watched is self.ui.splitterReferenceAndRealImage:
             if event.type() in (QEvent.Resize, QEvent.Show):
                 QTimer.singleShot(0, self._set_equal_reference_preview_sizes)
@@ -392,6 +395,42 @@ class ViewControlsMixin:
             self._adjust_star_pick_circle_diameter(-1)
             return True
         return False
+
+    def _forward_value_control_wheel_to_scroll_area(self, control, event: QWheelEvent) -> bool:  # type: ignore[no-untyped-def]
+        """阻止参数控件吃掉滚轮，并将其交给最近的外层滚动区域。"""
+
+        ancestor = control.parentWidget()
+        while ancestor is not None:
+            inherits = getattr(ancestor, "inherits", None)
+            if callable(inherits) and inherits("QAbstractScrollArea"):
+                # 不能把同一个滚轮事件再次投递到 viewport：Qt 会把事件沿父级
+                # 重新分发，最终又回到当前控件，从而触发递归。直接调整滚动条即可。
+                pixel_delta = event.pixelDelta()
+                angle_delta = event.angleDelta()
+                if pixel_delta.y() != 0 or angle_delta.y() != 0:
+                    scrollbar = ancestor.verticalScrollBar()
+                    delta = pixel_delta.y()
+                    if delta == 0:
+                        delta = round(
+                            angle_delta.y()
+                            / 120.0
+                            * max(1, QApplication.wheelScrollLines())
+                            * max(1, scrollbar.singleStep())
+                        )
+                else:
+                    scrollbar = ancestor.horizontalScrollBar()
+                    delta = pixel_delta.x()
+                    if delta == 0:
+                        delta = round(
+                            angle_delta.x()
+                            / 120.0
+                            * max(1, QApplication.wheelScrollLines())
+                            * max(1, scrollbar.singleStep())
+                        )
+                scrollbar.setValue(scrollbar.value() - delta)
+                return True
+            ancestor = ancestor.parentWidget()
+        return True
 
     def _wheel_zoom_enabled(self) -> bool:
         return bool(getattr(self.ui_config, "wheel_zoom_enabled", True))

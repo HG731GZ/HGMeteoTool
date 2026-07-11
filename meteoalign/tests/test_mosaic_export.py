@@ -9,6 +9,7 @@ from meteoalign.coordinates import unit_vectors_to_radec
 from meteoalign.mosaic_export import (
     MosaicExportGeometry,
     MosaicExportSourceImage,
+    _copy_full_tiff_exif_metadata,
     _finalize_forward_inverse_map,
     _icrs_camera_basis_from_view,
     _render_mosaic_reprojection_block_from_map,
@@ -209,6 +210,43 @@ def test_mosaic_export_writes_cropped_lzw_rgba_u16_tiff_with_exif(tmp_path) -> N
     )
     with tifffile.TiffFile(uncompressed_path) as tiff:
         assert tiff.pages[0].tags["Compression"].value == 1
+
+
+def test_mosaic_export_copies_complete_exif_ifd_tree_from_tiff_source(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """TIFF 导出应保留原图嵌套 EXIF IFD 中的拍摄与厂商信息。"""
+
+    import tifftools
+    from PIL import ExifTags, Image
+
+    source_path = tmp_path / "source_with_exif.tif"
+    source_temp_path = tmp_path / "source_with_exif_temp.tif"
+    output_path = tmp_path / "output.tif"
+    tifffile.imwrite(source_path, np.zeros((3, 4, 3), dtype=np.uint16), photometric="rgb")
+
+    source_info = tifftools.read_tiff(str(source_path))
+    source_info["ifds"][0]["tags"][34665] = {
+        "ifds": [[
+            {
+                "path_or_fobj": str(source_path),
+                "tags": {
+                    33434: {"datatype": 5, "data": [1, 30]},
+                    36867: {"datatype": 2, "data": "2026:07:11 22:30:00"},
+                    37500: {"datatype": 7, "data": b"CameraMakerNote"},
+                },
+            }
+        ]]
+    }
+    tifftools.write_tiff(source_info, str(source_temp_path))
+    source_temp_path.replace(source_path)
+    tifffile.imwrite(output_path, np.zeros((2, 3, 4), dtype=np.uint16), photometric="rgb", extrasamples=("unassalpha",))
+
+    _copy_full_tiff_exif_metadata(source_path, output_path)
+
+    with Image.open(output_path) as image:
+        exif_ifd = image.getexif().get_ifd(ExifTags.IFD.Exif)
+    assert exif_ifd[36867] == "2026:07:11 22:30:00"
+    assert float(exif_ifd[33434]) == 1.0 / 30.0
+    assert exif_ifd[37500] == b"CameraMakerNote"
 
 
 def test_mosaic_render_block_marks_invalid_pixels_transparent() -> None:

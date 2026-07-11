@@ -4,7 +4,7 @@ from html import escape
 
 from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QFont
-from PyQt5.QtWidgets import QLabel
+from PyQt5.QtWidgets import QAbstractSlider, QAbstractSpinBox, QComboBox, QLabel
 
 from ..config import StarMapUiConfig
 
@@ -36,6 +36,32 @@ class AppWidgetMixin:
             # 常驻控件固定在状态栏右侧，不会被普通操作提示覆盖。
             statusbar.addPermanentWidget(image_context_label)
             statusbar.setProperty("imageContextWidgetAdded", True)
+
+        self._install_value_control_wheel_filters()
+
+    def _install_value_control_wheel_filters(self) -> None:
+        """拦截所有会因滚轮改变值的控件，避免误改参数。"""
+
+        value_controls = (
+            *self.findChildren(QAbstractSpinBox),
+            *self.findChildren(QComboBox),
+            *self.findChildren(QAbstractSlider),
+        )
+        for control in value_controls:
+            control.installEventFilter(self)
+
+    @staticmethod
+    def _is_wheel_value_control(widget: object) -> bool:
+        """判断控件是否会默认将滚轮解释为数值或选项变更。"""
+
+        inherits = getattr(widget, "inherits", None)
+        if not callable(inherits):
+            return False
+        # PyQt 的部分包装对象在 isinstance 检查时可能递归调用 Python 元类型，必须使用 Qt 元对象判断。
+        return any(
+            bool(inherits(class_name))
+            for class_name in ("QAbstractSpinBox", "QComboBox", "QAbstractSlider")
+        )
 
     def _set_plain_label_text(self, label: QLabel, text: str, tooltip: str | None = None) -> None:
         """设置标签纯文本，并同步设置 tooltip。"""
