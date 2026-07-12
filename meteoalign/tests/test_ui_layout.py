@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 
 # 让无显示服务器的 CI 也能创建 Qt 窗口；用户桌面运行不受此测试环境变量影响。
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QApplication, QFormLayout, QMainWindow, QPushButton, QSizePolicy
+from PyQt5.QtWidgets import QApplication, QFormLayout, QHeaderView, QMainWindow, QPushButton, QSizePolicy, QTableWidget
 
+from meteoalign.application.app_sequence_table_preview import SequenceTablePreviewMixin
 from meteoalign.ui.ui_main_window import Ui_MainWindow
 
 
@@ -102,3 +104,50 @@ def test_adjacent_alignment_settings_button_is_right_of_calculation_button() -> 
     assert isinstance(ui.toolButtonAdjacentAlignmentSettings, QPushButton)
 
     window.close()
+
+
+def test_sequence_refinement_controls_and_columns_are_available() -> None:
+    """序列页应提供两种单帧精修方式及三类 RMS 列。"""
+
+    app = QApplication.instance() or QApplication([])
+    window = QMainWindow()
+    ui = Ui_MainWindow()
+    ui.setupUi(window)
+    window.show()
+    app.processEvents()
+
+    assert not ui.comboBoxSequenceRefinementMode.isEnabled()
+    assert not ui.pushButtonRefineSequenceFrames.isEnabled()
+    assert ui.comboBoxSequenceRefinementMode.itemText(0) == "优化取景角度"
+    assert ui.comboBoxSequenceRefinementMode.itemText(1) == "单帧重新拟合"
+    assert ui.tableWidgetImageSequence.columnCount() == 5
+    assert ui.tableWidgetImageSequence.horizontalHeaderItem(2).text() == "δt RMS"
+    assert ui.tableWidgetImageSequence.horizontalHeaderItem(3).text() == "δt + pose RMS"
+    assert ui.tableWidgetImageSequence.horizontalHeaderItem(4).text() == "重拟合RMS"
+
+    window.close()
+
+
+def test_sequence_table_columns_can_be_resized_by_user() -> None:
+    """序列表应提供足够宽的文件名列，且不在刷新时覆盖用户调整。"""
+
+    app = QApplication.instance() or QApplication([])
+    table = QTableWidget(0, 5)
+
+    class SequenceTable(SequenceTablePreviewMixin):
+        def __init__(self) -> None:
+            self.ui = SimpleNamespace(tableWidgetImageSequence=table)
+            self._image_sequence_sort_key = "index"
+            self._image_sequence_sort_descending = False
+
+    sequence_table = SequenceTable()
+    sequence_table._configure_image_sequence_table_columns()
+    header = table.horizontalHeader()
+
+    for column in range(table.columnCount()):
+        assert header.sectionResizeMode(column) == QHeaderView.Interactive
+    assert table.columnWidth(1) == 300
+
+    table.setColumnWidth(1, 420)
+    sequence_table._refresh_image_sequence_table()
+    assert table.columnWidth(1) == 420

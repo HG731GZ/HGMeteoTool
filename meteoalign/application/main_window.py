@@ -101,6 +101,7 @@ from .app_star_pair_io import StarPairIOMixin
 from .app_image import ImageMixin
 from .app_meteor_selection import MeteorSelectionMixin
 from .app_sequence import SequenceBatchMixin
+from .app_sequence_refinement import SequenceRefinementMixin
 from .app_auto_match import AutoMatchMixin
 from .app_rendering import RenderingMixin
 from .app_view_controls import ViewControlsMixin
@@ -134,6 +135,7 @@ class MainWindow(
     AlignmentMixin,
     StarPairIOMixin,
     SequenceBatchMixin,
+    SequenceRefinementMixin,
     ImageMixin,
     MeteorSelectionMixin,
     AutoMatchMixin,
@@ -304,6 +306,7 @@ class MainWindow(
         self._image_sequence_scaled_mask_cache = OrderedDict()
         self._image_sequence_masked_preview_cache = OrderedDict()
         self._sequence_processing_active = False
+        self._sequence_refinement_active = False
         self._preserve_sequence_on_next_image_load = False
 
         self._init_defaults()
@@ -421,6 +424,8 @@ class MainWindow(
             )
         self.ui.pushButtonImportImageSequence.clicked.connect(self.import_image_sequence)
         self.ui.pushButtonProcessImageSequence.clicked.connect(self.process_image_sequence)
+        if hasattr(self.ui, "pushButtonRefineSequenceFrames"):
+            self.ui.pushButtonRefineSequenceFrames.clicked.connect(self.refine_sequence_frames)
         if hasattr(self.ui, "pushButtonImportImageSequenceSkyMask"):
             self.ui.pushButtonImportImageSequenceSkyMask.clicked.connect(self.import_image_sequence_sky_mask)
         if hasattr(self.ui, "pushButtonClearImageSequenceSkyMask"):

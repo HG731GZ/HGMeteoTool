@@ -774,7 +774,7 @@
                   <number>0</number>
                  </property>
                  <property name="columnCount">
-                  <number>3</number>
+                  <number>5</number>
                  </property>
                  <attribute name="horizontalHeaderCascadingSectionResizes">
                   <bool>false</bool>
@@ -803,10 +803,51 @@
                  </column>
                  <column>
                   <property name="text">
-                   <string>残差RMS</string>
+                   <string>δt RMS</string>
+                  </property>
+                 </column>
+                 <column>
+                  <property name="text">
+                   <string>δt + pose RMS</string>
+                  </property>
+                 </column>
+                 <column>
+                  <property name="text">
+                   <string>重拟合RMS</string>
                   </property>
                  </column>
                 </widget>
+               </item>
+               <item>
+                <layout class="QHBoxLayout" name="horizontalLayoutSequenceRefinement">
+                 <item>
+                  <widget class="QComboBox" name="comboBoxSequenceRefinementMode">
+                   <property name="enabled">
+                    <bool>false</bool>
+                   </property>
+                   <item>
+                    <property name="text">
+                     <string>优化取景角度</string>
+                    </property>
+                   </item>
+                   <item>
+                    <property name="text">
+                     <string>单帧重新拟合</string>
+                    </property>
+                   </item>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QPushButton" name="pushButtonRefineSequenceFrames">
+                   <property name="enabled">
+                    <bool>false</bool>
+                   </property>
+                   <property name="text">
+                    <string>单帧结果修正</string>
+                   </property>
+                  </widget>
+                 </item>
+                </layout>
                </item>
               </layout>
              </widget>

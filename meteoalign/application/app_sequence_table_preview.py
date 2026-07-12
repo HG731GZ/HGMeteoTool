@@ -21,12 +21,15 @@ from ..image_sequence import (
     sequence_item_time_delta_seconds,
 )
 from ..sequence_constants import (
+    IMAGE_SEQUENCE_DELTA_T_RMS_COLUMN,
     IMAGE_SEQUENCE_INDEX_COLUMN,
     IMAGE_SEQUENCE_INDEX_ROLE,
     IMAGE_SEQUENCE_MASK_CACHE_LIMIT,
     IMAGE_SEQUENCE_NAME_COLUMN,
     IMAGE_SEQUENCE_PATH_ROLE,
+    IMAGE_SEQUENCE_POSE_RMS_COLUMN,
     IMAGE_SEQUENCE_PREVIEW_CACHE_LIMIT,
+    IMAGE_SEQUENCE_REFIT_RMS_COLUMN,
     IMAGE_SEQUENCE_RMS_COLUMN,
     IMAGE_SEQUENCE_RMS_ROLE,
     IMAGE_SEQUENCE_SORTABLE_COLUMNS,
@@ -105,6 +108,18 @@ class SequenceTablePreviewMixin:
         if hasattr(self.ui, "pushButtonProcessImageSequence"):
             self.ui.pushButtonProcessImageSequence.setEnabled(self._sequence_can_process())
         self._update_image_sequence_mask_controls()
+        self._update_sequence_refinement_controls()
+
+    def _update_sequence_refinement_controls(self) -> None:
+        """仅在整个序列已有成对输出时开放单帧结果修正。"""
+
+        if not hasattr(self.ui, "comboBoxSequenceRefinementMode"):
+            return
+        ready_method = getattr(self, "_sequence_refinement_ready", None)
+        ready = bool(ready_method()) if callable(ready_method) else False
+        self.ui.comboBoxSequenceRefinementMode.setEnabled(ready)
+        if hasattr(self.ui, "pushButtonRefineSequenceFrames"):
+            self.ui.pushButtonRefineSequenceFrames.setEnabled(ready)
 
     def _update_image_sequence_mask_controls(self) -> None:
         if not hasattr(self.ui, "pushButtonImportImageSequenceSkyMask"):
@@ -133,9 +148,18 @@ class SequenceTablePreviewMixin:
         header = table.horizontalHeader()
         header.setSectionsClickable(True)
         header.setStretchLastSection(False)
-        header.setSectionResizeMode(IMAGE_SEQUENCE_INDEX_COLUMN, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(IMAGE_SEQUENCE_NAME_COLUMN, QHeaderView.Stretch)
-        header.setSectionResizeMode(IMAGE_SEQUENCE_RMS_COLUMN, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(QHeaderView.Interactive)
+
+        # 以较宽的文件名列作为初始布局；交互式表头允许用户后续拖动任意列边界。
+        column_widths = {
+            IMAGE_SEQUENCE_INDEX_COLUMN: 56,
+            IMAGE_SEQUENCE_NAME_COLUMN: 300,
+            IMAGE_SEQUENCE_DELTA_T_RMS_COLUMN: 84,
+            IMAGE_SEQUENCE_POSE_RMS_COLUMN: 118,
+            IMAGE_SEQUENCE_REFIT_RMS_COLUMN: 92,
+        }
+        for column, width in column_widths.items():
+            table.setColumnWidth(column, width)
         self._update_image_sequence_sort_indicator()
 
     def _update_image_sequence_sort_indicator(self) -> None:
@@ -230,13 +254,68 @@ class SequenceTablePreviewMixin:
         )
         return rms, len(residuals), tooltip, True
 
-    def _image_sequence_table_entries(self) -> list[tuple[int, ImageSequenceItem, float | None, int, str, bool]]:
-        entries: list[tuple[int, ImageSequenceItem, float | None, int, str, bool]] = []
+    def _sequence_refinement_rms_from_json(self, json_path: Path) -> tuple[float | None, float | None, str]:
+        """从单帧模型 JSON 读取两种后处理精修的已保存 RMS。"""
+
+        if not json_path.exists():
+            return None, None, "未找到同名模型 JSON。"
+        try:
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001 - 表格诊断不应阻断预览或序列处理。
+            return None, None, f"模型 JSON 无法读取：{exc}"
+        if not isinstance(payload, dict):
+            return None, None, "模型 JSON 根对象不是字典。"
+        refinement = payload.get("sequence_refinement")
+        if not isinstance(refinement, dict):
+            return None, None, "尚未执行单帧结果修正。"
+        results = refinement.get("results")
+        if not isinstance(results, dict):
+            return None, None, "尚未保存单帧结果修正指标。"
+
+        def result_rms(key: str) -> float | None:
+            result = results.get(key)
+            if not isinstance(result, dict):
+                return None
+            try:
+                value = float(result.get("rms_px"))
+            except (TypeError, ValueError):
+                return None
+            return value if math.isfinite(value) else None
+
+        pose_rms = result_rms("pose")
+        refit_rms = result_rms("refit")
+        lines = [f"模型 JSON：{json_path}"]
+        if pose_rms is not None:
+            lines.append(f"δt + pose RMS：{pose_rms:.2f} px")
+        if refit_rms is not None:
+            lines.append(f"重拟合 RMS：{refit_rms:.2f} px")
+        if len(lines) == 1:
+            lines.append("尚未执行单帧结果修正。")
+        return pose_rms, refit_rms, "\n".join(lines)
+
+    def _image_sequence_table_entries(
+        self,
+    ) -> list[tuple[int, ImageSequenceItem, float | None, float | None, float | None, int, str, bool]]:
+        entries: list[tuple[int, ImageSequenceItem, float | None, float | None, float | None, int, str, bool]] = []
         for sequence_index, item in enumerate(getattr(self, "_image_sequence_items", [])):
-            rms, pair_count, tooltip, has_json = self._sequence_starpair_rms_from_json(
+            delta_t_rms, pair_count, tooltip, has_json = self._sequence_starpair_rms_from_json(
                 self._sequence_starpair_json_path(item.path)
             )
-            entries.append((sequence_index, item, rms, pair_count, tooltip, has_json))
+            pose_rms, refit_rms, refinement_tooltip = self._sequence_refinement_rms_from_json(
+                self._sequence_model_json_path(item.path)
+            )
+            entries.append(
+                (
+                    sequence_index,
+                    item,
+                    delta_t_rms,
+                    pose_rms,
+                    refit_rms,
+                    pair_count,
+                    f"{tooltip}\n{refinement_tooltip}",
+                    has_json,
+                )
+            )
         if self._image_sequence_sort_key == IMAGE_SEQUENCE_SORT_KEY_RMS:
             return sorted(
                 entries,
@@ -257,34 +336,37 @@ class SequenceTablePreviewMixin:
         entries = self._image_sequence_table_entries()
         signals_were_blocked = table.blockSignals(True)
         table.setRowCount(len(entries))
-        for row, (sequence_index, item, rms, _pair_count, tooltip, has_json) in enumerate(entries):
+        for row, (sequence_index, item, delta_t_rms, pose_rms, refit_rms, _pair_count, tooltip, has_json) in enumerate(entries):
             display_index = sequence_index + 1
             index_item = self._read_only_sequence_table_item(str(display_index))
             name_item = self._read_only_sequence_table_item(item.path.name)
-            rms_text = "—" if rms is None else f"{rms:.2f}"
-            rms_item = self._read_only_sequence_table_item(rms_text)
+            delta_t_item = self._read_only_sequence_table_item(
+                "—" if delta_t_rms is None else f"{delta_t_rms:.2f}"
+            )
+            pose_item = self._read_only_sequence_table_item("—" if pose_rms is None else f"{pose_rms:.2f}")
+            refit_item = self._read_only_sequence_table_item("—" if refit_rms is None else f"{refit_rms:.2f}")
 
-            for table_item in (index_item, name_item, rms_item):
+            for table_item in (index_item, name_item, delta_t_item, pose_item, refit_item):
                 table_item.setData(IMAGE_SEQUENCE_PATH_ROLE, str(item.path))
                 table_item.setData(IMAGE_SEQUENCE_INDEX_ROLE, sequence_index)
-                table_item.setData(IMAGE_SEQUENCE_RMS_ROLE, rms)
+                table_item.setData(IMAGE_SEQUENCE_RMS_ROLE, delta_t_rms)
                 table_item.setToolTip(tooltip)
 
-            if rms is not None and rms >= RESIDUAL_WARNING_MIN_PX:
+            if delta_t_rms is not None and delta_t_rms >= RESIDUAL_WARNING_MIN_PX:
                 background = QBrush(QColor(255, 210, 210))
-                for table_item in (index_item, name_item, rms_item):
+                for table_item in (index_item, name_item, delta_t_item, pose_item, refit_item):
                     table_item.setBackground(background)
             elif has_json:
                 background = QBrush(QColor(210, 244, 214))
-                for table_item in (index_item, name_item, rms_item):
+                for table_item in (index_item, name_item, delta_t_item, pose_item, refit_item):
                     table_item.setBackground(background)
 
             table.setItem(row, IMAGE_SEQUENCE_INDEX_COLUMN, index_item)
             table.setItem(row, IMAGE_SEQUENCE_NAME_COLUMN, name_item)
-            table.setItem(row, IMAGE_SEQUENCE_RMS_COLUMN, rms_item)
+            table.setItem(row, IMAGE_SEQUENCE_DELTA_T_RMS_COLUMN, delta_t_item)
+            table.setItem(row, IMAGE_SEQUENCE_POSE_RMS_COLUMN, pose_item)
+            table.setItem(row, IMAGE_SEQUENCE_REFIT_RMS_COLUMN, refit_item)
         table.blockSignals(signals_were_blocked)
-        table.resizeColumnToContents(IMAGE_SEQUENCE_INDEX_COLUMN)
-        table.resizeColumnToContents(IMAGE_SEQUENCE_RMS_COLUMN)
         self._select_image_sequence_table_row()
 
     def _select_image_sequence_table_row(self, *, scroll_to_row: bool = False) -> None:
