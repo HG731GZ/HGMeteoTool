@@ -347,6 +347,23 @@ def remember_import_path(
     return True
 
 
+def update_preference_values(
+    updates: dict[str, object],
+    *,
+    path: str | Path | None = None,
+) -> bool:
+    """将指定配置项写回 preference.json，并保留其余用户设置。"""
+
+    preference_path = Path(path).expanduser() if path is not None else default_preference_path()
+    values = ensure_preference_file(preference_path)
+    values.update(updates)
+    try:
+        _write_preference_values(preference_path, values)
+    except OSError:
+        return False
+    return True
+
+
 __all__ = [
     "DEFAULT_PREFERENCE_VALUES",
     "LAST_IMPORT_DIRECTORY_KEY",
@@ -356,4 +373,5 @@ __all__ = [
     "recent_import_directory",
     "remember_import_path",
     "strip_json_comments",
+    "update_preference_values",
 ]

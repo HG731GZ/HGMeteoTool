@@ -1,0 +1,244 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>AdjacentAlignmentSettingsDialog</class>
+ <widget class="QDialog" name="AdjacentAlignmentSettingsDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>620</width>
+    <height>720</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>粗略取景参数设置</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayoutDialog">
+   <item>
+    <widget class="QLabel" name="labelCurrentMode">
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+     <property name="text">
+      <string>当前工作模式</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QStackedWidget" name="stackedWidgetSettings">
+     <widget class="QWidget" name="pageStarSettings">
+      <layout class="QVBoxLayout" name="verticalLayoutStarPage">
+       <property name="leftMargin"><number>0</number></property>
+       <property name="topMargin"><number>0</number></property>
+       <property name="rightMargin"><number>0</number></property>
+       <property name="bottomMargin"><number>0</number></property>
+       <item>
+        <widget class="QScrollArea" name="scrollAreaStarSettings">
+         <property name="widgetResizable">
+          <bool>true</bool>
+         </property>
+         <widget class="QWidget" name="scrollAreaWidgetContentsStar">
+          <property name="geometry">
+           <rect>
+            <x>0</x>
+            <y>0</y>
+            <width>570</width>
+            <height>980</height>
+           </rect>
+          </property>
+          <layout class="QVBoxLayout" name="verticalLayoutStarSettings">
+           <item>
+            <widget class="QGroupBox" name="groupBoxStarCommon">
+             <property name="title">
+              <string>通用参数</string>
+             </property>
+             <layout class="QFormLayout" name="formLayoutStarCommon">
+              <property name="fieldGrowthPolicy">
+               <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
+              </property>
+              <item row="0" column="0">
+               <widget class="QLabel" name="labelAdjacentAlignmentMaxCorrespondencesStar">
+                <property name="text"><string>最多保留对应点数</string></property>
+               </widget>
+              </item>
+              <item row="0" column="1">
+               <widget class="QSpinBox" name="spinBoxAdjacentAlignmentMaxCorrespondencesStar">
+                <property name="minimum"><number>4</number></property>
+                <property name="maximum"><number>10000</number></property>
+               </widget>
+              </item>
+             </layout>
+            </widget>
+           </item>
+           <item>
+            <widget class="QGroupBox" name="groupBoxStarDetection">
+             <property name="title"><string>星点检测与筛选</string></property>
+             <layout class="QFormLayout" name="formLayoutStarDetection">
+              <property name="fieldGrowthPolicy"><enum>QFormLayout::AllNonFixedFieldsGrow</enum></property>
+              <item row="0" column="0"><widget class="QLabel" name="labelAdjacentStarBackgroundBwPx"><property name="text"><string>背景网格宽度（像素）</string></property></widget></item>
+              <item row="0" column="1"><widget class="QSpinBox" name="spinBoxAdjacentStarBackgroundBwPx"><property name="minimum"><number>16</number></property><property name="maximum"><number>2048</number></property></widget></item>
+              <item row="1" column="0"><widget class="QLabel" name="labelAdjacentStarBackgroundBhPx"><property name="text"><string>背景网格高度（像素）</string></property></widget></item>
+              <item row="1" column="1"><widget class="QSpinBox" name="spinBoxAdjacentStarBackgroundBhPx"><property name="minimum"><number>16</number></property><property name="maximum"><number>2048</number></property></widget></item>
+              <item row="2" column="0"><widget class="QLabel" name="labelAdjacentStarBackgroundFwPx"><property name="text"><string>背景水平滤波网格</string></property></widget></item>
+              <item row="2" column="1"><widget class="QSpinBox" name="spinBoxAdjacentStarBackgroundFwPx"><property name="minimum"><number>1</number></property><property name="maximum"><number>63</number></property></widget></item>
+              <item row="3" column="0"><widget class="QLabel" name="labelAdjacentStarBackgroundFhPx"><property name="text"><string>背景垂直滤波网格</string></property></widget></item>
+              <item row="3" column="1"><widget class="QSpinBox" name="spinBoxAdjacentStarBackgroundFhPx"><property name="minimum"><number>1</number></property><property name="maximum"><number>63</number></property></widget></item>
+              <item row="4" column="0"><widget class="QLabel" name="labelAdjacentStarDetectionSigma"><property name="text"><string>检测阈值（背景 RMS）</string></property></widget></item>
+              <item row="4" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxAdjacentStarDetectionSigma"><property name="decimals"><number>4</number></property><property name="minimum"><double>0.100000000</double></property><property name="maximum"><double>100.000000000</double></property></widget></item>
+              <item row="5" column="0"><widget class="QLabel" name="labelAdjacentStarDetectionMinAreaPx"><property name="text"><string>最小连通域面积（像素）</string></property></widget></item>
+              <item row="5" column="1"><widget class="QSpinBox" name="spinBoxAdjacentStarDetectionMinAreaPx"><property name="minimum"><number>1</number></property><property name="maximum"><number>10000</number></property></widget></item>
+              <item row="6" column="0"><widget class="QLabel" name="labelAdjacentStarDeblendNthresh"><property name="text"><string>去混叠阈值层数</string></property></widget></item>
+              <item row="6" column="1"><widget class="QSpinBox" name="spinBoxAdjacentStarDeblendNthresh"><property name="minimum"><number>1</number></property><property name="maximum"><number>256</number></property></widget></item>
+              <item row="7" column="0"><widget class="QLabel" name="labelAdjacentStarDeblendCont"><property name="text"><string>去混叠对比度阈值</string></property></widget></item>
+              <item row="7" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxAdjacentStarDeblendCont"><property name="decimals"><number>6</number></property><property name="maximum"><double>1.000000000</double></property><property name="singleStep"><double>0.001000000</double></property></widget></item>
+              <item row="8" column="0"><widget class="QLabel" name="labelAdjacentStarDetectionEdgeMarginPx"><property name="text"><string>忽略边缘宽度（像素）</string></property></widget></item>
+              <item row="8" column="1"><widget class="QSpinBox" name="spinBoxAdjacentStarDetectionEdgeMarginPx"><property name="maximum"><number>10000</number></property></widget></item>
+              <item row="9" column="0"><widget class="QLabel" name="labelAdjacentStarMinMajorAxisPx"><property name="text"><string>最小长轴尺度（像素）</string></property></widget></item>
+              <item row="9" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxAdjacentStarMinMajorAxisPx"><property name="decimals"><number>4</number></property><property name="minimum"><double>0.010000000</double></property><property name="maximum"><double>100.000000000</double></property></widget></item>
+              <item row="10" column="0"><widget class="QLabel" name="labelAdjacentStarMaxMajorAxisPx"><property name="text"><string>最大长轴尺度（像素）</string></property></widget></item>
+              <item row="10" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxAdjacentStarMaxMajorAxisPx"><property name="decimals"><number>4</number></property><property name="minimum"><double>0.010000000</double></property><property name="maximum"><double>1000.000000000</double></property></widget></item>
+              <item row="11" column="0"><widget class="QLabel" name="labelAdjacentStarMinMinorAxisPx"><property name="text"><string>最小短轴尺度（像素）</string></property></widget></item>
+              <item row="11" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxAdjacentStarMinMinorAxisPx"><property name="decimals"><number>4</number></property><property name="minimum"><double>0.010000000</double></property><property name="maximum"><double>100.000000000</double></property></widget></item>
+              <item row="12" column="0"><widget class="QLabel" name="labelAdjacentStarMaxAxisRatio"><property name="text"><string>最大长短轴比</string></property></widget></item>
+              <item row="12" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxAdjacentStarMaxAxisRatio"><property name="decimals"><number>4</number></property><property name="minimum"><double>1.000000000</double></property><property name="maximum"><double>100.000000000</double></property></widget></item>
+              <item row="13" column="0"><widget class="QLabel" name="labelAdjacentStarMaxDetectedStars"><property name="text"><string>最多检测星点数</string></property></widget></item>
+              <item row="13" column="1"><widget class="QSpinBox" name="spinBoxAdjacentStarMaxDetectedStars"><property name="minimum"><number>3</number></property><property name="maximum"><number>10000</number></property></widget></item>
+              <item row="14" column="0"><widget class="QLabel" name="labelAdjacentStarMaxAlignmentStars"><property name="text"><string>最多用于对齐的星点数</string></property></widget></item>
+              <item row="14" column="1"><widget class="QSpinBox" name="spinBoxAdjacentStarMaxAlignmentStars"><property name="minimum"><number>3</number></property><property name="maximum"><number>100</number></property></widget></item>
+             </layout>
+            </widget>
+           </item>
+           <item>
+            <widget class="QGroupBox" name="groupBoxStarMatching">
+             <property name="title"><string>初配准与精配准</string></property>
+             <layout class="QFormLayout" name="formLayoutStarMatching">
+              <property name="fieldGrowthPolicy"><enum>QFormLayout::AllNonFixedFieldsGrow</enum></property>
+              <item row="0" column="0"><widget class="QLabel" name="labelAdjacentStarMinTriangleSideDeg"><property name="text"><string>最小三角形边长（度）</string></property></widget></item>
+              <item row="0" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxAdjacentStarMinTriangleSideDeg"><property name="decimals"><number>4</number></property><property name="minimum"><double>0.001000000</double></property><property name="maximum"><double>45.000000000</double></property></widget></item>
+              <item row="1" column="0"><widget class="QLabel" name="labelAdjacentStarTriangleMatchToleranceDeg"><property name="text"><string>三角形匹配容差（度）</string></property></widget></item>
+              <item row="1" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxAdjacentStarTriangleMatchToleranceDeg"><property name="decimals"><number>4</number></property><property name="minimum"><double>0.001000000</double></property><property name="maximum"><double>10.000000000</double></property></widget></item>
+              <item row="2" column="0"><widget class="QLabel" name="labelAdjacentStarRotationInlierToleranceDeg"><property name="text"><string>旋转内点容差（度）</string></property></widget></item>
+              <item row="2" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxAdjacentStarRotationInlierToleranceDeg"><property name="decimals"><number>4</number></property><property name="minimum"><double>0.001000000</double></property><property name="maximum"><double>10.000000000</double></property></widget></item>
+              <item row="3" column="0"><widget class="QLabel" name="labelAdjacentStarMaxTriangleHypotheses"><property name="text"><string>最多三角形候选假设数</string></property></widget></item>
+              <item row="3" column="1"><widget class="QSpinBox" name="spinBoxAdjacentStarMaxTriangleHypotheses"><property name="minimum"><number>1</number></property><property name="maximum"><number>500000</number></property></widget></item>
+              <item row="4" column="0"><widget class="QLabel" name="labelAdjacentStarMinInitialRotationInliers"><property name="text"><string>初始旋转最少内点数</string></property></widget></item>
+              <item row="4" column="1"><widget class="QSpinBox" name="spinBoxAdjacentStarMinInitialRotationInliers"><property name="minimum"><number>3</number></property><property name="maximum"><number>100</number></property></widget></item>
+              <item row="5" column="0"><widget class="QLabel" name="labelAdjacentStarInitialMatchDistancePx"><property name="text"><string>初始匹配最大距离（像素）</string></property></widget></item>
+              <item row="5" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxAdjacentStarInitialMatchDistancePx"><property name="decimals"><number>4</number></property><property name="minimum"><double>0.100000000</double></property><property name="maximum"><double>10000.000000000</double></property></widget></item>
+              <item row="6" column="0"><widget class="QLabel" name="labelAdjacentStarHomographyMatchDistancePx"><property name="text"><string>单应性重投影阈值（像素）</string></property></widget></item>
+              <item row="6" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxAdjacentStarHomographyMatchDistancePx"><property name="decimals"><number>4</number></property><property name="minimum"><double>0.100000000</double></property><property name="maximum"><double>10000.000000000</double></property></widget></item>
+              <item row="7" column="0"><widget class="QLabel" name="labelAdjacentStarFinalMatchDistancePx"><property name="text"><string>最终匹配最大距离（像素）</string></property></widget></item>
+              <item row="7" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxAdjacentStarFinalMatchDistancePx"><property name="decimals"><number>4</number></property><property name="minimum"><double>0.100000000</double></property><property name="maximum"><double>10000.000000000</double></property></widget></item>
+              <item row="8" column="0"><widget class="QLabel" name="labelAdjacentStarHomographyRansacMaxIterations"><property name="text"><string>单应性 RANSAC 最大迭代次数</string></property></widget></item>
+              <item row="8" column="1"><widget class="QSpinBox" name="spinBoxAdjacentStarHomographyRansacMaxIterations"><property name="minimum"><number>1</number></property><property name="maximum"><number>1000000</number></property></widget></item>
+              <item row="9" column="0"><widget class="QLabel" name="labelAdjacentStarHomographyRansacConfidence"><property name="text"><string>单应性 RANSAC 置信度</string></property></widget></item>
+              <item row="9" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxAdjacentStarHomographyRansacConfidence"><property name="decimals"><number>6</number></property><property name="minimum"><double>0.500000000</double></property><property name="maximum"><double>1.000000000</double></property><property name="singleStep"><double>0.001000000</double></property></widget></item>
+              <item row="10" column="0"><widget class="QLabel" name="labelAdjacentStarMinMatchCount"><property name="text"><string>最少可靠星点对数</string></property></widget></item>
+              <item row="10" column="1"><widget class="QSpinBox" name="spinBoxAdjacentStarMinMatchCount"><property name="minimum"><number>4</number></property><property name="maximum"><number>10000</number></property></widget></item>
+              <item row="11" column="0"><widget class="QLabel" name="labelAdjacentStarFocalScaleMinRatio"><property name="text"><string>焦距尺度最小比例</string></property></widget></item>
+              <item row="11" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxAdjacentStarFocalScaleMinRatio"><property name="decimals"><number>4</number></property><property name="minimum"><double>0.010000000</double></property><property name="maximum"><double>10.000000000</double></property></widget></item>
+             </layout>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+     <widget class="QWidget" name="pageLandscapeSettings">
+      <layout class="QVBoxLayout" name="verticalLayoutLandscapePage">
+       <property name="leftMargin"><number>0</number></property>
+       <property name="topMargin"><number>0</number></property>
+       <property name="rightMargin"><number>0</number></property>
+       <property name="bottomMargin"><number>0</number></property>
+       <item>
+        <widget class="QScrollArea" name="scrollAreaLandscapeSettings">
+         <property name="widgetResizable"><bool>true</bool></property>
+         <widget class="QWidget" name="scrollAreaWidgetContentsLandscape">
+          <property name="geometry">
+           <rect><x>0</x><y>0</y><width>570</width><height>620</height></rect>
+          </property>
+          <layout class="QVBoxLayout" name="verticalLayoutLandscapeSettings">
+           <item>
+            <widget class="QGroupBox" name="groupBoxLandscapeCommon">
+             <property name="title"><string>通用参数</string></property>
+             <layout class="QFormLayout" name="formLayoutLandscapeCommon">
+              <property name="fieldGrowthPolicy"><enum>QFormLayout::AllNonFixedFieldsGrow</enum></property>
+              <item row="0" column="0"><widget class="QLabel" name="labelAdjacentAlignmentMaxCorrespondencesLandscape"><property name="text"><string>最多保留对应点数</string></property></widget></item>
+              <item row="0" column="1"><widget class="QSpinBox" name="spinBoxAdjacentAlignmentMaxCorrespondencesLandscape"><property name="minimum"><number>4</number></property><property name="maximum"><number>10000</number></property></widget></item>
+             </layout>
+            </widget>
+           </item>
+           <item>
+            <widget class="QGroupBox" name="groupBoxLandscapePreprocessing">
+             <property name="title"><string>图像预处理</string></property>
+             <layout class="QFormLayout" name="formLayoutLandscapePreprocessing">
+              <property name="fieldGrowthPolicy"><enum>QFormLayout::AllNonFixedFieldsGrow</enum></property>
+              <item row="0" column="0"><widget class="QLabel" name="labelAdjacentLandscapeNormalizationLowPercentile"><property name="text"><string>压缩低百分位</string></property></widget></item>
+              <item row="0" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxAdjacentLandscapeNormalizationLowPercentile"><property name="decimals"><number>4</number></property><property name="maximum"><double>99.000000000</double></property></widget></item>
+              <item row="1" column="0"><widget class="QLabel" name="labelAdjacentLandscapeNormalizationHighPercentile"><property name="text"><string>压缩高百分位</string></property></widget></item>
+              <item row="1" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxAdjacentLandscapeNormalizationHighPercentile"><property name="decimals"><number>4</number></property><property name="minimum"><double>0.010000000</double></property><property name="maximum"><double>100.000000000</double></property></widget></item>
+              <item row="2" column="0"><widget class="QLabel" name="labelAdjacentLandscapeClaheClipLimit"><property name="text"><string>CLAHE 裁剪上限</string></property></widget></item>
+              <item row="2" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxAdjacentLandscapeClaheClipLimit"><property name="decimals"><number>4</number></property><property name="minimum"><double>0.100000000</double></property><property name="maximum"><double>100.000000000</double></property></widget></item>
+              <item row="3" column="0"><widget class="QLabel" name="labelAdjacentLandscapeClaheGridSize"><property name="text"><string>CLAHE 网格边长（像素）</string></property></widget></item>
+              <item row="3" column="1"><widget class="QSpinBox" name="spinBoxAdjacentLandscapeClaheGridSize"><property name="minimum"><number>1</number></property><property name="maximum"><number>512</number></property></widget></item>
+             </layout>
+            </widget>
+           </item>
+           <item>
+            <widget class="QGroupBox" name="groupBoxLandscapeMatching">
+             <property name="title"><string>SIFT 特征与 RANSAC</string></property>
+             <layout class="QFormLayout" name="formLayoutLandscapeMatching">
+              <property name="fieldGrowthPolicy"><enum>QFormLayout::AllNonFixedFieldsGrow</enum></property>
+              <item row="0" column="0"><widget class="QLabel" name="labelAdjacentLandscapeSiftMaxFeatures"><property name="text"><string>SIFT 最多特征点数</string></property></widget></item>
+              <item row="0" column="1"><widget class="QSpinBox" name="spinBoxAdjacentLandscapeSiftMaxFeatures"><property name="minimum"><number>4</number></property><property name="maximum"><number>1000000</number></property></widget></item>
+              <item row="1" column="0"><widget class="QLabel" name="labelAdjacentLandscapeSiftContrastThreshold"><property name="text"><string>SIFT 对比度阈值</string></property></widget></item>
+              <item row="1" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxAdjacentLandscapeSiftContrastThreshold"><property name="decimals"><number>6</number></property><property name="minimum"><double>0.000001000</double></property><property name="maximum"><double>1.000000000</double></property><property name="singleStep"><double>0.001000000</double></property></widget></item>
+              <item row="2" column="0"><widget class="QLabel" name="labelAdjacentLandscapeSiftEdgeThreshold"><property name="text"><string>SIFT 边缘响应阈值</string></property></widget></item>
+              <item row="2" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxAdjacentLandscapeSiftEdgeThreshold"><property name="decimals"><number>4</number></property><property name="minimum"><double>0.100000000</double></property><property name="maximum"><double>10000.000000000</double></property></widget></item>
+              <item row="3" column="0"><widget class="QLabel" name="labelAdjacentLandscapeSiftSigma"><property name="text"><string>SIFT 高斯尺度参数</string></property></widget></item>
+              <item row="3" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxAdjacentLandscapeSiftSigma"><property name="decimals"><number>4</number></property><property name="minimum"><double>0.100000000</double></property><property name="maximum"><double>100.000000000</double></property></widget></item>
+              <item row="4" column="0"><widget class="QLabel" name="labelAdjacentLandscapeFlannTrees"><property name="text"><string>FLANN KD 树数量</string></property></widget></item>
+              <item row="4" column="1"><widget class="QSpinBox" name="spinBoxAdjacentLandscapeFlannTrees"><property name="minimum"><number>1</number></property><property name="maximum"><number>100</number></property></widget></item>
+              <item row="5" column="0"><widget class="QLabel" name="labelAdjacentLandscapeFlannChecks"><property name="text"><string>FLANN 搜索检查次数</string></property></widget></item>
+              <item row="5" column="1"><widget class="QSpinBox" name="spinBoxAdjacentLandscapeFlannChecks"><property name="minimum"><number>1</number></property><property name="maximum"><number>100000</number></property></widget></item>
+              <item row="6" column="0"><widget class="QLabel" name="labelAdjacentLandscapeRatioTestThreshold"><property name="text"><string>Lowe ratio test 阈值</string></property></widget></item>
+              <item row="6" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxAdjacentLandscapeRatioTestThreshold"><property name="decimals"><number>6</number></property><property name="minimum"><double>0.010000000</double></property><property name="maximum"><double>0.999999000</double></property><property name="singleStep"><double>0.001000000</double></property></widget></item>
+              <item row="7" column="0"><widget class="QLabel" name="labelAdjacentLandscapeRansacReprojectionThresholdPx"><property name="text"><string>RANSAC 重投影阈值（像素）</string></property></widget></item>
+              <item row="7" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxAdjacentLandscapeRansacReprojectionThresholdPx"><property name="decimals"><number>4</number></property><property name="minimum"><double>0.100000000</double></property><property name="maximum"><double>10000.000000000</double></property></widget></item>
+              <item row="8" column="0"><widget class="QLabel" name="labelAdjacentLandscapeRansacMaxIterations"><property name="text"><string>RANSAC 最大迭代次数</string></property></widget></item>
+              <item row="8" column="1"><widget class="QSpinBox" name="spinBoxAdjacentLandscapeRansacMaxIterations"><property name="minimum"><number>1</number></property><property name="maximum"><number>1000000</number></property></widget></item>
+              <item row="9" column="0"><widget class="QLabel" name="labelAdjacentLandscapeRansacConfidence"><property name="text"><string>RANSAC 置信度</string></property></widget></item>
+              <item row="9" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxAdjacentLandscapeRansacConfidence"><property name="decimals"><number>6</number></property><property name="minimum"><double>0.500000000</double></property><property name="maximum"><double>1.000000000</double></property><property name="singleStep"><double>0.001000000</double></property></widget></item>
+              <item row="10" column="0"><widget class="QLabel" name="labelAdjacentLandscapeMinInlierMatches"><property name="text"><string>最少 RANSAC 内点数</string></property></widget></item>
+              <item row="10" column="1"><widget class="QSpinBox" name="spinBoxAdjacentLandscapeMinInlierMatches"><property name="minimum"><number>4</number></property><property name="maximum"><number>100000</number></property></widget></item>
+             </layout>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayoutButtons">
+     <item>
+      <spacer name="horizontalSpacerButtons">
+       <property name="orientation"><enum>Qt::Horizontal</enum></property>
+       <property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property>
+      </spacer>
+     </item>
+     <item><widget class="QPushButton" name="pushButtonRestoreDefaults"><property name="text"><string>回到默认</string></property></widget></item>
+     <item><widget class="QPushButton" name="pushButtonSave"><property name="text"><string>保存设置</string></property><property name="default"><bool>true</bool></property></widget></item>
+     <item><widget class="QPushButton" name="pushButtonCancel"><property name="text"><string>取消</string></property></widget></item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

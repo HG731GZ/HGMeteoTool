@@ -413,6 +413,8 @@ class MainWindow(
             self.ui.pushButtonImportAdjacentImage.clicked.connect(self.import_adjacent_image)
         if hasattr(self.ui, "pushButtonCalculateAdjacentFraming"):
             self.ui.pushButtonCalculateAdjacentFraming.clicked.connect(self.calculate_adjacent_rough_framing)
+        if hasattr(self.ui, "toolButtonAdjacentAlignmentSettings"):
+            self.ui.toolButtonAdjacentAlignmentSettings.clicked.connect(self.open_adjacent_alignment_settings)
         if hasattr(self.ui, "comboBoxAdjacentAlignmentMode"):
             self.ui.comboBoxAdjacentAlignmentMode.currentIndexChanged.connect(
                 self._handle_adjacent_alignment_mode_changed

@@ -8,7 +8,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QApplication, QFormLayout, QMainWindow, QSizePolicy
+from PyQt5.QtWidgets import QApplication, QFormLayout, QMainWindow, QPushButton, QSizePolicy
 
 from meteoalign.ui.ui_main_window import Ui_MainWindow
 
@@ -76,5 +76,26 @@ def test_dynamic_information_labels_are_not_collapsed_by_layout() -> None:
     value_label = ui.formLayoutImportedImage.itemAt(0, QFormLayout.FieldRole).widget()
     assert title_label.x() < value_label.x()
     assert value_label.width() > title_label.width()
+
+    window.close()
+
+
+def test_adjacent_alignment_settings_button_is_right_of_calculation_button() -> None:
+    """粗略取景参数齿轮必须紧随计算按钮，且保留无障碍名称。"""
+
+    app = QApplication.instance() or QApplication([])
+    window = QMainWindow()
+    ui = Ui_MainWindow()
+    ui.setupUi(window)
+    window.show()
+    app.processEvents()
+
+    layout = ui.horizontalLayoutAdjacentImageFramingButtons
+    assert layout.indexOf(ui.pushButtonCalculateAdjacentFraming) < layout.indexOf(
+        ui.toolButtonAdjacentAlignmentSettings
+    )
+    assert ui.toolButtonAdjacentAlignmentSettings.text() == "⚙"
+    assert ui.toolButtonAdjacentAlignmentSettings.accessibleName() == "粗略取景参数设置"
+    assert isinstance(ui.toolButtonAdjacentAlignmentSettings, QPushButton)
 
     window.close()

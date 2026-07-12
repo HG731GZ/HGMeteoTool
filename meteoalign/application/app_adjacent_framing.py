@@ -15,6 +15,7 @@ from ..adjacent_alignment import (
 )
 from ..qt_tasks import create_progress_dialog, start_qt_worker_task
 from ..adjacent_framing_worker import AdjacentFramingWorker
+from .adjacent_alignment_settings_dialog import AdjacentAlignmentSettingsDialog
 
 
 MODEL_JSON_FILE_FILTER = "HoshinoPanoAssistant 源图映射 JSON (*.json);;JSON 文件 (*.json);;所有文件 (*)"
@@ -76,6 +77,20 @@ class AdjacentFramingMixin:
             idle
             and getattr(self, "_adjacent_model_json_path", None) is not None
             and self.current_image_preview is not None
+        )
+        if hasattr(self.ui, "toolButtonAdjacentAlignmentSettings"):
+            self.ui.toolButtonAdjacentAlignmentSettings.setEnabled(idle)
+
+    def open_adjacent_alignment_settings(self) -> None:
+        """打开当前粗略取景模式的超参数设置窗口。"""
+
+        mode = self._adjacent_alignment_mode()
+        dialog = AdjacentAlignmentSettingsDialog(mode, self)
+        if not dialog.exec_():
+            return
+        self.ui.statusbar.showMessage(
+            f"已保存{adjacent_alignment_mode_display_name(mode)}参数并立即生效；"
+            "已生成的粗略取景结果保持不变。"
         )
 
     def _clear_adjacent_rough_framing(
