@@ -94,7 +94,10 @@ def test_adjacent_alignment_settings_button_is_right_of_calculation_button() -> 
     assert layout.indexOf(ui.pushButtonCalculateAdjacentFraming) < layout.indexOf(
         ui.toolButtonAdjacentAlignmentSettings
     )
-    assert ui.toolButtonAdjacentAlignmentSettings.text() == "⚙"
+    assert ui.toolButtonAdjacentAlignmentSettings.text() == "设定"
+    assert ui.toolButtonAdjacentAlignmentSettings.minimumSize().width() == 56
+    assert ui.toolButtonAdjacentAlignmentSettings.maximumSize().width() == 56
+    assert ui.toolButtonAdjacentAlignmentSettings.height() == ui.pushButtonCalculateAdjacentFraming.height()
     assert ui.toolButtonAdjacentAlignmentSettings.accessibleName() == "粗略取景参数设置"
     assert isinstance(ui.toolButtonAdjacentAlignmentSettings, QPushButton)
 
