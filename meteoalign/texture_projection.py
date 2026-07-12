@@ -60,12 +60,19 @@ def warp_grid_texture_to_rgba(
     screen_x_px: np.ndarray,
     screen_y_px: np.ndarray,
     valid_points: np.ndarray,
+    projection_valid_points: np.ndarray | None = None,
+    target_valid_mask: np.ndarray | None = None,
     opacity: float = 1.0,
     screen_longitudes_rad: np.ndarray | None = None,
     seam_padding_px: float = 0.75,
     max_cell_bbox_area_fraction: float = 0.45,
 ) -> bool:
-    """把源图网格纹理逐单元透视贴到目标 RGBA 缓冲区。"""
+    """把源图网格纹理逐单元透视贴到目标 RGBA 缓冲区。
+
+    valid_points 表示源网格点本身是否有效。投影边界外的点应通过
+    projection_valid_points 标记，而不应让整个网格单元被跳过；最终由
+    target_valid_mask 把单元在目标视场边缘裁掉。
+    """
 
     if cv2 is None:
         return False
@@ -77,14 +84,36 @@ def warp_grid_texture_to_rgba(
         return True
 
     rows, columns = valid_points.shape
+    projection_valid = (
+        np.asarray(projection_valid_points, dtype=bool)
+        if projection_valid_points is not None
+        else np.asarray(valid_points, dtype=bool)
+    )
+    target_mask = None if target_valid_mask is None else np.asarray(target_valid_mask, dtype=bool)
+    if projection_valid.shape != valid_points.shape:
+        raise ValueError("projection_valid_points 的形状必须与 valid_points 一致。")
+    if target_mask is not None and target_mask.shape != (height, width):
+        raise ValueError("target_valid_mask 的形状必须与目标 RGBA 缓冲区一致。")
     for row in range(rows - 1):
         for column in range(columns - 1):
-            if not bool(
+            source_cell_valid = bool(
                 valid_points[row, column]
                 and valid_points[row, column + 1]
                 and valid_points[row + 1, column + 1]
                 and valid_points[row + 1, column]
-            ):
+            )
+            if not source_cell_valid:
+                continue
+            projection_cell_valid = np.asarray(
+                [
+                    projection_valid[row, column],
+                    projection_valid[row, column + 1],
+                    projection_valid[row + 1, column + 1],
+                    projection_valid[row + 1, column],
+                ],
+                dtype=bool,
+            )
+            if not bool(np.any(projection_cell_valid)):
                 continue
             if screen_longitudes_rad is not None and _cell_crosses_longitude_break(
                 screen_longitudes_rad,
@@ -97,6 +126,8 @@ def warp_grid_texture_to_rgba(
                 grid_cell_quad(screen_x_px, screen_y_px, row, column).astype(np.float32),
                 seam_padding_px,
             )
+            if not np.all(np.isfinite(dst_quad)):
+                continue
             if abs(float(cv2.contourArea(dst_quad))) < 0.25:
                 continue
 
@@ -110,7 +141,10 @@ def warp_grid_texture_to_rgba(
             bbox_height = bbox_bottom - bbox_top + 1
             if bbox_width <= 1 or bbox_height <= 1:
                 continue
-            if bbox_width * bbox_height > max_cell_bbox_area:
+            is_partially_outside_view = bool(np.any(projection_cell_valid) and not np.all(projection_cell_valid))
+            if bbox_width * bbox_height > max_cell_bbox_area and not (
+                target_mask is not None and is_partially_outside_view
+            ):
                 continue
 
             src_quad = np.asarray(
@@ -158,6 +192,10 @@ def warp_grid_texture_to_rgba(
             cv2.fillConvexPoly(mask, np.rint(dst_relative).astype(np.int32), 255, lineType=cv2.LINE_8)
             target = rgba[bbox_top : bbox_bottom + 1, bbox_left : bbox_right + 1]
             visible = mask > 0
+            if target_mask is not None:
+                visible &= target_mask[bbox_top : bbox_bottom + 1, bbox_left : bbox_right + 1]
+            if not np.any(visible):
+                continue
             target[visible, :3] = warped[visible]
             target[visible, 3] = np.minimum(mask[visible], opacity_alpha)
     return True

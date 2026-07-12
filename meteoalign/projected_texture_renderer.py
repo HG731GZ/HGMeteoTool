@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 from PyQt5.QtGui import QImage, QPainter
 
+from .projection.camera_models import FISHEYE_LENS_MODELS
 from .projection.grid import project_altaz_grid_to_screen
 from .simulator import CameraSettings, ViewSettings
 from .texture_projection import (
@@ -14,6 +15,18 @@ from .texture_projection import (
 
 class ProjectedTextureRenderer:
     """把源图纹理网格投影到当前天空预览画布。"""
+
+    @staticmethod
+    def _target_viewport_mask(camera: CameraSettings, width: int, height: int) -> np.ndarray | None:
+        """返回需保留的目标视场掩膜；鱼眼投影使用圆形边界。"""
+
+        if camera.lens_model not in FISHEYE_LENS_MODELS:
+            return None
+        y_px, x_px = np.ogrid[:height, :width]
+        center_x = width * 0.5
+        center_y = height * 0.5
+        radius = min(width, height) * 0.5 - 0.5
+        return (x_px - center_x) ** 2 + (y_px - center_y) ** 2 <= radius**2
 
     def render_rgba(
         self,
@@ -37,12 +50,17 @@ class ProjectedTextureRenderer:
         if not texture_projection_available():
             return rgba
 
+        source_valid_points = (
+            np.asarray(valid_points, dtype=bool)
+            & np.isfinite(np.asarray(alt_deg, dtype=np.float64))
+            & np.isfinite(np.asarray(az_deg, dtype=np.float64))
+        )
         screen_grid = project_altaz_grid_to_screen(
             alt_deg,
             az_deg,
             camera=camera,
             view=view,
-            valid=valid_points,
+            valid=None,
             include_cylindrical_longitudes=skip_cylindrical_seam,
         )
         warp_grid_texture_to_rgba(
@@ -54,7 +72,9 @@ class ProjectedTextureRenderer:
             source_scale_y=source_scale_y,
             screen_x_px=screen_grid.x_px,
             screen_y_px=screen_grid.y_px,
-            valid_points=screen_grid.valid,
+            valid_points=source_valid_points,
+            projection_valid_points=screen_grid.valid,
+            target_valid_mask=self._target_viewport_mask(camera, int(width), int(height)),
             opacity=opacity,
             screen_longitudes_rad=screen_grid.screen_longitudes_rad,
         )
