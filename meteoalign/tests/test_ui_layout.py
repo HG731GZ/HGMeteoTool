@@ -146,7 +146,8 @@ def test_sequence_table_columns_can_be_resized_by_user() -> None:
 
     for column in range(table.columnCount()):
         assert header.sectionResizeMode(column) == QHeaderView.Interactive
-    assert table.columnWidth(1) == 300
+    expected_name_width = table.fontMetrics().horizontalAdvance("abcdefghijklmnopqrstuvwxy") + 16
+    assert table.columnWidth(1) == expected_name_width
 
     table.setColumnWidth(1, 420)
     sequence_table._refresh_image_sequence_table()

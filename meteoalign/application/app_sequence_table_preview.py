@@ -150,10 +150,11 @@ class SequenceTablePreviewMixin:
         header.setStretchLastSection(False)
         header.setSectionResizeMode(QHeaderView.Interactive)
 
-        # 以较宽的文件名列作为初始布局；交互式表头允许用户后续拖动任意列边界。
+        # 文件名列按约 25 个英文字符设置初始宽度；交互式表头允许用户后续拖动任意列边界。
+        name_column_width = table.fontMetrics().horizontalAdvance("abcdefghijklmnopqrstuvwxy") + 16
         column_widths = {
             IMAGE_SEQUENCE_INDEX_COLUMN: 56,
-            IMAGE_SEQUENCE_NAME_COLUMN: 300,
+            IMAGE_SEQUENCE_NAME_COLUMN: name_column_width,
             IMAGE_SEQUENCE_DELTA_T_RMS_COLUMN: 84,
             IMAGE_SEQUENCE_POSE_RMS_COLUMN: 118,
             IMAGE_SEQUENCE_REFIT_RMS_COLUMN: 92,
