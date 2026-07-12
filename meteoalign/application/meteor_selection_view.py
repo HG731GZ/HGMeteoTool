@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from PyQt5.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QBrush, QColor, QImage, QPen, QPixmap, QTransform
 from PyQt5.QtWidgets import QGraphicsPixmapItem, QGraphicsRectItem, QGraphicsScene, QGraphicsView
 
 from ..meteor_selection import MeteorBox
+from ..view_gestures import ViewZoomPolicy, native_gesture_zoom_factor
 
 
 class MeteorSelectionView(QGraphicsView):
@@ -27,12 +28,21 @@ class MeteorSelectionView(QGraphicsView):
         self._drawing_item: QGraphicsRectItem | None = None
         self._drawing_start: QPointF | None = None
         self._image_rect = QRectF()
+        self._touchpad_pinch_zoom_enabled = True
         self.setDragMode(QGraphicsView.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMouseTracking(True)
         self.viewport().setMouseTracking(True)
+        # macOS 原生手势可能被投递给视图本身或其 viewport，两者都需要监听。
+        self.installEventFilter(self)
+        self.viewport().installEventFilter(self)
+
+    def set_touchpad_pinch_zoom_enabled(self, enabled: bool) -> None:
+        """设置是否响应触控板双指捏合缩放。"""
+
+        self._touchpad_pinch_zoom_enabled = bool(enabled)
 
     def clear_image(self) -> None:
         """移除当前图像与所有框选。"""
@@ -107,12 +117,38 @@ class MeteorSelectionView(QGraphicsView):
             event.ignore()
             return
         factor = 1.25 if delta > 0 else 0.8
+        self._apply_zoom_factor(factor)
+        event.accept()
+
+    def eventFilter(self, watched, event) -> bool:  # type: ignore[no-untyped-def]
+        """在视图与 viewport 上接收 macOS 触控板原生缩放手势。"""
+
+        if watched in (self, self.viewport()) and event.type() == QEvent.NativeGesture:
+            return self._handle_native_gesture(event)
+        return super().eventFilter(watched, event)
+
+    def _handle_native_gesture(self, event) -> bool:  # type: ignore[no-untyped-def]
+        """使用其他预览页面共用的手势换算逻辑处理双指捏合。"""
+
+        if self._image_rect.isEmpty():
+            return False
+        factor = native_gesture_zoom_factor(
+            event,
+            ViewZoomPolicy(pinch_enabled=self._touchpad_pinch_zoom_enabled),
+        )
+        if factor is None:
+            return False
+        self._apply_zoom_factor(factor)
+        return True
+
+    def _apply_zoom_factor(self, factor: float) -> None:
+        """缩放视图，并确保缩小时不会小于完整图像适配比例。"""
+
         current_scale = min(abs(self.transform().m11()), abs(self.transform().m22()))
         if factor < 1.0 and current_scale * factor < self._fit_scale():
             self.fit_image()
         else:
             self.scale(factor, factor)
-        event.accept()
 
     def mousePressEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         if (

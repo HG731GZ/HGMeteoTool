@@ -1341,6 +1341,9 @@ class MosaicProjectionMixin:
         json_paths = [Path(file_path).expanduser() for file_path in file_paths]
         if not json_paths:
             return False
+        # 文件对话框允许只选中一项；此时必须保留单模型的完整初始化行为。
+        if len(json_paths) == 1:
+            return self.load_mosaic_model_json(json_paths[0])
         progress = QProgressDialog("正在导入多张模型...", "取消", 0, len(json_paths), self)
         progress.setWindowTitle("导入多张模型")
         progress.setWindowModality(Qt.WindowModal)
@@ -1644,7 +1647,7 @@ class MosaicProjectionMixin:
         observer: ObserverSettings,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """委托 mosaic_grid_service 转换覆盖网格到地平坐标。"""
-        from .mosaic_grid_service import coverage_altaz as _coverage_altaz
+        from ..mosaic_grid_service import coverage_altaz as _coverage_altaz
         return _coverage_altaz(cache, observer)
 
     def _reset_mosaic_center_from_model(self) -> None:

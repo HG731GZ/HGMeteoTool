@@ -30,6 +30,9 @@ class MeteorSelectionMixin:
         self._meteor_selection_boxes_by_path: dict[Path, list[MeteorBox]] = {}
         self._meteor_selection_image_sizes: dict[Path, tuple[int, int]] = {}
         self._meteor_selection_current_index = -1
+        self.ui.meteorSelectionView.set_touchpad_pinch_zoom_enabled(
+            bool(getattr(getattr(self, "ui_config", None), "touchpad_pinch_zoom_enabled", True))
+        )
         table = self.ui.tableWidgetMeteorSelectionImages
         table.setSelectionBehavior(QAbstractItemView.SelectRows)
         table.setSelectionMode(QAbstractItemView.SingleSelection)

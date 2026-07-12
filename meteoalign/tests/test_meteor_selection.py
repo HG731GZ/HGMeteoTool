@@ -94,6 +94,40 @@ def test_meteor_selection_view_creates_boxes_in_original_image_coordinates() -> 
     view.close()
 
 
+def test_meteor_selection_view_supports_touchpad_pinch_zoom() -> None:
+    """右侧流星预览应响应统一的原生触控板缩放逻辑。"""
+
+    class NativeZoomEvent:
+        def type(self):  # type: ignore[no-untyped-def]
+            return QEvent.NativeGesture
+
+        def gestureType(self):  # type: ignore[no-untyped-def]
+            return Qt.ZoomNativeGesture
+
+        def value(self):  # type: ignore[no-untyped-def]
+            return 0.5
+
+    app = _application()
+    view = MeteorSelectionView()
+    view.resize(800, 500)
+    image = QImage(200, 100, QImage.Format_RGB32)
+    image.fill(Qt.black)
+    view.set_image(image, 1000, 500)
+    view.show()
+    app.processEvents()
+    view.fit_image()
+
+    scale_before = view.transform().m11()
+    assert view._handle_native_gesture(NativeZoomEvent())
+    assert view.transform().m11() > scale_before
+
+    view.set_touchpad_pinch_zoom_enabled(False)
+    scale_before = view.transform().m11()
+    assert not view._handle_native_gesture(NativeZoomEvent())
+    assert view.transform().m11() == scale_before
+    view.close()
+
+
 def test_save_all_meteor_boxes_only_writes_images_with_boxes(tmp_path) -> None:
     """批量保存应跳过流星数为零的图像。"""
 

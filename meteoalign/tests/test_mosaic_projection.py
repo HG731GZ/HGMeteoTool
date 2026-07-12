@@ -367,6 +367,22 @@ def test_mosaic_single_and_multi_modes_replace_each_other_without_merging() -> N
     assert MosaicProjectionMixin._mosaic_current_source_items(window) == [first, second]
 
 
+def test_mosaic_multi_import_with_one_file_uses_single_model_loader() -> None:
+    """多模型按钮只选中一个文件时，应退化为单模型导入。"""
+
+    window = MosaicProjectionMixin.__new__(MosaicProjectionMixin)
+    loaded_paths: list[Path] = []
+
+    def load_single_model(json_path: Path) -> bool:
+        loaded_paths.append(json_path)
+        return True
+
+    window.load_mosaic_model_json = load_single_model
+
+    assert MosaicProjectionMixin.load_mosaic_models_json(window, ["single_model.json"])
+    assert loaded_paths == [Path("single_model.json")]
+
+
 def test_mosaic_mixin_stores_business_state_in_session_state() -> None:
     """Mixin 的旧属性入口必须代理到唯一的拼图会话状态。"""
 
