@@ -29,6 +29,7 @@ class MeteorSelectionView(QGraphicsView):
         self._drawing_start: QPointF | None = None
         self._image_rect = QRectF()
         self._touchpad_pinch_zoom_enabled = True
+        self._native_zoom_center: QPointF | None = None
         self.setDragMode(QGraphicsView.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
@@ -54,6 +55,7 @@ class MeteorSelectionView(QGraphicsView):
         self._remove_box_items()
         self._drawing_item = None
         self._drawing_start = None
+        self._native_zoom_center = None
         self._image_rect = QRectF()
         self._scene.setSceneRect(QRectF())
         self.resetTransform()
@@ -128,27 +130,56 @@ class MeteorSelectionView(QGraphicsView):
         return super().eventFilter(watched, event)
 
     def _handle_native_gesture(self, event) -> bool:  # type: ignore[no-untyped-def]
-        """使用其他预览页面共用的手势换算逻辑处理双指捏合。"""
+        """使用真实图像预览相同的中心锚定逻辑处理双指捏合。"""
 
         if self._image_rect.isEmpty():
             return False
+        begin_gesture = getattr(Qt, "BeginNativeGesture", None)
+        if begin_gesture is not None and event.gestureType() == begin_gesture:
+            self._native_zoom_center = self._viewport_center_scene_point()
+            return False
+
+        end_gesture = getattr(Qt, "EndNativeGesture", None)
+        if end_gesture is not None and event.gestureType() == end_gesture:
+            self._native_zoom_center = None
+            return False
+
         factor = native_gesture_zoom_factor(
             event,
             ViewZoomPolicy(pinch_enabled=self._touchpad_pinch_zoom_enabled),
         )
         if factor is None:
             return False
-        self._apply_zoom_factor(factor)
+        if self._native_zoom_center is None:
+            self._native_zoom_center = self._viewport_center_scene_point()
+        self._apply_zoom_factor(factor, center_scene=self._native_zoom_center)
         return True
 
-    def _apply_zoom_factor(self, factor: float) -> None:
+    def _viewport_center_scene_point(self) -> QPointF:
+        """返回当前预览窗口中心对应的场景坐标。"""
+
+        return self.mapToScene(self.viewport().rect().center())
+
+    def _apply_zoom_factor(self, factor: float, *, center_scene: QPointF | None = None) -> None:
         """缩放视图，并确保缩小时不会小于完整图像适配比例。"""
 
         current_scale = min(abs(self.transform().m11()), abs(self.transform().m22()))
         if factor < 1.0 and current_scale * factor < self._fit_scale():
             self.fit_image()
-        else:
+            return
+        if center_scene is None:
             self.scale(factor, factor)
+            return
+
+        # 原生手势没有可靠的鼠标位置。临时以视口中心缩放并恢复场景中心，
+        # 与星点匹配的真实图像预览保持一致，避免图像向右下或左上漂移。
+        previous_anchor = self.transformationAnchor()
+        self.setTransformationAnchor(QGraphicsView.AnchorViewCenter)
+        try:
+            self.scale(factor, factor)
+        finally:
+            self.setTransformationAnchor(previous_anchor)
+        self.centerOn(center_scene)
 
     def mousePressEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         if (

@@ -95,35 +95,49 @@ def test_meteor_selection_view_creates_boxes_in_original_image_coordinates() -> 
 
 
 def test_meteor_selection_view_supports_touchpad_pinch_zoom() -> None:
-    """右侧流星预览应响应统一的原生触控板缩放逻辑。"""
+    """右侧流星预览应以窗口中心为锚点响应原生触控板缩放。"""
 
     class NativeZoomEvent:
+        def __init__(self, gesture_type, value: float = 0.5) -> None:  # type: ignore[no-untyped-def]
+            self._gesture_type = gesture_type
+            self._value = value
+
         def type(self):  # type: ignore[no-untyped-def]
             return QEvent.NativeGesture
 
         def gestureType(self):  # type: ignore[no-untyped-def]
-            return Qt.ZoomNativeGesture
+            return self._gesture_type
 
         def value(self):  # type: ignore[no-untyped-def]
-            return 0.5
+            return self._value
 
     app = _application()
     view = MeteorSelectionView()
     view.resize(800, 500)
     image = QImage(200, 100, QImage.Format_RGB32)
     image.fill(Qt.black)
-    view.set_image(image, 1000, 500)
+    view.set_image(image, 4000, 2000)
     view.show()
     app.processEvents()
     view.fit_image()
+    view.scale(1.6, 1.6)
+    view.centerOn(QPointF(1400.0, 650.0))
+    center_before = view.mapToScene(view.viewport().rect().center())
 
     scale_before = view.transform().m11()
-    assert view._handle_native_gesture(NativeZoomEvent())
+    assert not view._handle_native_gesture(NativeZoomEvent(Qt.BeginNativeGesture))
+    assert view._handle_native_gesture(NativeZoomEvent(Qt.ZoomNativeGesture))
     assert view.transform().m11() > scale_before
+    center_after = view.mapToScene(view.viewport().rect().center())
+    # QGraphicsView 的滚动条以整数视口像素定位，换回原图坐标时会有少量量化误差。
+    assert abs(center_after.x() - center_before.x()) < 6.0
+    assert abs(center_after.y() - center_before.y()) < 6.0
+    assert not view._handle_native_gesture(NativeZoomEvent(Qt.EndNativeGesture))
+    assert view._native_zoom_center is None
 
     view.set_touchpad_pinch_zoom_enabled(False)
     scale_before = view.transform().m11()
-    assert not view._handle_native_gesture(NativeZoomEvent())
+    assert not view._handle_native_gesture(NativeZoomEvent(Qt.ZoomNativeGesture))
     assert view.transform().m11() == scale_before
     view.close()
 
