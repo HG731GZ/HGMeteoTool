@@ -156,6 +156,7 @@ class StarPairSessionMixin:
             "path": str(image_path),
             "relative_path": relative_image_path,
             "file_name": image_path.name,
+            "file_stem": image_path.stem,
             "original_width_px": preview.original_width,
             "original_height_px": preview.original_height,
             "display_width_px": preview.image.width(),

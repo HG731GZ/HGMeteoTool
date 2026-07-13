@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 from PyQt5.QtCore import QPointF
 
+from ..image_path_resolution import associated_image_candidates, expected_image_size, first_matching_image_path
 from ..frame_astrometry import FrameAstrometricModel
 from ..geometry2d import expand_polygon_radially
 from ..matching_constants import AUTO_MATCH_CONSTRAINT_SOFT
@@ -232,27 +233,21 @@ def _resolve_source_image_path(payload: dict[str, object], json_path: Path) -> t
     if not isinstance(source_image, dict):
         return None, "未记录源图路径"
 
-    candidates: list[Path] = []
-    file_name = _source_image_file_name(source_image)
-    if file_name:
-        _append_unique_path(candidates, (json_path.parent / file_name).resolve())
-
-    relative_path = str(source_image.get("relative_path") or "").strip()
-    if relative_path:
-        _append_unique_path(candidates, (json_path.parent / relative_path).resolve())
-
-    raw_path = str(source_image.get("path") or "").strip()
-    if raw_path:
-        image_path = Path(raw_path).expanduser()
-        if image_path.is_absolute():
-            _append_unique_path(candidates, image_path.resolve())
-        else:
-            # 兼容旧 JSON 中 path 写成相对路径的情况；新 JSON 应优先使用 relative_path。
-            _append_unique_path(candidates, (json_path.parent / image_path).resolve())
-
-    for image_path in candidates:
-        if image_path.exists():
-            return image_path, image_path.name
+    candidates = associated_image_candidates(source_image, json_path)
+    expected_size = expected_image_size(source_image)
+    if expected_size is None:
+        image_geometry = payload.get("image_geometry")
+        if isinstance(image_geometry, dict):
+            try:
+                width = int(image_geometry.get("width_px", 0))
+                height = int(image_geometry.get("height_px", 0))
+            except (TypeError, ValueError):
+                width, height = 0, 0
+            if width > 0 and height > 0:
+                expected_size = (width, height)
+    image_path = first_matching_image_path(candidates, expected_size)
+    if image_path is not None:
+        return image_path, image_path.name
     if candidates:
         fallback = candidates[-1]
         return fallback, fallback.name

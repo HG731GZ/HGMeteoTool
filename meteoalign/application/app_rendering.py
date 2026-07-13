@@ -75,7 +75,17 @@ class RenderingMixin:
     current_sky_mask: np.ndarray | None
     current_sky_masked_image: object
 
+    def _update_status_image_context_visibility(self) -> None:
+        """仅在星点匹配页显示真实图像、蒙版与投影上下文。"""
+
+        status_label = getattr(self.ui, "labelStatusImageContext", None)
+        if status_label is None:
+            return
+        current_tab = self.ui.tabWidgetMain.currentWidget()
+        status_label.setVisible(current_tab is self.ui.tabReferenceImage)
+
     def _handle_tab_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        self._update_status_image_context_visibility()
         QTimer.singleShot(0, self.fit_all_graphics_views)
 
     def schedule_render(self, *unused, delay_ms: int = 120) -> None:  # type: ignore[no-untyped-def]

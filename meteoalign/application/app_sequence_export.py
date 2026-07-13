@@ -91,6 +91,7 @@ class SequenceExportMixin:
             "path": str(image_path),
             "relative_path": _relative_image_path_for_session(image_path, json_path),
             "file_name": image_path.name,
+            "file_stem": image_path.stem,
             "original_width_px": int(preview.original_width),
             "original_height_px": int(preview.original_height),
         }

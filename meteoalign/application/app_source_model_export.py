@@ -37,6 +37,7 @@ class SourceModelExportMixin:
             "path": str(image_path),
             "relative_path": _relative_image_path_for_session(image_path, json_path),
             "file_name": image_path.name,
+            "file_stem": image_path.stem,
             "original_width_px": preview.original_width,
             "original_height_px": preview.original_height,
             "model_width_px": preview.image.width(),
@@ -54,6 +55,8 @@ class SourceModelExportMixin:
             mask_path = self.current_sky_mask_path.expanduser().resolve()
             payload["path"] = str(mask_path)
             payload["relative_path"] = _relative_image_path_for_session(mask_path, json_path)
+            payload["file_name"] = mask_path.name
+            payload["file_stem"] = mask_path.stem
         payload.update(
             {
                 "active": True,

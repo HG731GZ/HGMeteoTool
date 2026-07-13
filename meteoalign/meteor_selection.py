@@ -98,6 +98,7 @@ def build_meteor_selection_payload(
         "schema": METEOR_SELECTION_SCHEMA,
         "version": METEOR_SELECTION_VERSION,
         "source_image": image_file.name,
+        "source_image_stem": image_file.stem,
         "image_size_px": {"width": int(image_width), "height": int(image_height)},
         "meteor_boxes": normalized_boxes,
     }

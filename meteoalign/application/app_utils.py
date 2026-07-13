@@ -6,6 +6,8 @@ from pathlib import Path
 import numpy as np
 from PyQt5.QtGui import QImage
 
+from ..image_path_resolution import associated_image_candidates, expected_image_size, first_matching_image_path
+
 
 # ---------------------------------------------------------------------------
 # 星点配对会话 — 图像路径解析
@@ -54,28 +56,18 @@ def _resolve_star_pair_session_real_image_path(payload: object, source_path: Pat
     if not isinstance(real_image, dict):
         raise ValueError("JSON 缺少 real_image 字段。")
 
-    searched_paths: list[Path] = []
-    _append_unique_path(
-        searched_paths,
-        _session_image_candidate(_session_image_file_name(real_image), source_path, force_same_dir_name=True),
-    )
-    _append_unique_path(searched_paths, _session_image_candidate(real_image.get("relative_path"), source_path))
-    raw_path = real_image.get("path")
-    absolute_path = Path(raw_path).expanduser() if isinstance(raw_path, str) and raw_path.strip() else None
-    if absolute_path is not None:
-        if absolute_path.is_absolute():
-            _append_unique_path(searched_paths, absolute_path.resolve())
-        else:
-            _append_unique_path(searched_paths, _session_image_candidate(raw_path, source_path))
-
-    for image_path in searched_paths:
-        if image_path.exists():
-            return image_path
+    searched_paths = associated_image_candidates(real_image, source_path)
+    image_path = first_matching_image_path(searched_paths, expected_image_size(real_image))
+    if image_path is not None:
+        return image_path
 
     if not searched_paths:
         raise ValueError("JSON 缺少真实图像文件名、相对路径与完整路径。")
     searched_text = "\n".join(str(path) for path in searched_paths)
-    raise FileNotFoundError(f"真实图像不存在，已按同目录文件名、相对路径和完整路径查找：\n{searched_text}")
+    raise FileNotFoundError(
+        "真实图像不存在或尺寸与 JSON 记录不一致，"
+        f"已按同目录主文件名、相对路径和完整路径查找：\n{searched_text}"
+    )
 
 
 def _relative_image_path_for_session(image_path: Path, json_path: Path) -> str:

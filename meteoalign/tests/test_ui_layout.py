@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import QApplication, QFormLayout, QHeaderView, QMainWindow,
 
 from meteoalign.application.app_sequence_table_preview import SequenceTablePreviewMixin
 from meteoalign.application.app_mosaic import MosaicProjectionMixin, MosaicSourceItem
+from meteoalign.application.app_rendering import RenderingMixin
 from meteoalign.ui.ui_main_window import Ui_MainWindow
 
 
@@ -51,6 +52,53 @@ FORM_LAYOUTS = (
     "formLayoutMosaicCrop",
     "formLayoutMosaicBatchSettings",
 )
+
+
+def test_meteor_tab_is_leftmost_while_simulator_remains_default() -> None:
+    """流星框选应位于最左侧，但程序启动后仍显示星空模拟。"""
+
+    app = QApplication.instance() or QApplication([])
+    window = QMainWindow()
+    ui = Ui_MainWindow()
+    ui.setupUi(window)
+
+    assert ui.tabWidgetMain.indexOf(ui.tabMeteorSelection) == 0
+    assert ui.tabWidgetMain.indexOf(ui.tabSimulator) == 1
+    assert ui.tabWidgetMain.currentWidget() is ui.tabSimulator
+
+    window.close()
+
+
+def test_status_image_context_is_visible_only_on_star_matching_tab() -> None:
+    """状态栏右侧图像上下文不得出现在星点匹配以外的页面。"""
+
+    app = QApplication.instance() or QApplication([])
+    window = QMainWindow()
+    ui = Ui_MainWindow()
+    ui.setupUi(window)
+
+    class StatusContextHost(RenderingMixin):
+        def __init__(self) -> None:
+            self.ui = ui
+
+        def fit_all_graphics_views(self) -> None:
+            return
+
+    host = StatusContextHost()
+
+    ui.tabWidgetMain.setCurrentWidget(ui.tabSimulator)
+    host._handle_tab_changed()
+    assert ui.labelStatusImageContext.isHidden()
+
+    ui.tabWidgetMain.setCurrentWidget(ui.tabReferenceImage)
+    host._handle_tab_changed()
+    assert not ui.labelStatusImageContext.isHidden()
+
+    ui.tabWidgetMain.setCurrentWidget(ui.tabMeteorSelection)
+    host._handle_tab_changed()
+    assert ui.labelStatusImageContext.isHidden()
+
+    window.close()
 
 
 def test_dynamic_information_labels_are_not_collapsed_by_layout() -> None:

@@ -9,7 +9,6 @@ from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QBrush, QColor, QPalette
 from PyQt5.QtWidgets import QAbstractItemView, QDialog, QFileDialog, QHeaderView, QMessageBox, QTableWidgetItem
 
-from ..image_preview import IMAGE_FILE_FILTER, load_image_preview
 from ..image_sequence import read_image_capture_time, sequence_item_local_datetime
 from ..meteor_detection import (
     MeteorDetectionOptions,
@@ -17,6 +16,7 @@ from ..meteor_detection import (
     save_meteor_detection_options,
 )
 from ..meteor_selection import MeteorBox, load_meteor_selection, meteor_json_path, save_meteor_selection
+from ..raw_image_preview import METEOR_IMAGE_FILE_FILTER, load_meteor_image_preview
 from .metdet_worker_client import MetDetWorkerClient
 from .meteor_detection_options_dialog import MeteorDetectionOptionsDialog
 
@@ -142,7 +142,7 @@ class MeteorSelectionMixin:
             self,
             "导入流星图片",
             str(self._import_dialog_directory(fallback)),
-            IMAGE_FILE_FILTER,
+            METEOR_IMAGE_FILE_FILTER,
         )
         if not selected_paths:
             return
@@ -207,7 +207,7 @@ class MeteorSelectionMixin:
         self.ui.labelMeteorSelectionPreviewTitle.setToolTip(str(image_path))
 
         try:
-            preview = load_image_preview(image_path)
+            preview = load_meteor_image_preview(image_path)
         except Exception as exc:  # noqa: BLE001 - 单图预览失败不能阻断其他图片的框选。
             self._meteor_selection_image_sizes.pop(image_path, None)
             self.ui.meteorSelectionView.clear_image()
@@ -347,7 +347,7 @@ class MeteorSelectionMixin:
         image_size = self._meteor_selection_image_sizes.get(image_path)
         if image_size is not None:
             return image_size
-        preview = load_image_preview(image_path)
+        preview = load_meteor_image_preview(image_path)
         image_size = (preview.original_width, preview.original_height)
         self._meteor_selection_image_sizes[image_path] = image_size
         return image_size

@@ -47,6 +47,7 @@ def test_meteor_selection_json_uses_image_sibling_name_and_original_pixels(tmp_p
     assert output_path == meteor_json_path(image_path)
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["source_image"] == "IMG_1234.TIF"
+    assert payload["source_image_stem"] == "IMG_1234"
     assert payload["image_size_px"] == {"width": 6000, "height": 4000}
     assert payload["meteor_boxes"] == [
         {

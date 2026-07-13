@@ -173,7 +173,6 @@ class MainWindow(
         super().__init__()
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
-        self._place_meteor_selection_tab()
         self.ui_config = load_star_map_ui_config()
         self._apply_ui_font_config(self.ui_config)
 
@@ -311,6 +310,7 @@ class MainWindow(
 
         self._init_defaults()
         self._connect_inputs()
+        self._handle_tab_changed()
         self._connect_mosaic_projection_inputs()
         self._connect_mosaic_batch_inputs()
         self._connect_meteor_selection_inputs()
@@ -319,19 +319,6 @@ class MainWindow(
             self._configure_image_sequence_table_columns()
         self._configure_reference_preview_splitter()
         self.schedule_render(delay_ms=0)
-
-    def _place_meteor_selection_tab(self) -> None:
-        """将框选流星页放到星点匹配页右侧。"""
-
-        tab_widget = self.ui.tabWidgetMain
-        meteor_index = tab_widget.indexOf(self.ui.tabMeteorSelection)
-        reference_index = tab_widget.indexOf(self.ui.tabReferenceImage)
-        if meteor_index < 0 or reference_index < 0:
-            return
-        tab_text = tab_widget.tabText(meteor_index)
-        tab_widget.removeTab(meteor_index)
-        reference_index = tab_widget.indexOf(self.ui.tabReferenceImage)
-        tab_widget.insertTab(reference_index + 1, self.ui.tabMeteorSelection, tab_text)
 
     def _init_defaults(self) -> None:
         """初始化所有控件默认值。"""

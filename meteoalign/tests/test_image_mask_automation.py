@@ -74,7 +74,7 @@ def test_companion_sky_mask_uses_fixed_image_name_convention(tmp_path: Path) -> 
 
 
 def test_status_image_context_shows_file_name_and_mask_state(tmp_path: Path) -> None:
-    """状态栏右侧始终给出当前图像文件名和蒙版是否生效。"""
+    """状态栏右侧信息刷新时应给出当前图像文件名和蒙版是否生效。"""
 
     image_path = tmp_path / "IMG_0071.TIF"
     mask_path = tmp_path / "IMG_0071_Mask.tif"

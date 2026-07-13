@@ -33,7 +33,7 @@ class AppWidgetMixin:
 
         image_context_label = getattr(self.ui, "labelStatusImageContext", None)
         if image_context_label is not None and not bool(statusbar.property("imageContextWidgetAdded")):
-            # 常驻控件固定在状态栏右侧，不会被普通操作提示覆盖。
+            # 控件固定在状态栏右侧，具体可见性由当前主选项卡控制。
             statusbar.addPermanentWidget(image_context_label)
             statusbar.setProperty("imageContextWidgetAdded", True)
 

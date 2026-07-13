@@ -27,6 +27,7 @@ from .config import (
     load_adjacent_alignment_config,
 )
 from .frame_astrometry import FrameAstrometricModel
+from .image_path_resolution import associated_image_candidates, expected_image_size, first_matching_image_path
 from .source_model import FixedProfilePoseSourceModel, fit_source_astrometric_model_with_fixed_profile
 
 
@@ -160,30 +161,25 @@ def resolve_model_source_image_path(payload: object, model_json_path: str | Path
     if not isinstance(source_image, dict):
         raise ValueError("相邻图像模型 JSON 缺少 source_image，无法定位相邻原图。")
 
-    candidates: list[Path] = []
-
-    def append_candidate(value: object, *, same_directory_name: bool = False) -> None:
-        if not isinstance(value, str) or not value.strip():
-            return
-        candidate = Path(value.strip()).expanduser()
-        if same_directory_name:
-            candidate = json_path.parent / candidate.name
-        elif not candidate.is_absolute():
-            candidate = json_path.parent / candidate
-        candidate = candidate.resolve()
-        if candidate not in candidates:
-            candidates.append(candidate)
-
-    append_candidate(source_image.get("file_name"), same_directory_name=True)
-    append_candidate(source_image.get("relative_path"))
-    append_candidate(source_image.get("path"))
-    for candidate in candidates:
-        if candidate.exists() and candidate.is_file():
-            return candidate
+    candidates = associated_image_candidates(source_image, json_path)
+    expected_size = expected_image_size(source_image)
+    if expected_size is None:
+        image_geometry = payload.get("image_geometry")
+        if isinstance(image_geometry, dict):
+            try:
+                width = int(image_geometry.get("width_px", 0))
+                height = int(image_geometry.get("height_px", 0))
+            except (TypeError, ValueError):
+                width, height = 0, 0
+            if width > 0 and height > 0:
+                expected_size = (width, height)
+    candidate = first_matching_image_path(candidates, expected_size)
+    if candidate is not None:
+        return candidate
     if not candidates:
         raise ValueError("相邻图像模型 JSON 的 source_image 未提供图像路径。")
     searched = "\n".join(str(path) for path in candidates)
-    raise FileNotFoundError(f"找不到相邻图像 A，已尝试：\n{searched}")
+    raise FileNotFoundError(f"找不到尺寸匹配的相邻图像 A，已尝试：\n{searched}")
 
 
 def load_adjacent_frame_model(model_json_path: str | Path) -> tuple[FrameAstrometricModel, Path]:
