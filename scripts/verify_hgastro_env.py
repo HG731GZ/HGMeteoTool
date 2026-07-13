@@ -1,6 +1,6 @@
-"""Smoke-test the hgastro conda environment.
+"""检查 hgastro conda 环境中的关键依赖与路径隔离。
 
-Run with:
+运行方式：
     conda run -p /Volumes/SSDAPFS/conda-envs/hgastro python scripts/verify_hgastro_env.py
 """
 
@@ -27,6 +27,8 @@ MODULES = {
     "pyarrow": "pyarrow",
     "pillow": "PIL",
     "tifftools": "tifftools",
+    "rawpy": "rawpy",
+    "dacite": "dacite",
     "sep": "sep",
     "gwcs": "gwcs",
     "asdf": "asdf",
@@ -35,6 +37,10 @@ MODULES = {
     "pytest": "pytest",
     "pyinstaller": "PyInstaller",
 }
+if sys.platform == "win32":
+    MODULES["onnxruntime-directml"] = "onnxruntime"
+else:
+    MODULES["onnxruntime"] = "onnxruntime"
 
 
 def fail(message: str) -> None:

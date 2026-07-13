@@ -6,7 +6,7 @@ from collections.abc import Iterable
 
 from PyQt5.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QBrush, QColor, QImage, QPen, QPixmap, QTransform
-from PyQt5.QtWidgets import QGraphicsPixmapItem, QGraphicsRectItem, QGraphicsScene, QGraphicsView
+from PyQt5.QtWidgets import QGraphicsPixmapItem, QGraphicsRectItem, QGraphicsScene, QGraphicsView, QMenu
 
 from ..meteor_selection import MeteorBox
 from ..view_gestures import ViewZoomPolicy, native_gesture_zoom_factor
@@ -29,6 +29,7 @@ class MeteorSelectionView(QGraphicsView):
         self._drawing_start: QPointF | None = None
         self._image_rect = QRectF()
         self._touchpad_pinch_zoom_enabled = True
+        self._box_editing_enabled = True
         self._native_zoom_center: QPointF | None = None
         self.setDragMode(QGraphicsView.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
@@ -44,6 +45,16 @@ class MeteorSelectionView(QGraphicsView):
         """设置是否响应触控板双指捏合缩放。"""
 
         self._touchpad_pinch_zoom_enabled = bool(enabled)
+
+    def set_box_editing_enabled(self, enabled: bool) -> None:
+        """设置是否允许通过 Ctrl 拖拽新增流星框。"""
+
+        self._box_editing_enabled = bool(enabled)
+        if not self._box_editing_enabled and self._drawing_item is not None:
+            self._scene.removeItem(self._drawing_item)
+            self._drawing_item = None
+            self._drawing_start = None
+            self.viewport().unsetCursor()
 
     def clear_image(self) -> None:
         """移除当前图像与所有框选。"""
@@ -183,7 +194,8 @@ class MeteorSelectionView(QGraphicsView):
 
     def mousePressEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         if (
-            event.button() == Qt.LeftButton
+            self._box_editing_enabled
+            and event.button() == Qt.LeftButton
             and event.modifiers() & Qt.ControlModifier
             and not self._image_rect.isEmpty()
         ):
@@ -221,6 +233,30 @@ class MeteorSelectionView(QGraphicsView):
             event.accept()
             return
         super().mouseReleaseEvent(event)
+
+    def contextMenuEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        """仅在右键命中流星框内部时提供单框删除操作。"""
+
+        if not self._box_editing_enabled:
+            super().contextMenuEvent(event)
+            return
+        scene_position = self.mapToScene(event.pos())
+        box_item = next(
+            (item for item in reversed(self._box_items) if item.rect().contains(scene_position)),
+            None,
+        )
+        if box_item is None:
+            super().contextMenuEvent(event)
+            return
+
+        menu = QMenu(self)
+        delete_action = menu.addAction("删除该选框（需手动保存）")
+        selected_action = menu.exec_(event.globalPos())
+        if selected_action is delete_action:
+            self._scene.removeItem(box_item)
+            self._box_items.remove(box_item)
+            self.boxesChanged.emit(self.boxes())
+        event.accept()
 
     def keyPressEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         self._update_cursor_for_modifiers(event.modifiers())
@@ -282,7 +318,7 @@ class MeteorSelectionView(QGraphicsView):
     def _update_cursor_for_modifiers(self, modifiers: Qt.KeyboardModifiers) -> None:
         if self._drawing_item is not None:
             self.viewport().setCursor(Qt.SizeAllCursor)
-        elif modifiers & Qt.ControlModifier and not self._image_rect.isEmpty():
+        elif self._box_editing_enabled and modifiers & Qt.ControlModifier and not self._image_rect.isEmpty():
             self.viewport().setCursor(Qt.CrossCursor)
         else:
             self.viewport().unsetCursor()

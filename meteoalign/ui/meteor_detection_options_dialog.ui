@@ -1,0 +1,248 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MeteorDetectionOptionsDialog</class>
+ <widget class="QDialog" name="MeteorDetectionOptionsDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>680</width>
+    <height>470</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>流星自动检测选项</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <widget class="QGroupBox" name="groupBoxEngine">
+     <property name="title">
+      <string>检测引擎</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayoutEngine">
+      <item row="0" column="0">
+       <widget class="QLabel" name="labelEnginePath">
+        <property name="text">
+         <string>引擎位置</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QLineEdit" name="lineEditEnginePath">
+        <property name="placeholderText">
+         <string>留空时自动查找 metdet_worker 目录或源码</string>
+        </property>
+        <property name="clearButtonEnabled">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="2">
+       <widget class="QPushButton" name="pushButtonBrowseEngineFile">
+        <property name="text">
+         <string>选择文件</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="3">
+       <widget class="QPushButton" name="pushButtonBrowseEngineDirectory">
+        <property name="text">
+         <string>选择目录</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="labelModelPath">
+        <property name="text">
+         <string>模型文件</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1" colspan="2">
+       <widget class="QLineEdit" name="lineEditModelPath">
+        <property name="placeholderText">
+         <string>留空时使用引擎自带模型</string>
+        </property>
+        <property name="clearButtonEnabled">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="3">
+       <widget class="QPushButton" name="pushButtonBrowseModel">
+        <property name="text">
+         <string>浏览…</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="groupBoxParameters">
+     <property name="title">
+      <string>关键参数</string>
+     </property>
+     <layout class="QFormLayout" name="formLayoutParameters">
+      <property name="fieldGrowthPolicy">
+       <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
+      </property>
+      <item row="0" column="0">
+       <widget class="QLabel" name="labelConfidenceThreshold">
+        <property name="text">
+         <string>置信度阈值</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QDoubleSpinBox" name="doubleSpinBoxConfidenceThreshold">
+        <property name="toolTip">
+         <string>越低越容易检出较暗流星，也更容易出现误检。</string>
+        </property>
+        <property name="decimals">
+         <number>3</number>
+        </property>
+        <property name="maximum">
+         <double>1.000000000000000</double>
+        </property>
+        <property name="singleStep">
+         <double>0.010000000000000</double>
+        </property>
+        <property name="value">
+         <double>0.250000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="labelNmsThreshold">
+        <property name="text">
+         <string>NMS 阈值</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QDoubleSpinBox" name="doubleSpinBoxNmsThreshold">
+        <property name="decimals">
+         <number>3</number>
+        </property>
+        <property name="maximum">
+         <double>1.000000000000000</double>
+        </property>
+        <property name="singleStep">
+         <double>0.010000000000000</double>
+        </property>
+        <property name="value">
+         <double>0.450000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="labelMultiscale">
+        <property name="text">
+         <string>多尺度层数</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QSpinBox" name="spinBoxMultiscale">
+        <property name="toolTip">
+         <string>0 最快；2 对高分辨率大图的召回更好。</string>
+        </property>
+        <property name="maximum">
+         <number>8</number>
+        </property>
+        <property name="value">
+         <number>2</number>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="0">
+       <widget class="QLabel" name="labelPartition">
+        <property name="text">
+         <string>分块数</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="1">
+       <widget class="QSpinBox" name="spinBoxPartition">
+        <property name="minimum">
+         <number>2</number>
+        </property>
+        <property name="maximum">
+         <number>12</number>
+        </property>
+        <property name="value">
+         <number>2</number>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="0">
+       <widget class="QLabel" name="labelProvider">
+        <property name="text">
+         <string>推理设备</string>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="1">
+       <widget class="QComboBox" name="comboBoxProvider">
+        <item><property name="text"><string>自动</string></property><property name="userData"><string>auto</string></property></item>
+        <item><property name="text"><string>CPU</string></property><property name="userData"><string>cpu</string></property></item>
+        <item><property name="text"><string>DirectML（Windows）</string></property><property name="userData"><string>dml</string></property></item>
+        <item><property name="text"><string>CUDA</string></property><property name="userData"><string>cuda</string></property></item>
+        <item><property name="text"><string>Core ML（macOS）</string></property><property name="userData"><string>coreml</string></property></item>
+       </widget>
+      </item>
+      <item row="5" column="0">
+       <widget class="QLabel" name="labelBoxExpansionRatio">
+        <property name="text">
+         <string>检测框扩大比例</string>
+        </property>
+       </widget>
+      </item>
+      <item row="5" column="1">
+       <widget class="QDoubleSpinBox" name="doubleSpinBoxBoxExpansionRatio">
+        <property name="toolTip">
+         <string>0.10 表示框的宽度和高度各扩大 10%。</string>
+        </property>
+        <property name="decimals">
+         <number>3</number>
+        </property>
+        <property name="maximum">
+         <double>5.000000000000000</double>
+        </property>
+        <property name="singleStep">
+         <double>0.010000000000000</double>
+        </property>
+        <property name="value">
+         <double>0.100000000000000</double>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="buttonBox">
+     <property name="standardButtons">
+      <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok|QDialogButtonBox::RestoreDefaults</set>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections>
+  <connection>
+   <sender>buttonBox</sender>
+   <signal>accepted()</signal>
+   <receiver>MeteorDetectionOptionsDialog</receiver>
+   <slot>accept()</slot>
+  </connection>
+  <connection>
+   <sender>buttonBox</sender>
+   <signal>rejected()</signal>
+   <receiver>MeteorDetectionOptionsDialog</receiver>
+   <slot>reject()</slot>
+  </connection>
+ </connections>
+</ui>

@@ -1044,6 +1044,46 @@
               </property>
               <layout class="QVBoxLayout" name="verticalLayoutMeteorSelectionImages">
                <item>
+                <layout class="QHBoxLayout" name="horizontalLayoutMeteorDetectionActions">
+                 <item>
+                  <widget class="QPushButton" name="pushButtonMeteorDetectionOptions">
+                   <property name="toolTip">
+                    <string>设置流星自动检测引擎位置和检测参数。</string>
+                   </property>
+                   <property name="text">
+                    <string>选项</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QPushButton" name="pushButtonAutoDetectMeteors">
+                   <property name="enabled">
+                    <bool>false</bool>
+                   </property>
+                   <property name="toolTip">
+                    <string>等待流星检测引擎就绪。</string>
+                   </property>
+                   <property name="text">
+                    <string>自动检测</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QPushButton" name="pushButtonMoveMeteorFiles">
+                   <property name="enabled">
+                    <bool>false</bool>
+                   </property>
+                   <property name="toolTip">
+                    <string>把所有已有流星框选的图片及其同目录关联 JSON 移动到指定文件夹。</string>
+                   </property>
+                   <property name="text">
+                    <string>移动流星文件</string>
+                   </property>
+                  </widget>
+                 </item>
+                </layout>
+               </item>
+               <item>
                 <widget class="QTableWidget" name="tableWidgetMeteorSelectionImages">
                  <property name="minimumSize">
                   <size>
@@ -1104,7 +1144,7 @@
                   <bool>false</bool>
                  </property>
                  <property name="toolTip">
-                  <string>保存所有流星数非零的图片框选到各自同目录的 Meteor JSON 文件。</string>
+                  <string>保存所有当前框选；若已删除某张图片的最后一个框，则删除其同目录 Meteor JSON。</string>
                  </property>
                  <property name="text">
                   <string>保存所有框选</string>

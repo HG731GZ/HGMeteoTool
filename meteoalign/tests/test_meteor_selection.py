@@ -9,8 +9,8 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import QEvent, QPointF, Qt
-from PyQt5.QtGui import QImage, QMouseEvent, QPalette
-from PyQt5.QtWidgets import QApplication, QMainWindow
+from PyQt5.QtGui import QContextMenuEvent, QImage, QMouseEvent, QPalette
+from PyQt5.QtWidgets import QApplication, QMainWindow, QMenu
 
 from meteoalign.application.app_meteor_selection import MeteorSelectionMixin
 from meteoalign.application.meteor_selection_view import MeteorSelectionView
@@ -142,6 +142,41 @@ def test_meteor_selection_view_supports_touchpad_pinch_zoom() -> None:
     view.close()
 
 
+def test_meteor_selection_view_right_click_deletes_only_hit_box(monkeypatch) -> None:
+    """框内右键菜单应只删除命中的单个框，并发出新的内存框选。"""
+
+    app = _application()
+    view = MeteorSelectionView()
+    view.resize(800, 500)
+    image = QImage(200, 100, QImage.Format_RGB32)
+    image.fill(Qt.black)
+    view.set_image(image, 1000, 500)
+    view.set_boxes(
+        [
+            MeteorBox(100, 100, 300, 300),
+            MeteorBox(600, 100, 850, 350),
+        ]
+    )
+    view.show()
+    app.processEvents()
+    view.fit_image()
+    emitted_boxes: list[list[MeteorBox]] = []
+    view.boxesChanged.connect(emitted_boxes.append)
+    monkeypatch.setattr(QMenu, "exec_", lambda menu, _position: menu.actions()[0])
+
+    view_position = view.mapFromScene(QPointF(200, 200))
+    event = QContextMenuEvent(
+        QContextMenuEvent.Mouse,
+        view_position,
+        view.viewport().mapToGlobal(view_position),
+    )
+    view.contextMenuEvent(event)
+
+    assert view.boxes() == [MeteorBox(600, 100, 850, 350)]
+    assert emitted_boxes[-1] == [MeteorBox(600, 100, 850, 350)]
+    view.close()
+
+
 def test_save_all_meteor_boxes_only_writes_images_with_boxes(tmp_path) -> None:
     """批量保存应跳过流星数为零的图像。"""
 
@@ -169,5 +204,41 @@ def test_save_all_meteor_boxes_only_writes_images_with_boxes(tmp_path) -> None:
         QPalette.Active,
         QPalette.Highlight,
     )
+    host.close()
+    app.processEvents()
+
+
+def test_deleted_last_boxes_remain_in_memory_until_save_then_remove_json(tmp_path) -> None:
+    """连续删除多张图的最后一个框时，应等统一保存后才删除各自 JSON。"""
+
+    app = _application()
+    host = _MeteorSelectionHost()
+    first_path = tmp_path / "IMG_0001.TIF"
+    second_path = tmp_path / "IMG_0002.TIF"
+    original_box = [MeteorBox(10, 20, 100, 200)]
+    save_meteor_selection(first_path, 6000, 4000, original_box)
+    save_meteor_selection(second_path, 6000, 4000, original_box)
+    host._meteor_selection_paths = [first_path, second_path]
+    host._meteor_selection_boxes_by_path = {
+        first_path: list(original_box),
+        second_path: list(original_box),
+    }
+
+    host._meteor_selection_current_index = 0
+    host._handle_meteor_boxes_changed([])
+    host._meteor_selection_current_index = 1
+    host._handle_meteor_boxes_changed([])
+
+    assert meteor_json_path(first_path).exists()
+    assert meteor_json_path(second_path).exists()
+    assert host._meteor_selection_dirty_paths == {first_path, second_path}
+    assert host.ui.pushButtonSaveAllMeteorBoxes.isEnabled()
+
+    host.save_all_meteor_boxes()
+
+    assert not meteor_json_path(first_path).exists()
+    assert not meteor_json_path(second_path).exists()
+    assert host._meteor_selection_dirty_paths == set()
+    assert not host.ui.pushButtonSaveAllMeteorBoxes.isEnabled()
     host.close()
     app.processEvents()

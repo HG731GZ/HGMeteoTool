@@ -74,6 +74,14 @@ DEFAULT_PREFERENCE_VALUES: dict[str, object] = {
     "adjacent_landscape_min_inlier_matches": 6,
     "wheel_zoom_enabled": True,
     "touchpad_pinch_zoom_enabled": True,
+    "meteor_detection_engine_path": "",
+    "meteor_detection_model_path": "",
+    "meteor_detection_confidence_threshold": 0.25,
+    "meteor_detection_nms_threshold": 0.45,
+    "meteor_detection_multiscale": 2,
+    "meteor_detection_partition": 2,
+    "meteor_detection_provider": "auto",
+    "meteor_detection_box_expansion_ratio": 0.10,
     "mosaic_texture_scale_percent": 25.0,
     "mosaic_texture_max_long_side_px": 1920,
     "mosaic_grid_precision_default": 24,
@@ -148,6 +156,14 @@ PREFERENCE_COMMENTS: dict[str, str] = {
     "adjacent_landscape_min_inlier_matches": "地景模式计算成功所需的最少 RANSAC 内点匹配数。",
     "wheel_zoom_enabled": "是否启用鼠标滚轮缩放预览视图。",
     "touchpad_pinch_zoom_enabled": "是否启用触控板双指捏合缩放预览视图。",
+    "meteor_detection_engine_path": "MetDet worker 的可执行文件、源码文件或完整 onedir 目录；留空时自动查找。",
+    "meteor_detection_model_path": "流星检测 ONNX 模型路径；留空时使用 worker 自带模型。",
+    "meteor_detection_confidence_threshold": "流星检测置信度阈值，范围为 0 到 1。",
+    "meteor_detection_nms_threshold": "流星检测非极大值抑制阈值，范围为 0 到 1。",
+    "meteor_detection_multiscale": "流星检测的多尺度层数；0 最快，2 对大图召回更好。",
+    "meteor_detection_partition": "流星检测每层横纵方向的分块数，最小为 2。",
+    "meteor_detection_provider": "流星检测推理设备，可选 auto、cpu、dml、cuda 或 coreml。",
+    "meteor_detection_box_expansion_ratio": "自动检测框宽度和高度的额外扩大比例。",
     "mosaic_texture_scale_percent": "自由拼图预览贴图使用原图长边的百分比，数值越大越清晰但越占内存。",
     "mosaic_texture_max_long_side_px": "自由拼图预览贴图长边上限，单位为像素。",
     "mosaic_grid_precision_default": "自由拼图贴图网格默认长边点数，数值越大越精细但越慢。",
@@ -164,6 +180,7 @@ PREFERENCE_SECTION_START_KEYS = {
     "auto_match_default_new_count",
     "adjacent_alignment_max_correspondences",
     "wheel_zoom_enabled",
+    "meteor_detection_engine_path",
     "mosaic_texture_scale_percent",
     LAST_IMPORT_DIRECTORY_KEY,
 }
@@ -272,12 +289,15 @@ def ensure_preference_file(path: str | Path | None = None) -> dict[str, object]:
     values = dict(DEFAULT_PREFERENCE_VALUES)
     if existing is not None:
         values.update(existing)
+    # 该选项已改为固定覆盖，移除旧配置以免继续造成可以切换的误解。
+    values.pop("meteor_detection_overwrite", None)
     if not isinstance(values.get(LAST_IMPORT_DIRECTORY_KEY), str):
         values[LAST_IMPORT_DIRECTORY_KEY] = ""
 
     needs_write = (
         existing is None
         or any(key not in existing for key in DEFAULT_PREFERENCE_VALUES)
+        or "meteor_detection_overwrite" in existing
         or not _preference_has_required_comments(preference_path)
     )
     if existing is not None and not isinstance(existing.get(LAST_IMPORT_DIRECTORY_KEY), str):

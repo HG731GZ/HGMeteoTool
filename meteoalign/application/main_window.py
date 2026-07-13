@@ -501,6 +501,8 @@ class MainWindow(
 
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         ViewControlsMixin.closeEvent(self, event)
+        if event.isAccepted():
+            self._shutdown_meteor_detection_worker()
 
     def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         ViewControlsMixin.resizeEvent(self, event)

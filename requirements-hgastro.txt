@@ -12,6 +12,10 @@ pillow==12.3.0
 tifffile==2025.5.10
 tifftools==1.7.0
 imagecodecs==2025.3.30
+rawpy==0.27.0
+dacite==1.9.2
+onnxruntime==1.23.2; platform_system != "Windows"
+onnxruntime-directml>=1.20; platform_system == "Windows"
 sep==1.4.1
 gwcs==0.24.0
 asdf==5.3.1
