@@ -13,6 +13,7 @@ from meteoalign.mosaic.render_coordinator import MosaicRenderCoordinator
 from meteoalign.mosaic.render_types import MosaicRenderRequest
 from meteoalign.mosaic.state import MosaicSourceState
 from meteoalign.mosaic_model_io import MosaicCoverageCache, MosaicSourceTextureCache
+from meteoalign.meteor_selection import MeteorBox
 from meteoalign.simulator import CameraSettings, ObserverSettings, RECTILINEAR_LENS_MODEL, ViewSettings
 from meteoalign.sky_scene_service import SkyPreviewStyle
 
@@ -33,7 +34,11 @@ class _SkyRenderer:
 class _TextureRenderer:
     """按源图首像素返回不透明单色覆盖层。"""
 
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
     def render_rgba(self, **kwargs) -> np.ndarray:  # type: ignore[no-untyped-def]
+        self.calls.append(kwargs)
         source_rgb = np.asarray(kwargs["source_rgb"], dtype=np.uint8)
         height = int(kwargs["height"])
         width = int(kwargs["width"])
@@ -84,6 +89,8 @@ def _source(name: str, color: tuple[int, int, int]) -> MosaicSourceState:
     model = SimpleNamespace(
         json_path=Path(name),
         source_image_path=image_path,
+        image_width_px=100,
+        image_height_px=80,
     )
     source = MosaicSourceState(source_model=model, coverage_cache=_coverage_cache())  # type: ignore[arg-type]
     source.source_texture_cache = MosaicSourceTextureCache(
@@ -148,3 +155,31 @@ def test_coordinator_composites_source_layers_in_request_order() -> None:
     assert len(result.cache_keys) == 2
     assert result.image.pixelColor(0, 0).green() == 255
     assert result.image.pixelColor(1, 0).red() == 255
+
+
+def test_coordinator_passes_meteor_regions_only_for_sources_with_selection() -> None:
+    """勾选流星区域后，有 JSON 的源图传矩形，无 JSON 的源图继续传整图。"""
+
+    texture_renderer = _TextureRenderer()
+    coordinator = MosaicRenderCoordinator(_SkyRenderer(), texture_renderer)  # type: ignore[arg-type]
+    selected = _source("selected.json", (255, 0, 0))
+    selected.meteor_boxes = (MeteorBox(10.0, 20.0, 30.0, 40.0),)
+    unselected = _source("unselected.json", (0, 255, 0))
+    request = MosaicRenderRequest(
+        camera=_camera(),
+        view=ViewSettings(center_az_deg=180.0, center_alt_deg=45.0, roll_deg=0.0),
+        observer=_observer(),
+        scene=object(),  # type: ignore[arg-type]
+        visible_mag_limit=6.5,
+        sky_style=SkyPreviewStyle(),
+        sources=(selected, unselected),
+        overlay_enabled=True,
+        overlay_mode="source_image",
+        source_texture_long_sides_px=(1, 1),
+        meteor_only=True,
+    )
+
+    coordinator.render(request)
+
+    assert texture_renderer.calls[0]["source_pixel_regions"] == ((10, 20, 30, 40),)
+    assert texture_renderer.calls[1]["source_pixel_regions"] is None

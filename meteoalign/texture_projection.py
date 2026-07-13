@@ -66,6 +66,7 @@ def warp_grid_texture_to_rgba(
     screen_longitudes_rad: np.ndarray | None = None,
     seam_padding_px: float = 0.75,
     max_cell_bbox_area_fraction: float = 0.45,
+    source_pixel_regions: tuple[tuple[int, int, int, int], ...] | None = None,
 ) -> bool:
     """把源图网格纹理逐单元透视贴到目标 RGBA 缓冲区。
 
@@ -82,6 +83,26 @@ def warp_grid_texture_to_rgba(
     opacity_alpha = int(round(255.0 * max(0.0, min(1.0, float(opacity)))))
     if opacity_alpha <= 0:
         return True
+
+    normalized_regions: tuple[tuple[float, float, float, float], ...] | None = None
+    source_region_mask: np.ndarray | None = None
+    if source_pixel_regions is not None:
+        regions: list[tuple[float, float, float, float]] = []
+        source_region_mask = np.zeros((source_height, source_width), dtype=np.uint8)
+        for left, top, right, bottom in source_pixel_regions:
+            left_px, right_px = sorted((float(left), float(right)))
+            top_px, bottom_px = sorted((float(top), float(bottom)))
+            if right_px <= left_px or bottom_px <= top_px:
+                continue
+            regions.append((left_px, top_px, right_px, bottom_px))
+            texture_left = max(0, min(source_width, int(np.floor(left_px * source_scale_x))))
+            texture_right = max(0, min(source_width, int(np.ceil(right_px * source_scale_x))))
+            texture_top = max(0, min(source_height, int(np.floor(top_px * source_scale_y))))
+            texture_bottom = max(0, min(source_height, int(np.ceil(bottom_px * source_scale_y))))
+            source_region_mask[texture_top:texture_bottom, texture_left:texture_right] = 255
+        normalized_regions = tuple(regions)
+        if not normalized_regions:
+            return True
 
     rows, columns = valid_points.shape
     projection_valid = (
@@ -104,6 +125,16 @@ def warp_grid_texture_to_rgba(
             )
             if not source_cell_valid:
                 continue
+            if normalized_regions is not None:
+                cell_left = float(np.min(source_grid_x_px[row : row + 2, column : column + 2]))
+                cell_right = float(np.max(source_grid_x_px[row : row + 2, column : column + 2]))
+                cell_top = float(np.min(source_grid_y_px[row : row + 2, column : column + 2]))
+                cell_bottom = float(np.max(source_grid_y_px[row : row + 2, column : column + 2]))
+                if not any(
+                    cell_right >= left and cell_left <= right and cell_bottom >= top and cell_top <= bottom
+                    for left, top, right, bottom in normalized_regions
+                ):
+                    continue
             projection_cell_valid = np.asarray(
                 [
                     projection_valid[row, column],
@@ -192,6 +223,17 @@ def warp_grid_texture_to_rgba(
             cv2.fillConvexPoly(mask, np.rint(dst_relative).astype(np.int32), 255, lineType=cv2.LINE_8)
             target = rgba[bbox_top : bbox_bottom + 1, bbox_left : bbox_right + 1]
             visible = mask > 0
+            if source_region_mask is not None:
+                source_mask_crop = source_region_mask[src_top : src_bottom + 1, src_left : src_right + 1]
+                warped_source_mask = cv2.warpPerspective(
+                    source_mask_crop,
+                    matrix,
+                    (bbox_width, bbox_height),
+                    flags=cv2.INTER_NEAREST,
+                    borderMode=cv2.BORDER_CONSTANT,
+                    borderValue=0,
+                )
+                visible &= warped_source_mask > 0
             if target_mask is not None:
                 visible &= target_mask[bbox_top : bbox_bottom + 1, bbox_left : bbox_right + 1]
             if not np.any(visible):

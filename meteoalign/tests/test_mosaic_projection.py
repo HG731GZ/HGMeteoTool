@@ -367,8 +367,81 @@ def test_mosaic_single_and_multi_modes_replace_each_other_without_merging() -> N
     assert MosaicProjectionMixin._mosaic_current_source_items(window) == [first, second]
 
 
+def test_mosaic_source_row_removal_preserves_remaining_order() -> None:
+    """右键移除所调用的行删除逻辑应保留其他文件并重新交给统一状态更新。"""
+
+    first = _mosaic_source_item("first_model.json")
+    second = _mosaic_source_item("second_model.json")
+    third = _mosaic_source_item("third_model.json")
+    window = MosaicProjectionMixin.__new__(MosaicProjectionMixin)
+    window.ui = SimpleNamespace(statusbar=SimpleNamespace(showMessage=lambda _message: None))
+    MosaicProjectionMixin._activate_multi_mosaic_source_items(window, [first, second, third])
+    applied: list[list[MosaicSourceItem]] = []
+    window._apply_mosaic_source_items_after_removal = lambda items: applied.append(list(items))  # type: ignore[method-assign]
+
+    MosaicProjectionMixin._remove_mosaic_source_row(window, 1)
+
+    assert applied == [[first, third]]
+
+
+def test_mosaic_source_removal_keeps_imported_framing_observer_controls() -> None:
+    """已有取景时删除模型不得重写或禁用拍摄信息控件。"""
+
+    first = _mosaic_source_item("first_model.json")
+    second = _mosaic_source_item("second_model.json")
+    window = MosaicProjectionMixin.__new__(MosaicProjectionMixin)
+    window.ui = SimpleNamespace(comboBoxMosaicDisplayModel=_ComboBox(0))
+    MosaicProjectionMixin._activate_multi_mosaic_source_items(window, [first, second])
+    window._mosaic_imported_framing_ready = lambda *args: True  # type: ignore[method-assign]
+    observer_updates: list[object] = []
+    window._set_mosaic_observer_controls_from_source_model = observer_updates.append  # type: ignore[method-assign]
+    window._set_mosaic_observer_controls_enabled = observer_updates.append  # type: ignore[method-assign]
+    for method_name in (
+        "_set_mosaic_grid_controls_enabled",
+        "_update_mosaic_grid_precision_tooltip",
+        "_update_mosaic_display_model_combo",
+        "_update_mosaic_model_labels",
+        "_update_mosaic_export_button_state",
+        "schedule_mosaic_render",
+    ):
+        setattr(window, method_name, lambda *args, **kwargs: None)
+
+    MosaicProjectionMixin._apply_mosaic_source_items_after_removal(window, [first])
+
+    assert MosaicProjectionMixin._mosaic_current_source_items(window) == [first]
+    assert not observer_updates
+
+
+def test_clear_all_mosaic_models_requires_confirmation(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """清除全部导入必须在用户确认后才提交空列表。"""
+
+    first = _mosaic_source_item("first_model.json")
+    second = _mosaic_source_item("second_model.json")
+    window = MosaicProjectionMixin.__new__(MosaicProjectionMixin)
+    messages: list[str] = []
+    window.ui = SimpleNamespace(statusbar=SimpleNamespace(showMessage=messages.append))
+    MosaicProjectionMixin._activate_multi_mosaic_source_items(window, [first, second])
+    applied: list[list[MosaicSourceItem]] = []
+    window._apply_mosaic_source_items_after_removal = lambda items: applied.append(list(items))  # type: ignore[method-assign]
+
+    monkeypatch.setattr(
+        "meteoalign.application.app_mosaic.QMessageBox.question",
+        lambda *args, **kwargs: 65536,
+    )
+    MosaicProjectionMixin.clear_all_mosaic_models(window)
+    assert not applied
+    assert messages[-1] == "已取消清除所有源图模型。"
+
+    monkeypatch.setattr(
+        "meteoalign.application.app_mosaic.QMessageBox.question",
+        lambda *args, **kwargs: 16384,
+    )
+    MosaicProjectionMixin.clear_all_mosaic_models(window)
+    assert applied == [[]]
+
+
 def test_mosaic_multi_import_with_one_file_uses_single_model_loader() -> None:
-    """多模型按钮只选中一个文件时，应退化为单模型导入。"""
+    """兼容调用只传一个文件时，应退化为单模型导入。"""
 
     window = MosaicProjectionMixin.__new__(MosaicProjectionMixin)
     loaded_paths: list[Path] = []
@@ -381,6 +454,108 @@ def test_mosaic_multi_import_with_one_file_uses_single_model_loader() -> None:
 
     assert MosaicProjectionMixin.load_mosaic_models_json(window, ["single_model.json"])
     assert loaded_paths == [Path("single_model.json")]
+
+
+def test_quiet_mosaic_model_load_replaces_all_existing_models(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """星点匹配导出后的静默加载必须清空旧列表，只保留新模型。"""
+
+    first = _mosaic_source_item("first_model.json")
+    second = _mosaic_source_item("second_model.json")
+    exported = _mosaic_source_item("exported_model.json")
+    window = MosaicProjectionMixin.__new__(MosaicProjectionMixin)
+    window.ui = SimpleNamespace(statusbar=SimpleNamespace(showMessage=lambda _message: None))
+    MosaicProjectionMixin._activate_multi_mosaic_source_items(window, [first, second])
+    window._build_mosaic_source_item = lambda _path: exported  # type: ignore[method-assign]
+    window._mosaic_imported_framing_ready = lambda *args: True  # type: ignore[method-assign]
+    observer_updates: list[object] = []
+    window._set_mosaic_observer_controls_from_source_model = observer_updates.append  # type: ignore[method-assign]
+    window._set_mosaic_observer_controls_enabled = observer_updates.append  # type: ignore[method-assign]
+    for method_name in (
+        "_set_mosaic_projection_from_source_model",
+        "_set_mosaic_overlay_defaults_for_model",
+        "_set_mosaic_grid_controls_enabled",
+        "_update_mosaic_grid_precision_tooltip",
+        "_reset_mosaic_center_from_model",
+        "_update_mosaic_view_label",
+        "_update_mosaic_display_model_combo",
+        "_update_mosaic_model_labels",
+        "_update_mosaic_export_button_state",
+        "schedule_mosaic_render",
+    ):
+        setattr(window, method_name, lambda *args, **kwargs: None)
+    monkeypatch.setattr("meteoalign.application.app_mosaic.QApplication.setOverrideCursor", lambda *_args: None)
+    monkeypatch.setattr("meteoalign.application.app_mosaic.QApplication.restoreOverrideCursor", lambda: None)
+
+    assert MosaicProjectionMixin.load_mosaic_model_json(window, "exported_model.json", quiet=True)
+    assert MosaicProjectionMixin._mosaic_current_source_items(window) == [exported]
+    assert not window._mosaic_multi_model_mode
+    assert not observer_updates
+
+
+def test_multi_model_import_filters_invalid_json_and_keeps_valid_items(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """批量选择混合 JSON 时只加入有效模型，全部无效时保留原列表。"""
+
+    class _Progress:
+        def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+            pass
+
+        def __getattr__(self, _name: str):  # type: ignore[no-untyped-def]
+            return lambda *args, **kwargs: None
+
+        def wasCanceled(self) -> bool:  # noqa: N802 - Qt 接口命名
+            return False
+
+    first = _mosaic_source_item("first_model.json")
+    valid = _mosaic_source_item("valid_model.json")
+    window = MosaicProjectionMixin.__new__(MosaicProjectionMixin)
+    messages: list[str] = []
+    warnings: list[tuple[object, ...]] = []
+    window.ui = SimpleNamespace(statusbar=SimpleNamespace(showMessage=messages.append))
+    MosaicProjectionMixin._activate_single_mosaic_source_item(window, first)
+
+    def build_item(path: Path) -> MosaicSourceItem:
+        if path.name == "valid_model.json":
+            return valid
+        raise ValueError("不是源图模型 JSON")
+
+    window._build_mosaic_source_item = build_item  # type: ignore[method-assign]
+    window._mosaic_imported_framing_ready = lambda *args: True  # type: ignore[method-assign]
+    for method_name in (
+        "_update_mosaic_view_label",
+        "_set_mosaic_overlay_defaults_for_source_items",
+        "_set_mosaic_grid_controls_enabled",
+        "_update_mosaic_grid_precision_tooltip",
+        "_update_mosaic_display_model_combo",
+        "_update_mosaic_model_labels",
+        "_update_mosaic_export_button_state",
+        "schedule_mosaic_render",
+    ):
+        setattr(window, method_name, lambda *args, **kwargs: None)
+    monkeypatch.setattr("meteoalign.application.app_mosaic.QProgressDialog", _Progress)
+    monkeypatch.setattr("meteoalign.application.app_mosaic.QApplication.setOverrideCursor", lambda *_args: None)
+    monkeypatch.setattr("meteoalign.application.app_mosaic.QApplication.restoreOverrideCursor", lambda: None)
+    monkeypatch.setattr("meteoalign.application.app_mosaic.QApplication.processEvents", lambda: None)
+    monkeypatch.setattr(
+        "meteoalign.application.app_mosaic.QMessageBox.warning",
+        lambda *args: warnings.append(args),
+    )
+
+    assert MosaicProjectionMixin.load_mosaic_models_json(
+        window,
+        ["valid_model.json", "reference.json"],
+        append=True,
+    )
+    assert MosaicProjectionMixin._mosaic_current_source_items(window) == [first, valid]
+    assert warnings and "reference.json" in str(warnings[-1])
+    assert "跳过 1 个非模型 JSON" in messages[-1]
+
+    assert not MosaicProjectionMixin.load_mosaic_models_json(
+        window,
+        ["unrelated.json"],
+        append=True,
+    )
+    assert MosaicProjectionMixin._mosaic_current_source_items(window) == [first, valid]
+    assert "未导入模型" in messages[-1]
 
 
 def test_mosaic_mixin_stores_business_state_in_session_state() -> None:
@@ -582,3 +757,55 @@ def test_mosaic_export_button_requires_source_model_and_imported_framing() -> No
     MosaicProjectionMixin._update_mosaic_export_button_state(window)
 
     assert window.ui.pushButtonExportMosaicProjectedImage.isEnabled()
+
+
+def test_imported_framing_disables_reset_and_clear_preserves_parameters() -> None:
+    """清除取景只解除锁定，不得还原或重算当前参数。"""
+
+    status_messages: list[str] = []
+    window = MosaicProjectionMixin.__new__(MosaicProjectionMixin)
+    window.ui = SimpleNamespace(
+        pushButtonResetMosaicView=_Button(),
+        pushButtonCalculateMosaicResolution=_Button(),
+        pushButtonExportMosaicProjectedImage=_Button(),
+        pushButtonClearMosaicFraming=_Button(),
+        statusbar=SimpleNamespace(showMessage=status_messages.append),
+    )
+    window._mosaic_source_model = SimpleNamespace()
+    window._mosaic_center_az_deg = 123.0
+    window._mosaic_center_alt_deg = 45.0
+    window._mosaic_roll_deg = -7.0
+    window._mosaic_output_boundary_width_px = 6000
+    window._mosaic_output_boundary_height_px = 4000
+    observer = object()
+    window._mosaic_framing_observer = observer  # type: ignore[assignment]
+    target_transform_payload = {
+        "type": "icrs_to_cropped_output_pixel",
+        "boundary_width_px": 6000,
+        "boundary_height_px": 4000,
+    }
+
+    MosaicProjectionMixin._set_mosaic_imported_framing(
+        window,
+        Path("target_framing.json"),
+        target_transform_payload,
+    )
+
+    assert not window.ui.pushButtonResetMosaicView.isEnabled()
+    assert window.ui.pushButtonCalculateMosaicResolution.isEnabled()
+    assert window.ui.pushButtonClearMosaicFraming.isEnabled()
+    assert window.ui.pushButtonExportMosaicProjectedImage.isEnabled()
+
+    MosaicProjectionMixin.clear_mosaic_framing(window)
+
+    assert not MosaicProjectionMixin._mosaic_imported_framing_ready(window)
+    assert window.ui.pushButtonResetMosaicView.isEnabled()
+    assert window.ui.pushButtonCalculateMosaicResolution.isEnabled()
+    assert not window.ui.pushButtonClearMosaicFraming.isEnabled()
+    assert not window.ui.pushButtonExportMosaicProjectedImage.isEnabled()
+    assert window._mosaic_center_az_deg == 123.0
+    assert window._mosaic_center_alt_deg == 45.0
+    assert window._mosaic_roll_deg == -7.0
+    assert window._mosaic_output_size() == (6000, 4000)
+    assert window._mosaic_framing_observer is observer
+    assert "均已保留" in status_messages[-1]

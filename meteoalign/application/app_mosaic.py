@@ -8,9 +8,20 @@ from pathlib import Path
 import numpy as np
 from PyQt5.QtCore import QDateTime, QElapsedTimer, QEvent, QRectF, QTimer, Qt
 from PyQt5.QtGui import QColor, QImage, QPainter, QPen
-from PyQt5.QtWidgets import QApplication, QFileDialog, QGraphicsScene, QMessageBox, QProgressDialog
+from PyQt5.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
+    QFileDialog,
+    QGraphicsScene,
+    QHeaderView,
+    QMenu,
+    QMessageBox,
+    QProgressDialog,
+    QTableWidgetItem,
+)
 
 from ..alignment.constants import (
+    SKY_KNOWN_PROJECTION_CODES,
     SKY_KNOWN_PROJECTION_DISPLAY_NAMES,
     SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT,
     SKY_MATCHING_MODEL_FISHEYE_EQUISOLID,
@@ -64,6 +75,7 @@ from ..mosaic.overlay_renderer import load_source_texture
 from ..mosaic.state import MosaicSessionState, MosaicSourceState
 from ..mosaic.render_coordinator import MosaicRenderCoordinator
 from ..mosaic.render_types import MosaicRenderRequest
+from ..meteor_selection import load_meteor_selection, meteor_json_path
 from ..projection.grid import grid_shape_for_long_side
 from ..projection_interaction_controller import ProjectionInteractionController
 from ..projection.view_state import ProjectionViewState
@@ -85,6 +97,10 @@ from ..view_gestures import (
 
 
 MOSAIC_FRAMING_JSON_FILTER = "自由投影取景 JSON (*.json);;JSON 文件 (*.json);;所有文件 (*)"
+MOSAIC_SOURCE_INDEX_COLUMN = 0
+MOSAIC_SOURCE_FILE_COLUMN = 1
+MOSAIC_SOURCE_PROJECTION_COLUMN = 2
+MOSAIC_SOURCE_METEOR_COLUMN = 3
 
 
 # 保留旧名称，方便现有调用方和插件在状态迁移期间继续使用。
@@ -313,6 +329,8 @@ class MosaicProjectionMixin:
             self.ui.comboBoxMosaicOverlayMode.setCurrentIndex(0)
         if hasattr(self.ui, "checkBoxMosaicSkyOnly"):
             self.ui.checkBoxMosaicSkyOnly.setChecked(False)
+        if hasattr(self.ui, "checkBoxMosaicMeteorOnly"):
+            self.ui.checkBoxMosaicMeteorOnly.setChecked(False)
         if hasattr(self.ui, "doubleSpinBoxMosaicOverlayOpacity"):
             self.ui.doubleSpinBoxMosaicOverlayOpacity.setValue(100.0)
         elif hasattr(self.ui, "doubleSpinBoxMosaicCoverageOpacity"):
@@ -321,6 +339,7 @@ class MosaicProjectionMixin:
             self.ui.spinBoxMosaicGridPrecision.setValue(self._mosaic_default_grid_precision())
         if hasattr(self.ui, "doubleSpinBoxMosaicMapTileSize"):
             self.ui.doubleSpinBoxMosaicMapTileSize.setValue(float(self._mosaic_config_map_tile_size_px()))
+        self._configure_mosaic_source_table()
         self._init_mosaic_observer_controls()
         self._update_mosaic_projection_controls()
         self._update_mosaic_grid_precision_tooltip()
@@ -332,6 +351,25 @@ class MosaicProjectionMixin:
         self._update_mosaic_view_label()
         self._update_mosaic_framing_label()
         self._update_mosaic_export_button_state()
+
+    def _configure_mosaic_source_table(self) -> None:
+        """配置源模型文件表格，列宽保留为用户可拖动。"""
+
+        if not hasattr(self.ui, "tableWidgetMosaicSourceFiles"):
+            return
+        table = self.ui.tableWidgetMosaicSourceFiles
+        table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SingleSelection)
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        table.setContextMenuPolicy(Qt.CustomContextMenu)
+        header = table.horizontalHeader()
+        header.setStretchLastSection(False)
+        for column in range(table.columnCount()):
+            header.setSectionResizeMode(column, QHeaderView.Interactive)
+        table.setColumnWidth(MOSAIC_SOURCE_INDEX_COLUMN, 46)
+        table.setColumnWidth(MOSAIC_SOURCE_FILE_COLUMN, 140)
+        table.setColumnWidth(MOSAIC_SOURCE_PROJECTION_COLUMN, 66)
+        table.setColumnWidth(MOSAIC_SOURCE_METEOR_COLUMN, 58)
 
     def _init_mosaic_observer_controls(self) -> None:
         if not hasattr(self.ui, "dateTimeEditMosaicObservation"):
@@ -350,8 +388,18 @@ class MosaicProjectionMixin:
         if not hasattr(self.ui, "pushButtonImportMosaicModel"):
             return
         self.ui.pushButtonImportMosaicModel.clicked.connect(self.import_mosaic_model_json)
-        if hasattr(self.ui, "pushButtonImportMosaicModels"):
-            self.ui.pushButtonImportMosaicModels.clicked.connect(self.import_mosaic_models_json)
+        if hasattr(self.ui, "pushButtonClearMosaicModels"):
+            self.ui.pushButtonClearMosaicModels.clicked.connect(self.clear_all_mosaic_models)
+        if hasattr(self.ui, "tableWidgetMosaicSourceFiles"):
+            source_table = self.ui.tableWidgetMosaicSourceFiles
+            source_table.customContextMenuRequested.connect(
+                self._show_mosaic_source_table_context_menu
+            )
+            source_table.cellDoubleClicked.connect(
+                self._handle_mosaic_source_table_double_clicked
+            )
+            source_table.installEventFilter(self)
+            source_table.viewport().installEventFilter(self)
         self.ui.comboBoxMosaicProjection.currentIndexChanged.connect(self._handle_mosaic_projection_changed)
         self.ui.doubleSpinBoxMosaicFov.valueChanged.connect(self._handle_mosaic_fov_changed)
         if hasattr(self.ui, "doubleSpinBoxMosaicAz"):
@@ -368,12 +416,16 @@ class MosaicProjectionMixin:
             self.ui.comboBoxMosaicOverlayMode.currentIndexChanged.connect(self.schedule_mosaic_render)
         if hasattr(self.ui, "checkBoxMosaicSkyOnly"):
             self.ui.checkBoxMosaicSkyOnly.toggled.connect(self.schedule_mosaic_render)
+        if hasattr(self.ui, "checkBoxMosaicMeteorOnly"):
+            self.ui.checkBoxMosaicMeteorOnly.toggled.connect(self._handle_mosaic_meteor_only_toggled)
         if hasattr(self.ui, "doubleSpinBoxMosaicOverlayOpacity"):
             self.ui.doubleSpinBoxMosaicOverlayOpacity.valueChanged.connect(self.schedule_mosaic_render)
         elif hasattr(self.ui, "doubleSpinBoxMosaicCoverageOpacity"):
             self.ui.doubleSpinBoxMosaicCoverageOpacity.valueChanged.connect(self.schedule_mosaic_render)
         if hasattr(self.ui, "comboBoxMosaicDisplayModel"):
-            self.ui.comboBoxMosaicDisplayModel.currentIndexChanged.connect(self.schedule_mosaic_render)
+            self.ui.comboBoxMosaicDisplayModel.currentIndexChanged.connect(
+                self._handle_mosaic_display_model_changed
+            )
         if hasattr(self.ui, "spinBoxMosaicGridPrecision"):
             self.ui.spinBoxMosaicGridPrecision.valueChanged.connect(self._update_mosaic_grid_precision_tooltip)
         if hasattr(self.ui, "pushButtonResolveMosaicGrid"):
@@ -385,13 +437,14 @@ class MosaicProjectionMixin:
             self.ui.doubleSpinBoxMosaicLatitude.valueChanged.connect(self._handle_mosaic_observer_changed)
             self.ui.doubleSpinBoxMosaicLongitude.valueChanged.connect(self._handle_mosaic_observer_changed)
             self.ui.doubleSpinBoxMosaicElevation.valueChanged.connect(self._handle_mosaic_observer_changed)
-            self.ui.pushButtonResetMosaicObserver.clicked.connect(self.reset_mosaic_observer_from_json)
         if hasattr(self.ui, "pushButtonCalculateMosaicResolution"):
             self.ui.pushButtonCalculateMosaicResolution.clicked.connect(self.calculate_mosaic_optimal_resolution)
         if hasattr(self.ui, "pushButtonExportMosaicFraming"):
             self.ui.pushButtonExportMosaicFraming.clicked.connect(self.export_mosaic_framing_json)
         if hasattr(self.ui, "pushButtonImportMosaicFraming"):
             self.ui.pushButtonImportMosaicFraming.clicked.connect(self.import_mosaic_framing_json)
+        if hasattr(self.ui, "pushButtonClearMosaicFraming"):
+            self.ui.pushButtonClearMosaicFraming.clicked.connect(self.clear_mosaic_framing)
         if hasattr(self.ui, "pushButtonExportMosaicProjectedImage"):
             self.ui.pushButtonExportMosaicProjectedImage.clicked.connect(self.export_mosaic_projected_image)
         for control_name in (
@@ -417,6 +470,12 @@ class MosaicProjectionMixin:
     def _handle_mosaic_fov_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
         self._clear_mosaic_imported_framing()
         self.schedule_mosaic_render()
+
+    def _handle_mosaic_meteor_only_toggled(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        """切换流星区域模式后清除叠加缓存并立即重绘。"""
+
+        self._mosaic_session_state().clear_render_caches()
+        self.schedule_mosaic_render(delay_ms=0)
 
     def _handle_mosaic_view_controls_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
         self._clear_mosaic_imported_framing()
@@ -508,6 +567,162 @@ class MosaicProjectionMixin:
             return [items[item_index]]
         return items
 
+    def _handle_mosaic_display_model_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        """右侧切换单张预览时，让文件表格定位到相同行。"""
+
+        self._sync_mosaic_source_table_selection()
+        self.schedule_mosaic_render()
+
+    def _sync_mosaic_source_table_selection(self) -> None:
+        if not hasattr(self.ui, "tableWidgetMosaicSourceFiles"):
+            return
+        table = self.ui.tableWidgetMosaicSourceFiles
+        display_index = self._mosaic_display_model_index()
+        if display_index <= 0 or display_index > table.rowCount():
+            table.clearSelection()
+            return
+        row = display_index - 1
+        table.selectRow(row)
+        item = table.item(row, MOSAIC_SOURCE_FILE_COLUMN)
+        if item is not None:
+            table.scrollToItem(item, QAbstractItemView.PositionAtCenter)
+
+    @staticmethod
+    def _read_only_mosaic_source_table_item(text: str) -> QTableWidgetItem:
+        item = QTableWidgetItem(str(text))
+        item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+        return item
+
+    @staticmethod
+    def _mosaic_source_projection_code(item: MosaicSourceItem) -> str:
+        profile = item.source_model.model.camera_calibration_profile
+        projection_type = str(profile.base_projection_type)
+        return SKY_KNOWN_PROJECTION_CODES.get(projection_type, "插值")
+
+    def _mosaic_source_file_name(self, item: MosaicSourceItem) -> str:
+        source_model = item.source_model
+        if source_model.source_image_path is not None:
+            return source_model.source_image_path.name
+        image_text = str(source_model.source_image_text or "").strip()
+        return image_text if image_text and image_text != "未记录源图路径" else source_model.json_path.name
+
+    def _refresh_mosaic_source_table(self) -> None:
+        if not hasattr(self.ui, "tableWidgetMosaicSourceFiles"):
+            return
+        table = self.ui.tableWidgetMosaicSourceFiles
+        items = self._mosaic_current_source_items()
+        table.setRowCount(len(items))
+        for row, item in enumerate(items):
+            index_item = self._read_only_mosaic_source_table_item(str(row + 1))
+            file_item = self._read_only_mosaic_source_table_item(self._mosaic_source_file_name(item))
+            file_item.setToolTip(str(item.source_model.json_path))
+            projection_item = self._read_only_mosaic_source_table_item(self._mosaic_source_projection_code(item))
+            meteor_item = self._read_only_mosaic_source_table_item(str(len(item.meteor_boxes)))
+            if item.meteor_selection_error:
+                meteor_item.setToolTip(item.meteor_selection_error)
+            elif item.meteor_selection_path is not None:
+                meteor_item.setToolTip(str(item.meteor_selection_path))
+            else:
+                meteor_item.setToolTip("未找到同名流星框选 JSON。")
+            table.setItem(row, MOSAIC_SOURCE_INDEX_COLUMN, index_item)
+            table.setItem(row, MOSAIC_SOURCE_FILE_COLUMN, file_item)
+            table.setItem(row, MOSAIC_SOURCE_PROJECTION_COLUMN, projection_item)
+            table.setItem(row, MOSAIC_SOURCE_METEOR_COLUMN, meteor_item)
+        self._sync_mosaic_source_table_selection()
+        if hasattr(self.ui, "pushButtonClearMosaicModels"):
+            self.ui.pushButtonClearMosaicModels.setEnabled(bool(items))
+
+    def _show_mosaic_source_table_context_menu(self, point) -> None:  # type: ignore[no-untyped-def]
+        """在文件行上提供移除当前模型的右键菜单。"""
+
+        table = self.ui.tableWidgetMosaicSourceFiles
+        row = table.rowAt(point.y())
+        if row < 0 or row >= len(self._mosaic_current_source_items()):
+            return
+        table.selectRow(row)
+        menu = QMenu(table)
+        remove_action = menu.addAction("移除该文件")
+        selected_action = menu.exec_(table.viewport().mapToGlobal(point))
+        if selected_action is remove_action:
+            self._remove_mosaic_source_row(row)
+
+    def _handle_mosaic_source_table_double_clicked(self, row: int, _column: int) -> None:
+        """双击文件行时切换右侧下拉框，只预览该行对应的图像。"""
+
+        items = self._mosaic_current_source_items()
+        if row < 0 or row >= len(items) or not hasattr(self.ui, "comboBoxMosaicDisplayModel"):
+            return
+        self.ui.comboBoxMosaicDisplayModel.setCurrentIndex(row + 1)
+
+    def _apply_mosaic_source_items_after_removal(self, items: list[MosaicSourceItem]) -> None:
+        """移除或清空后统一修正模式、控件和预览状态。"""
+
+        keep_imported_framing = self._mosaic_imported_framing_ready()
+        if not items:
+            self._mosaic_session_state().set_sources([], multi_model_mode=False)
+            self._set_mosaic_model_observer_from_item(None)
+            if not keep_imported_framing:
+                self._set_mosaic_observer_controls_enabled(False)
+            self._set_mosaic_grid_controls_enabled(False)
+        elif len(items) == 1:
+            self._activate_single_mosaic_source_item(items[0])
+            if not keep_imported_framing:
+                self._set_mosaic_observer_controls_from_source_model(items[0].source_model)
+                self._set_mosaic_observer_controls_enabled(True)
+            self._set_mosaic_grid_controls_enabled(True)
+        else:
+            self._activate_multi_mosaic_source_items(items)
+            if not keep_imported_framing:
+                earliest = self._earliest_mosaic_source_item(items)
+                if earliest is not None:
+                    self._set_mosaic_observer_controls_from_source_model(earliest.source_model)
+                self._set_mosaic_observer_controls_enabled(True)
+            self._set_mosaic_grid_controls_enabled(False)
+        if hasattr(self.ui, "comboBoxMosaicDisplayModel"):
+            was_blocked = self.ui.comboBoxMosaicDisplayModel.blockSignals(True)
+            self.ui.comboBoxMosaicDisplayModel.setCurrentIndex(0)
+            self.ui.comboBoxMosaicDisplayModel.blockSignals(was_blocked)
+        self._update_mosaic_grid_precision_tooltip()
+        self._update_mosaic_display_model_combo()
+        self._update_mosaic_model_labels()
+        self._update_mosaic_export_button_state()
+        self.schedule_mosaic_render(delay_ms=0)
+
+    def _remove_mosaic_source_row(self, row: int) -> None:
+        items = self._mosaic_current_source_items()
+        if row < 0 or row >= len(items):
+            return
+        removed = items.pop(row)
+        self._apply_mosaic_source_items_after_removal(items)
+        self.ui.statusbar.showMessage(f"已移除源图模型：{removed.source_model.json_path.name}")
+
+    def _handle_mosaic_source_table_delete_key(self) -> bool:
+        """删除文件表当前激活行，并阻止按键继续传到外层界面。"""
+
+        table = self.ui.tableWidgetMosaicSourceFiles
+        row = int(table.currentRow())
+        if 0 <= row < len(self._mosaic_current_source_items()):
+            self._remove_mosaic_source_row(row)
+        return True
+
+    def clear_all_mosaic_models(self) -> None:
+        items = self._mosaic_current_source_items()
+        if not items:
+            self.ui.statusbar.showMessage("当前没有已导入的源图模型。")
+            return
+        reply = QMessageBox.question(
+            self,
+            "确认清除所有导入",
+            f"确定要清除当前全部 {len(items)} 个源图模型吗？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            self.ui.statusbar.showMessage("已取消清除所有源图模型。")
+            return
+        self._apply_mosaic_source_items_after_removal([])
+        self.ui.statusbar.showMessage(f"已清除 {len(items)} 个源图模型。")
+
     def _mosaic_source_item_display_name(self, index: int, item: MosaicSourceItem) -> str:
         source_model = item.source_model
         image_text = str(source_model.source_image_text or "").strip()
@@ -536,15 +751,16 @@ class MosaicProjectionMixin:
             combo.setEnabled(len(items) > 1)
         finally:
             combo.blockSignals(was_blocked)
+        self._refresh_mosaic_source_table()
 
     def _update_mosaic_model_mode_button_state(self) -> None:
         single_enabled = self._mosaic_single_model_available()
-        for control_name in (
-            "pushButtonResetMosaicView",
-            "pushButtonCalculateMosaicResolution",
-        ):
-            if hasattr(self.ui, control_name):
-                getattr(self.ui, control_name).setEnabled(single_enabled)
+        if hasattr(self.ui, "pushButtonResetMosaicView"):
+            self.ui.pushButtonResetMosaicView.setEnabled(
+                single_enabled and not self._mosaic_imported_framing_ready()
+            )
+        if hasattr(self.ui, "pushButtonCalculateMosaicResolution"):
+            self.ui.pushButtonCalculateMosaicResolution.setEnabled(single_enabled)
 
     def _mosaic_export_block_rows(self) -> int:
         return mosaic_export_block_rows(getattr(self, "ui_config", object()))
@@ -640,10 +856,22 @@ class MosaicProjectionMixin:
 
     def _update_mosaic_export_button_state(self) -> None:
         self._update_mosaic_model_mode_button_state()
+        framing_ready = self._mosaic_imported_framing_ready()
+        if hasattr(self.ui, "pushButtonClearMosaicFraming"):
+            self.ui.pushButtonClearMosaicFraming.setEnabled(framing_ready)
         if not hasattr(self.ui, "pushButtonExportMosaicProjectedImage"):
             return
-        enabled = self._mosaic_imported_framing_ready() and self._mosaic_single_model_available()
+        enabled = framing_ready and self._mosaic_single_model_available()
         self.ui.pushButtonExportMosaicProjectedImage.setEnabled(bool(enabled))
+
+    def clear_mosaic_framing(self) -> None:
+        """只清除已导入取景的身份信息，保留当前全部参数值。"""
+
+        if not self._mosaic_imported_framing_ready():
+            self.ui.statusbar.showMessage("当前没有已导入的取景。")
+            return
+        self._clear_mosaic_imported_framing()
+        self.ui.statusbar.showMessage("已清除取景，当前投影、视角、拍摄信息、分辨率和裁剪参数均已保留。")
 
     def _update_mosaic_crop_control_limits(self) -> None:
         width_px, height_px = self._mosaic_output_size()
@@ -1030,6 +1258,7 @@ class MosaicProjectionMixin:
                 )
             camera = self._mosaic_camera_for_render(geometry.boundary_width_px, geometry.boundary_height_px)
             view = self._mosaic_view_settings(camera)
+            active_source = self._mosaic_session_state().active_source
             write_mosaic_reprojection_tiff(
                 output_path=temp_path,
                 source_model=source_model.model,
@@ -1045,6 +1274,7 @@ class MosaicProjectionMixin:
                 map_tile_size_px=self._mosaic_map_tile_size_px(),
                 exact_remap_repair=self._mosaic_exact_remap_repair_enabled(),
                 tiff_lzw_compression=self._mosaic_tiff_lzw_compression_enabled(),
+                source_pixel_regions=self._mosaic_source_pixel_regions(active_source),
             )
             update_export_progress("正在完成文件写入...", 0, 0)
             temp_path.replace(output_path)
@@ -1210,10 +1440,24 @@ class MosaicProjectionMixin:
             None,
             max_long_side_px=texture_long_side,
         )
+        meteor_boxes = ()
+        meteor_selection_path = None
+        meteor_selection_error = ""
+        if source_model.source_image_path is not None:
+            candidate_path = meteor_json_path(source_model.source_image_path)
+            if candidate_path.exists():
+                meteor_selection_path = candidate_path
+                try:
+                    meteor_boxes = tuple(load_meteor_selection(source_model.source_image_path))
+                except ValueError as exc:
+                    meteor_selection_error = str(exc)
         return MosaicSourceItem(
             source_model=source_model,
             coverage_cache=coverage_cache,
             source_texture_cache=source_texture_cache,
+            meteor_boxes=meteor_boxes,
+            meteor_selection_path=meteor_selection_path,
+            meteor_selection_error=meteor_selection_error,
         )
 
     def _earliest_mosaic_source_item(self, items: list[MosaicSourceItem]) -> MosaicSourceItem | None:
@@ -1271,35 +1515,21 @@ class MosaicProjectionMixin:
         elif not default_dir.exists():
             default_dir = project_root()
         default_dir = self._import_dialog_directory(default_dir)
-        file_path, _selected_filter = QFileDialog.getOpenFileName(
-            self,
-            "导入源图模型 JSON",
-            str(default_dir),
-            SOURCE_MODEL_JSON_FILTER,
-        )
-        if not file_path:
-            return
-        self._remember_import_path(file_path)
-        self.load_mosaic_model_json(file_path)
-
-    def import_mosaic_models_json(self) -> None:
-        default_dir = project_root() / "outputs"
-        current_items = self._mosaic_current_source_items()
-        if current_items:
-            default_dir = current_items[-1].source_model.json_path.parent
-        elif not default_dir.exists():
-            default_dir = project_root()
-        default_dir = self._import_dialog_directory(default_dir)
         file_paths, _selected_filter = QFileDialog.getOpenFileNames(
             self,
-            "导入多张源图模型 JSON",
+            "导入源图模型 JSON（可多选）",
             str(default_dir),
             SOURCE_MODEL_JSON_FILTER,
         )
         if not file_paths:
             return
         self._remember_import_path(file_paths)
-        self.load_mosaic_models_json(file_paths)
+        self.load_mosaic_models_json(file_paths, append=True)
+
+    def import_mosaic_models_json(self) -> None:
+        """兼容旧调用入口；界面现已统一为一个可多选的导入按钮。"""
+
+        self.import_mosaic_model_json()
 
     def load_mosaic_model_json(self, file_path: str | Path, *, quiet: bool = False) -> bool:
         json_path = Path(file_path).expanduser()
@@ -1322,7 +1552,8 @@ class MosaicProjectionMixin:
         self._set_mosaic_overlay_defaults_for_model(source_model)
         if not keep_imported_framing:
             self._set_mosaic_observer_controls_from_source_model(source_model)
-        self._set_mosaic_observer_controls_enabled(True)
+        if not keep_imported_framing:
+            self._set_mosaic_observer_controls_enabled(True)
         self._set_mosaic_grid_controls_enabled(True)
         self._update_mosaic_grid_precision_tooltip()
         if keep_imported_framing:
@@ -1337,60 +1568,106 @@ class MosaicProjectionMixin:
             self.ui.statusbar.showMessage(f"已导入源图模型: {source_model.json_path}")
         return True
 
-    def load_mosaic_models_json(self, file_paths: list[str] | tuple[str, ...]) -> bool:
+    def load_mosaic_models_json(
+        self,
+        file_paths: list[str] | tuple[str, ...],
+        *,
+        append: bool = False,
+    ) -> bool:
         json_paths = [Path(file_path).expanduser() for file_path in file_paths]
         if not json_paths:
             return False
         # 文件对话框允许只选中一项；此时必须保留单模型的完整初始化行为。
-        if len(json_paths) == 1:
+        if len(json_paths) == 1 and not append:
             return self.load_mosaic_model_json(json_paths[0])
-        progress = QProgressDialog("正在导入多张模型...", "取消", 0, len(json_paths), self)
-        progress.setWindowTitle("导入多张模型")
+        existing_items = self._mosaic_current_source_items() if append else []
+        existing_paths = {
+            item.source_model.json_path.expanduser().resolve()
+            for item in existing_items
+        }
+        unique_json_paths: list[Path] = []
+        duplicate_count = 0
+        for json_path in json_paths:
+            resolved_path = json_path.resolve()
+            if resolved_path in existing_paths:
+                duplicate_count += 1
+                continue
+            existing_paths.add(resolved_path)
+            unique_json_paths.append(json_path)
+        if not unique_json_paths:
+            self.ui.statusbar.showMessage("所选源图模型均已导入。")
+            return False
+        progress = QProgressDialog("正在导入模型...", "取消", 0, len(unique_json_paths), self)
+        progress.setWindowTitle("导入模型")
         progress.setWindowModality(Qt.WindowModal)
         progress.setMinimumDuration(0)
         progress.setAutoClose(False)
         progress.setAutoReset(False)
         progress.show()
         items: list[MosaicSourceItem] = []
+        errors: list[str] = []
         try:
             QApplication.setOverrideCursor(Qt.WaitCursor)
-            for index, json_path in enumerate(json_paths):
+            for index, json_path in enumerate(unique_json_paths):
                 progress.setLabelText(f"正在导入 {json_path.name}...")
                 progress.setValue(index)
                 QApplication.processEvents()
                 if progress.wasCanceled():
-                    self.ui.statusbar.showMessage("已取消导入多张模型。")
+                    self.ui.statusbar.showMessage("已取消导入模型。")
                     return False
-                items.append(self._build_mosaic_source_item(json_path))
-            progress.setValue(len(json_paths))
-        except Exception as exc:  # noqa: BLE001 - 批量导入入口需要指出失败文件或模型错误。
-            QMessageBox.critical(self, "导入多张源图模型失败", str(exc))
-            self.ui.statusbar.showMessage(f"导入多张源图模型失败: {exc}")
-            return False
+                try:
+                    items.append(self._build_mosaic_source_item(json_path))
+                except Exception as exc:  # noqa: BLE001 - 单个 JSON 不符合模型要求时继续筛选其他文件。
+                    errors.append(f"{json_path.name}: {exc}")
+            progress.setValue(len(unique_json_paths))
         finally:
             QApplication.restoreOverrideCursor()
             progress.close()
 
-        self._activate_multi_mosaic_source_items(items)
+        if errors:
+            QMessageBox.warning(
+                self,
+                "已跳过不符合要求的 JSON",
+                "以下文件不是有效的源图模型 JSON，已自动跳过：\n\n"
+                + "\n".join(errors[:12])
+                + (f"\n... 另有 {len(errors) - 12} 个文件" if len(errors) > 12 else ""),
+            )
+        if not items:
+            self.ui.statusbar.showMessage(
+                f"未导入模型：跳过 {len(errors)} 个不符合要求的 JSON，忽略 {duplicate_count} 个重复文件。"
+            )
+            return False
+
+        all_items = [*existing_items, *items]
+        if len(all_items) == 1:
+            self._activate_single_mosaic_source_item(all_items[0])
+        else:
+            self._activate_multi_mosaic_source_items(all_items)
         keep_imported_framing = self._mosaic_imported_framing_ready()
         if not keep_imported_framing:
-            if items:
-                self._set_mosaic_projection_from_source_model(items[0].source_model)
-            earliest = self._earliest_mosaic_source_item(items)
+            if all_items:
+                self._set_mosaic_projection_from_source_model(all_items[0].source_model)
+            earliest = self._earliest_mosaic_source_item(all_items)
             if earliest is not None:
                 self._set_mosaic_observer_controls_from_source_model(earliest.source_model)
             self._reset_mosaic_center_from_source_items()
         else:
             self._update_mosaic_view_label()
-        self._set_mosaic_overlay_defaults_for_source_items(items)
-        self._set_mosaic_observer_controls_enabled(True)
-        self._set_mosaic_grid_controls_enabled(False)
+        self._set_mosaic_overlay_defaults_for_source_items(all_items)
+        if not keep_imported_framing:
+            self._set_mosaic_observer_controls_enabled(True)
+        self._set_mosaic_grid_controls_enabled(len(all_items) == 1)
         self._update_mosaic_grid_precision_tooltip()
         self._update_mosaic_display_model_combo()
         self._update_mosaic_model_labels()
         self._update_mosaic_export_button_state()
         self.schedule_mosaic_render(delay_ms=0)
-        self.ui.statusbar.showMessage(f"已导入 {len(items)} 张源图模型。")
+        summary_parts = [f"已导入 {len(items)} 个源图模型，当前共 {len(all_items)} 个"]
+        if errors:
+            summary_parts.append(f"跳过 {len(errors)} 个非模型 JSON")
+        if duplicate_count:
+            summary_parts.append(f"忽略 {duplicate_count} 个重复文件")
+        self.ui.statusbar.showMessage("；".join(summary_parts) + "。")
         return True
 
     def _set_mosaic_projection_from_source_model(self, source_model: MosaicSourceModel) -> bool:
@@ -1456,7 +1733,6 @@ class MosaicProjectionMixin:
             "doubleSpinBoxMosaicLatitude",
             "doubleSpinBoxMosaicLongitude",
             "doubleSpinBoxMosaicElevation",
-            "pushButtonResetMosaicObserver",
         ):
             getattr(self.ui, control_name).setEnabled(enabled)
 
@@ -1492,22 +1768,6 @@ class MosaicProjectionMixin:
         finally:
             for control, was_blocked in zip(controls, previous_blocks, strict=True):
                 control.blockSignals(was_blocked)
-
-    def reset_mosaic_observer_from_json(self) -> None:
-        self._clear_mosaic_imported_framing()
-        source_model = self._mosaic_source_model
-        if source_model is None:
-            observer = getattr(self, "_mosaic_model_observer", None) or getattr(self, "_mosaic_framing_observer", None)
-            if observer is None:
-                return
-            self._set_mosaic_observer_controls_from_values(
-                observer,
-                getattr(self, "_mosaic_model_utc_offset_hours", getattr(self, "_mosaic_framing_utc_offset_hours", 0.0)),
-            )
-            self.schedule_mosaic_render(delay_ms=0)
-            return
-        self._set_mosaic_observer_controls_from_source_model(source_model)
-        self.schedule_mosaic_render(delay_ms=0)
 
     def _mosaic_utc_offset_from_controls(self) -> float:
         if hasattr(self.ui, "doubleSpinBoxMosaicUtcOffset"):
@@ -1834,6 +2094,30 @@ class MosaicProjectionMixin:
             return bool(self.ui.checkBoxMosaicShowCoverage.isChecked())
         return True
 
+    def _mosaic_meteor_only_enabled(self) -> bool:
+        return bool(
+            hasattr(self.ui, "checkBoxMosaicMeteorOnly")
+            and self.ui.checkBoxMosaicMeteorOnly.isChecked()
+        )
+
+    def _mosaic_source_pixel_regions(
+        self,
+        item: MosaicSourceItem | None,
+    ) -> tuple[tuple[int, int, int, int], ...] | None:
+        """勾选后返回活动源图的流星矩形；没有对应 JSON 时仍使用整图。"""
+
+        if not self._mosaic_meteor_only_enabled() or item is None or not item.meteor_boxes:
+            return None
+        return tuple(
+            (
+                int(round(box.left)),
+                int(round(box.top)),
+                int(round(box.right)),
+                int(round(box.bottom)),
+            )
+            for box in item.meteor_boxes
+        )
+
     def _set_mosaic_view_controls_from_state(self) -> None:
         control_values = (
             ("doubleSpinBoxMosaicAz", self._mosaic_center_az_deg % 360.0),
@@ -1901,6 +2185,7 @@ class MosaicProjectionMixin:
                     )
                     for item in source_items
                 ),
+                meteor_only=self._mosaic_meteor_only_enabled(),
             )
             result = self._mosaic_render_coordinator.render(request)
             self._paint_mosaic_crop_rect(result.image)
@@ -1974,6 +2259,12 @@ class MosaicProjectionMixin:
 
         视图交互（拖拽、缩放、触控板）已交由 ProjectionInteractionController 处理。
         """
+        source_table = getattr(self.ui, "tableWidgetMosaicSourceFiles", None)
+        if source_table is not None and watched in (source_table, source_table.viewport()):
+            if event.type() == QEvent.Wheel:
+                return self._handle_table_wheel(source_table, event)
+            if event.type() == QEvent.KeyPress and event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+                return self._handle_mosaic_source_table_delete_key()
         if not hasattr(self.ui, "mosaicProjectionView"):
             return False
         # 标签省略号更新

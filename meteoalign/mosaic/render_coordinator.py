@@ -121,7 +121,16 @@ class MosaicRenderCoordinator:
             if texture is None:
                 diagnostics.append(self._source_texture_error_message(source))
                 continue
-            cache_key = self._source_overlay_key(source, cache, texture, request, width, height)
+            source_pixel_regions = self._source_pixel_regions(source) if request.meteor_only else None
+            cache_key = self._source_overlay_key(
+                source,
+                cache,
+                texture,
+                request,
+                width,
+                height,
+                source_pixel_regions,
+            )
             cache_keys.append(cache_key)
             if source.rendered_overlay_key == cache_key and source.rendered_overlay_rgba is not None:
                 overlay_rgba = source.rendered_overlay_rgba
@@ -141,6 +150,7 @@ class MosaicRenderCoordinator:
                     az_deg=az_deg,
                     valid_points=valid_points,
                     opacity=request.overlay_opacity,
+                    source_pixel_regions=source_pixel_regions,
                 )
                 source.rendered_overlay_key = cache_key
                 source.rendered_overlay_rgba = overlay_rgba
@@ -247,6 +257,7 @@ class MosaicRenderCoordinator:
         request: MosaicRenderRequest,
         width: int,
         height: int,
+        source_pixel_regions: tuple[tuple[int, int, int, int], ...] | None,
     ) -> tuple[object, ...]:
         assert request.observer is not None
         return (
@@ -267,7 +278,27 @@ class MosaicRenderCoordinator:
             id(cache),
             id(texture),
             str(source.source_model.json_path),
+            source_pixel_regions,
         )
+
+    @staticmethod
+    def _source_pixel_regions(source: MosaicSourceState) -> tuple[tuple[int, int, int, int], ...] | None:
+        """返回已框选的流星源图矩形；没有流星 JSON 时保留整图渲染。"""
+
+        if not source.meteor_boxes:
+            return None
+        width = int(getattr(source.source_model, "image_width_px", 0) or 0)
+        height = int(getattr(source.source_model, "image_height_px", 0) or 0)
+        regions: list[tuple[int, int, int, int]] = []
+        for box in source.meteor_boxes:
+            clamped = box.clamped(width, height)
+            left = max(0, min(width, int(round(clamped.left))))
+            top = max(0, min(height, int(round(clamped.top))))
+            right = max(0, min(width, int(round(clamped.right))))
+            bottom = max(0, min(height, int(round(clamped.bottom))))
+            if right > left and bottom > top:
+                regions.append((left, top, right, bottom))
+        return tuple(regions) or None
 
     @staticmethod
     def _source_texture_error_message(source: MosaicSourceState) -> str:

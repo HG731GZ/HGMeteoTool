@@ -34,6 +34,36 @@ def test_warp_grid_texture_to_rgba_maps_single_cell_with_opacity() -> None:
 
 
 @pytest.mark.skipif(not texture_projection_available(), reason="OpenCV 不可用，跳过纹理投影测试。")
+def test_warp_grid_texture_only_keeps_selected_source_region() -> None:
+    """流星区域模式应把源图矩形之外的预览像素保持为透明。"""
+
+    source_rgb = np.full((8, 8, 3), (20, 80, 160), dtype=np.uint8)
+    source_grid_x = np.asarray([[0.0, 7.0], [0.0, 7.0]], dtype=np.float64)
+    source_grid_y = np.asarray([[0.0, 0.0], [7.0, 7.0]], dtype=np.float64)
+    screen_x = np.asarray([[0.0, 7.0], [0.0, 7.0]], dtype=np.float64)
+    screen_y = np.asarray([[0.0, 0.0], [7.0, 7.0]], dtype=np.float64)
+    rgba = np.zeros((8, 8, 4), dtype=np.uint8)
+
+    assert warp_grid_texture_to_rgba(
+        rgba,
+        source_rgb=source_rgb,
+        source_grid_x_px=source_grid_x,
+        source_grid_y_px=source_grid_y,
+        source_scale_x=1.0,
+        source_scale_y=1.0,
+        screen_x_px=screen_x,
+        screen_y_px=screen_y,
+        valid_points=np.ones((2, 2), dtype=bool),
+        source_pixel_regions=((2, 2, 6, 6),),
+        seam_padding_px=0.0,
+    )
+
+    assert rgba[3, 3, 3] == 255
+    assert rgba[0, 0, 3] == 0
+    assert rgba[7, 7, 3] == 0
+
+
+@pytest.mark.skipif(not texture_projection_available(), reason="OpenCV 不可用，跳过纹理投影测试。")
 def test_warp_grid_texture_keeps_partial_cell_at_viewport_boundary() -> None:
     """网格仅有部分进入视场时，进入部分仍应贴图而非整格丢弃。"""
 

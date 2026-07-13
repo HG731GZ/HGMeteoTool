@@ -11,6 +11,7 @@ import numpy as np
 if TYPE_CHECKING:
     from .framing import MosaicResolutionEstimate
     from .model_io import MosaicCoverageCache, MosaicSourceModel, MosaicSourceTextureCache
+    from ..meteor_selection import MeteorBox
     from ..simulator import ObserverSettings
 
 
@@ -29,6 +30,9 @@ class MosaicSourceState:
     interaction_coverage_source_id: int | None = None
     rendered_overlay_key: tuple[object, ...] | None = None
     rendered_overlay_rgba: np.ndarray | None = None
+    meteor_boxes: tuple[MeteorBox, ...] = ()
+    meteor_selection_path: Path | None = None
+    meteor_selection_error: str = ""
 
     def clear_render_cache(self) -> None:
         """清除仅依赖当前视角的叠加层缓存。"""

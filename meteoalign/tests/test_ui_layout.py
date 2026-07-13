@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 # 让无显示服务器的 CI 也能创建 Qt 窗口；用户桌面运行不受此测试环境变量影响。
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QEvent, Qt
 from PyQt5.QtWidgets import QApplication, QFormLayout, QHeaderView, QMainWindow, QPushButton, QSizePolicy, QTableWidget
 
 from meteoalign.application.app_sequence_table_preview import SequenceTablePreviewMixin
+from meteoalign.application.app_mosaic import MosaicProjectionMixin, MosaicSourceItem
 from meteoalign.ui.ui_main_window import Ui_MainWindow
 
 
@@ -152,3 +154,92 @@ def test_sequence_table_columns_can_be_resized_by_user() -> None:
     table.setColumnWidth(1, 420)
     sequence_table._refresh_image_sequence_table()
     assert table.columnWidth(1) == 420
+
+
+def test_mosaic_source_file_table_layout_and_selection_sync() -> None:
+    """全景源文件表应位于拍摄信息上方，并跟随单图预览定位。"""
+
+    app = QApplication.instance() or QApplication([])
+    window = QMainWindow()
+    ui = Ui_MainWindow()
+    ui.setupUi(window)
+    mixin = MosaicProjectionMixin.__new__(MosaicProjectionMixin)
+    mixin.ui = ui
+    mixin.schedule_mosaic_render = lambda *args, **kwargs: None  # type: ignore[method-assign]
+    mixin._configure_mosaic_source_table()
+
+    assert ui.verticalLayoutMosaicSidePanel.indexOf(ui.groupBoxMosaicSourceFiles) < (
+        ui.verticalLayoutMosaicSidePanel.indexOf(ui.groupBoxMosaicObserver)
+    )
+    assert ui.pushButtonImportMosaicModel.text() == "导入模型"
+    assert ui.pushButtonClearMosaicModels.text() == "清除所有导入"
+    assert ui.pushButtonClearMosaicFraming.text() == "清除取景"
+    framing_layout = ui.horizontalLayoutMosaicFramingIo
+    assert framing_layout.indexOf(ui.pushButtonExportMosaicFraming) < framing_layout.indexOf(
+        ui.pushButtonImportMosaicFraming
+    ) < framing_layout.indexOf(ui.pushButtonClearMosaicFraming)
+    assert not hasattr(ui, "pushButtonImportMosaicModels")
+    assert not hasattr(ui, "pushButtonResetMosaicObserver")
+    assert ui.tableWidgetMosaicSourceFiles.columnCount() == 4
+    assert [
+        ui.tableWidgetMosaicSourceFiles.horizontalHeaderItem(column).text()
+        for column in range(4)
+    ] == ["序号", "文件名", "投影类型", "流星数"]
+    for column in range(4):
+        assert ui.tableWidgetMosaicSourceFiles.horizontalHeader().sectionResizeMode(column) == QHeaderView.Interactive
+
+    def source_item(name: str, projection: str, meteor_count: int) -> MosaicSourceItem:
+        source_model = SimpleNamespace(
+            json_path=Path(f"{name}.json"),
+            source_image_path=Path(f"{name}.tif"),
+            source_image_text=f"{name}.tif",
+            model=SimpleNamespace(
+                camera_calibration_profile=SimpleNamespace(base_projection_type=projection),
+            ),
+        )
+        return MosaicSourceItem(
+            source_model=source_model,  # type: ignore[arg-type]
+            meteor_boxes=tuple(SimpleNamespace() for _index in range(meteor_count)),  # type: ignore[arg-type]
+        )
+
+    mixin._mosaic_source_items = [
+        source_item("first", "rectilinear", 2),
+        source_item("second", "azimuthal_equidistant_tangent", 1),
+    ]
+    mixin._update_mosaic_display_model_combo()
+
+    table = ui.tableWidgetMosaicSourceFiles
+    assert table.item(0, 0).text() == "1"
+    assert table.item(0, 1).text() == "first.tif"
+    assert table.item(0, 2).text() == "TAN"
+    assert table.item(0, 3).text() == "2"
+    assert table.item(1, 2).text() == "插值"
+
+    table.setColumnWidth(1, 260)
+    mixin._refresh_mosaic_source_table()
+    assert table.columnWidth(1) == 260
+
+    ui.comboBoxMosaicDisplayModel.setCurrentIndex(2)
+    mixin._handle_mosaic_display_model_changed()
+    assert table.currentRow() == 1
+
+    mixin._handle_mosaic_source_table_double_clicked(0, 1)
+    assert ui.comboBoxMosaicDisplayModel.currentIndex() == 1
+    assert mixin._selected_mosaic_source_items() == [mixin._mosaic_current_source_items()[0]]
+
+    wheel_calls: list[object] = []
+    mixin._handle_table_wheel = lambda source_table, event: wheel_calls.append((source_table, event)) or True  # type: ignore[method-assign]
+    wheel_event = SimpleNamespace(type=lambda: QEvent.Wheel)
+    assert mixin._handle_mosaic_event_filter(table, wheel_event)
+    assert mixin._handle_mosaic_event_filter(table.viewport(), wheel_event)
+    assert [call[0] for call in wheel_calls] == [table, table]
+
+    removed_rows: list[int] = []
+    mixin._remove_mosaic_source_row = removed_rows.append  # type: ignore[method-assign]
+    table.selectRow(1)
+    for key in (Qt.Key_Delete, Qt.Key_Backspace):
+        key_event = SimpleNamespace(type=lambda: QEvent.KeyPress, key=lambda key=key: key)
+        assert mixin._handle_mosaic_event_filter(table, key_event)
+    assert removed_rows == [1, 1]
+
+    window.close()

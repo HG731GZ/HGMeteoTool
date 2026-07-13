@@ -27,6 +27,7 @@ class MosaicRenderRequest:
     overlay_opacity: float = 1.0
     interaction_active: bool = False
     source_texture_long_sides_px: tuple[int, ...] = ()
+    meteor_only: bool = False
 
 
 @dataclass(frozen=True)

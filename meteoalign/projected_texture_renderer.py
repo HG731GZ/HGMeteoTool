@@ -45,6 +45,7 @@ class ProjectedTextureRenderer:
         valid_points: np.ndarray,
         opacity: float = 1.0,
         skip_cylindrical_seam: bool = True,
+        source_pixel_regions: tuple[tuple[int, int, int, int], ...] | None = None,
     ) -> np.ndarray:
         rgba = np.zeros((int(height), int(width), 4), dtype=np.uint8)
         if not texture_projection_available():
@@ -77,6 +78,7 @@ class ProjectedTextureRenderer:
             target_valid_mask=self._target_viewport_mask(camera, int(width), int(height)),
             opacity=opacity,
             screen_longitudes_rad=screen_grid.screen_longitudes_rad,
+            source_pixel_regions=source_pixel_regions,
         )
         return rgba
 

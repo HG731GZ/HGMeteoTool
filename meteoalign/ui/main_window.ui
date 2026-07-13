@@ -2338,22 +2338,76 @@
                <item>
                 <layout class="QHBoxLayout" name="horizontalLayoutMosaicModelImport">
                  <item>
-                  <widget class="QPushButton" name="pushButtonImportMosaicModel">
+                 <widget class="QPushButton" name="pushButtonImportMosaicModel">
                    <property name="text">
-                    <string>导入单张模型</string>
+                    <string>导入模型</string>
                    </property>
                   </widget>
                  </item>
                  <item>
-                  <widget class="QPushButton" name="pushButtonImportMosaicModels">
+                  <widget class="QPushButton" name="pushButtonClearMosaicModels">
                    <property name="text">
-                    <string>导入多张模型</string>
+                    <string>清除所有导入</string>
                    </property>
                   </widget>
                  </item>
                 </layout>
                </item>
              </layout>
+             </widget>
+            </item>
+            <item>
+             <widget class="QGroupBox" name="groupBoxMosaicSourceFiles">
+              <property name="title">
+               <string>已导入文件</string>
+              </property>
+              <layout class="QVBoxLayout" name="verticalLayoutMosaicSourceFiles">
+               <item>
+                <widget class="QTableWidget" name="tableWidgetMosaicSourceFiles">
+                 <property name="minimumSize">
+                  <size>
+                   <width>0</width>
+                   <height>170</height>
+                  </size>
+                 </property>
+                 <property name="editTriggers">
+                  <set>QAbstractItemView::NoEditTriggers</set>
+                 </property>
+                 <property name="selectionMode">
+                  <enum>QAbstractItemView::SingleSelection</enum>
+                 </property>
+                 <property name="selectionBehavior">
+                  <enum>QAbstractItemView::SelectRows</enum>
+                 </property>
+                 <property name="columnCount">
+                  <number>4</number>
+                 </property>
+                 <property name="rowCount">
+                  <number>0</number>
+                 </property>
+                 <column>
+                  <property name="text">
+                   <string>序号</string>
+                  </property>
+                 </column>
+                 <column>
+                  <property name="text">
+                   <string>文件名</string>
+                  </property>
+                 </column>
+                 <column>
+                  <property name="text">
+                   <string>投影类型</string>
+                  </property>
+                 </column>
+                 <column>
+                  <property name="text">
+                   <string>流星数</string>
+                  </property>
+                 </column>
+                </widget>
+               </item>
+              </layout>
              </widget>
             </item>
             <item>
@@ -2477,13 +2531,6 @@
                   </widget>
                  </item>
                 </layout>
-               </item>
-               <item>
-                <widget class="QPushButton" name="pushButtonResetMosaicObserver">
-                 <property name="text">
-                  <string>回到 JSON 设置</string>
-                 </property>
-                </widget>
                </item>
               </layout>
              </widget>
@@ -2968,6 +3015,13 @@
                    </property>
                   </widget>
                  </item>
+                 <item>
+                  <widget class="QPushButton" name="pushButtonClearMosaicFraming">
+                   <property name="text">
+                    <string>清除取景</string>
+                   </property>
+                  </widget>
+                 </item>
                 </layout>
                </item>
                <item>
@@ -3103,6 +3157,19 @@
               <widget class="QCheckBox" name="checkBoxMosaicSkyOnly">
                <property name="text">
                 <string>只显示模拟星空</string>
+               </property>
+               <property name="checked">
+                <bool>false</bool>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="checkBoxMosaicMeteorOnly">
+               <property name="toolTip">
+                <string>若源图旁存在对应的 _Meteor.json，则预览和导出时只渲染其中的流星框选区域；没有流星 JSON 的源图仍渲染整图。</string>
+               </property>
+               <property name="text">
+                <string>仅渲染流星区域</string>
                </property>
                <property name="checked">
                 <bool>false</bool>
