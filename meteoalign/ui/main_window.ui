@@ -65,11 +65,28 @@
               </property>
               <layout class="QVBoxLayout" name="verticalLayoutMeteorSelectionControls">
                <item>
-                <widget class="QPushButton" name="pushButtonImportMeteorImages">
-                 <property name="text">
-                  <string>导入流星图片</string>
-                 </property>
-                </widget>
+                <layout class="QHBoxLayout" name="horizontalLayoutMeteorSelectionImportActions">
+                 <item>
+                  <widget class="QPushButton" name="pushButtonImportMeteorImages">
+                   <property name="text">
+                    <string>导入流星图片</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QPushButton" name="pushButtonClearMeteorImports">
+                   <property name="enabled">
+                    <bool>false</bool>
+                   </property>
+                   <property name="toolTip">
+                    <string>清空当前批次的流星图片列表和内存框选，不删除磁盘文件。</string>
+                   </property>
+                   <property name="text">
+                    <string>清除所有导入</string>
+                   </property>
+                  </widget>
+                 </item>
+                </layout>
                </item>
               </layout>
              </widget>

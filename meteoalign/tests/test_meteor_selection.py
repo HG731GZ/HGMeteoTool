@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import QEvent, QPointF, Qt
 from PyQt5.QtGui import QContextMenuEvent, QImage, QMouseEvent, QPalette
-from PyQt5.QtWidgets import QApplication, QMainWindow, QMenu
+from PyQt5.QtWidgets import QApplication, QMainWindow, QMenu, QMessageBox
 
 from meteoalign.application.app_meteor_selection import MeteorSelectionMixin
 from meteoalign.application.meteor_selection_view import MeteorSelectionView
@@ -205,6 +205,63 @@ def test_save_all_meteor_boxes_only_writes_images_with_boxes(tmp_path) -> None:
         QPalette.Active,
         QPalette.Highlight,
     )
+    host.close()
+    app.processEvents()
+
+
+def test_clear_all_meteor_imports_resets_current_batch_without_deleting_files(tmp_path) -> None:
+    """清除当前批次应重置列表和预览，但保留磁盘上的图片与 JSON。"""
+
+    app = _application()
+    host = _MeteorSelectionHost()
+    image_path = tmp_path / "IMG_0001.TIF"
+    image_path.write_bytes(b"image")
+    boxes = [MeteorBox(10, 20, 100, 200)]
+    selection_path = save_meteor_selection(image_path, 6000, 4000, boxes)
+    host._meteor_selection_paths = [image_path]
+    host._meteor_selection_boxes_by_path = {image_path: boxes}
+    host._meteor_selection_image_sizes = {image_path: (6000, 4000)}
+    host._meteor_selection_current_index = 0
+    host._refresh_meteor_selection_table()
+    host._update_meteor_selection_controls()
+
+    layout = host.ui.horizontalLayoutMeteorSelectionImportActions
+    assert layout.indexOf(host.ui.pushButtonImportMeteorImages) < layout.indexOf(
+        host.ui.pushButtonClearMeteorImports
+    )
+    assert host.ui.pushButtonClearMeteorImports.isEnabled()
+
+    host.clear_all_imported_meteor_images()
+
+    assert host._meteor_selection_paths == []
+    assert host._meteor_selection_boxes_by_path == {}
+    assert host._meteor_selection_image_sizes == {}
+    assert host._meteor_selection_current_index == -1
+    assert host.ui.tableWidgetMeteorSelectionImages.rowCount() == 0
+    assert host.ui.labelMeteorSelectionPreviewTitle.text() == "未导入流星图片"
+    assert not host.ui.pushButtonClearMeteorImports.isEnabled()
+    assert image_path.exists()
+    assert selection_path.exists()
+    host.close()
+    app.processEvents()
+
+
+def test_clear_all_meteor_imports_confirms_before_discarding_unsaved_changes(tmp_path, monkeypatch) -> None:
+    """存在待保存修改时，用户拒绝确认应保留当前批次。"""
+
+    app = _application()
+    host = _MeteorSelectionHost()
+    image_path = tmp_path / "IMG_0001.TIF"
+    host._meteor_selection_paths = [image_path]
+    host._meteor_selection_boxes_by_path = {image_path: []}
+    host._meteor_selection_dirty_paths = {image_path}
+    host._meteor_selection_current_index = 0
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.No)
+
+    host.clear_all_imported_meteor_images()
+
+    assert host._meteor_selection_paths == [image_path]
+    assert host._meteor_selection_dirty_paths == {image_path}
     host.close()
     app.processEvents()
 

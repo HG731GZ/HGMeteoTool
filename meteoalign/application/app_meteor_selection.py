@@ -97,6 +97,7 @@ class MeteorSelectionMixin:
         """连接流星框选页面控件信号。"""
 
         self.ui.pushButtonImportMeteorImages.clicked.connect(self.import_meteor_images)
+        self.ui.pushButtonClearMeteorImports.clicked.connect(self.clear_all_imported_meteor_images)
         self.ui.pushButtonClearMeteorBoxes.clicked.connect(self.clear_meteor_boxes)
         self.ui.pushButtonSaveAllMeteorBoxes.clicked.connect(self.save_all_meteor_boxes)
         self.ui.pushButtonMeteorDetectionOptions.clicked.connect(self.show_meteor_detection_options)
@@ -176,6 +177,24 @@ class MeteorSelectionMixin:
         self._show_meteor_selection_current_image()
         if read_errors:
             self.ui.statusbar.showMessage("已有框选文件无法读取，已按空框选导入：" + "；".join(read_errors), 12000)
+
+    def clear_all_imported_meteor_images(self) -> None:
+        """清空当前流星图片批次，但不删除或修改磁盘上的图片与 JSON。"""
+
+        if self._meteor_detection_active or not self._meteor_selection_paths:
+            return
+        if self._meteor_selection_dirty_paths:
+            answer = QMessageBox.question(
+                self,
+                "存在未保存的框选修改",
+                "当前有尚未保存的流星框选修改。清除所有导入后，这些内存修改会丢失。\n\n是否继续？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+        self._reset_meteor_selection_page()
+        self.ui.statusbar.showMessage("已清除当前批次的所有导入，可以继续导入下一批图片。", 6000)
 
     def show_previous_meteor_image(self) -> None:
         """显示列表中的上一张图像。"""
@@ -420,6 +439,7 @@ class MeteorSelectionMixin:
         total_count = len(self._meteor_selection_paths)
         detecting = self._meteor_detection_active
         self.ui.pushButtonImportMeteorImages.setEnabled(not detecting)
+        self.ui.pushButtonClearMeteorImports.setEnabled(not detecting and bool(self._meteor_selection_paths))
         self.ui.pushButtonMeteorDetectionOptions.setEnabled(not detecting)
         self.ui.toolButtonMeteorSelectionPrevious.setEnabled(not detecting and has_current_image and current_index > 0)
         self.ui.toolButtonMeteorSelectionNext.setEnabled(
