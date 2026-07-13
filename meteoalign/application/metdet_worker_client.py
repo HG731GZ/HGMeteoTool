@@ -106,7 +106,8 @@ class MetDetWorkerClient(QObject):
     def _write_message(self, payload: dict[str, object]) -> None:
         if self._process.state() != QProcess.Running:
             raise RuntimeError("流星检测引擎进程未运行。")
-        line = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+        # Windows 上的 Qt 路径可能包含 UTF-16 代理项，ASCII 转义可确保协议始终是有效 UTF-8。
+        line = json.dumps(payload, ensure_ascii=True, separators=(",", ":")) + "\n"
         if self._process.write(line.encode("utf-8")) < 0:
             raise RuntimeError("无法向流星检测引擎发送请求。")
 

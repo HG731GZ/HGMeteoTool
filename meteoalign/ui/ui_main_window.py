@@ -1603,7 +1603,7 @@ class Ui_MainWindow(object):
         self.pushButtonImportMeteorImages.setText(_translate("MainWindow", "导入流星图片"))
         self.groupBoxMeteorSelectionImages.setTitle(_translate("MainWindow", "流星图片"))
         self.pushButtonMeteorDetectionOptions.setToolTip(_translate("MainWindow", "设置流星自动检测引擎位置和检测参数。"))
-        self.pushButtonMeteorDetectionOptions.setText(_translate("MainWindow", "选项"))
+        self.pushButtonMeteorDetectionOptions.setText(_translate("MainWindow", "自动检测选项"))
         self.pushButtonAutoDetectMeteors.setToolTip(_translate("MainWindow", "等待流星检测引擎就绪。"))
         self.pushButtonAutoDetectMeteors.setText(_translate("MainWindow", "自动检测"))
         self.pushButtonMoveMeteorFiles.setToolTip(_translate("MainWindow", "把所有已有流星框选的图片及其同目录关联 JSON 移动到指定文件夹。"))

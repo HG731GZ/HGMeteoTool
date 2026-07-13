@@ -1051,7 +1051,7 @@
                     <string>设置流星自动检测引擎位置和检测参数。</string>
                    </property>
                    <property name="text">
-                    <string>选项</string>
+                    <string>自动检测选项</string>
                    </property>
                   </widget>
                  </item>

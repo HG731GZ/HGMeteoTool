@@ -114,7 +114,8 @@ def save_meteor_selection(
     output_path = meteor_json_path(image_path)
     payload = build_meteor_selection_payload(image_path, image_width, image_height, boxes)
     output_path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        # 转义扩展 Unicode 和代理项，避免 Windows 特殊文件名无法编码成 UTF-8。
+        json.dumps(payload, ensure_ascii=True, indent=2) + "\n",
         encoding="utf-8",
     )
     return output_path
