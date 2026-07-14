@@ -9,6 +9,7 @@ from meteoalign.config import (
     AdjacentStarAlignmentConfig,
     StarMapUiConfig,
     load_adjacent_alignment_config,
+    load_star_map_ui_config,
 )
 from meteoalign.preference_manager import (
     DEFAULT_PREFERENCE_VALUES,
@@ -45,6 +46,26 @@ def test_preference_defaults_cover_every_ui_config_field() -> None:
 
     assert config_field_names.issubset(DEFAULT_PREFERENCE_VALUES)
     assert set(PREFERENCE_COMMENTS) == set(DEFAULT_PREFERENCE_VALUES)
+
+
+def test_constellation_style_preferences_are_loaded_and_bounded(tmp_path: Path) -> None:
+    preference_path = tmp_path / "preference.json"
+    preference_path.write_text(
+        """
+        {
+          "constellation_line_width_px": 2.5,
+          "constellation_line_color_hex": "#aBcDeF",
+          "constellation_line_opacity": 1.5
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    config = load_star_map_ui_config(preference_path)
+
+    assert config.constellation_line_width_px == 2.5
+    assert config.constellation_line_color_hex == "#ABCDEF"
+    assert config.constellation_line_opacity == 1.0
 
 
 def test_adjacent_alignment_hyperparameters_are_loaded_and_bounded(tmp_path: Path) -> None:

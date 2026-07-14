@@ -29,7 +29,7 @@ from astropy.time import Time
 from astropy.utils import iers
 from skyfield.api import Loader, load_file, wgs84
 
-from .catalog import StarCatalog, default_catalog_dir
+from .catalog import ConstellationCatalog, StarCatalog, default_catalog_dir
 from .milky_way import MilkyWayCatalog
 
 
@@ -233,8 +233,56 @@ class HorizontalMilkyWayCatalog:
 
 
 @dataclass(frozen=True)
+class HorizontalConstellationLine:
+    """已经转换到地平坐标系的一条星座折线。"""
+
+    hip_ids: tuple[int, ...]
+    alt_deg: np.ndarray
+    az_deg: np.ndarray
+    mag_v: np.ndarray
+
+
+@dataclass(frozen=True)
+class HorizontalConstellation:
+    """已经转换到地平坐标系的单个星座。"""
+
+    abbreviation: str
+    chinese_name: str
+    lines: tuple[HorizontalConstellationLine, ...]
+
+
+@dataclass(frozen=True)
+class HorizontalConstellationCatalog:
+    """已经转换到地平坐标系的星座集合。"""
+
+    source_name: str
+    constellations: tuple[HorizontalConstellation, ...]
+
+
+@dataclass(frozen=True)
 class ProjectedMilkyWayPolygon:
     rings: tuple[tuple[tuple[float, float], ...], ...]
+
+
+@dataclass(frozen=True)
+class ProjectedConstellationSegment:
+    """一段可直接绘制的星座连线及其端点星面半径。"""
+
+    start: tuple[float, float]
+    end: tuple[float, float]
+    start_radius_px: float
+    end_radius_px: float
+
+
+@dataclass(frozen=True)
+class ProjectedConstellation:
+    """投影后的星座连线和中文标签位置。"""
+
+    abbreviation: str
+    chinese_name: str
+    segments: tuple[ProjectedConstellationSegment, ...]
+    label_x_px: float
+    label_y_px: float
 
 
 @dataclass(frozen=True)
@@ -293,6 +341,7 @@ class ProjectedStarMap:
     sky_circle_radius_px: float | None = None
     horizon_shadow_rects: tuple[ProjectedFillRect, ...] = ()
     milky_way_polygons: tuple[ProjectedMilkyWayPolygon, ...] = ()
+    constellations: tuple[ProjectedConstellation, ...] = ()
     solar_system_objects: tuple[ProjectedSolarSystemObject, ...] = ()
 
     def __len__(self) -> int:
@@ -496,6 +545,53 @@ def compute_horizontal_milky_way(
             polygons.append(HorizontalMilkyWayPolygon(rings=polygon_rings))
 
     return HorizontalMilkyWayCatalog(source_name=milky_way.source_name, polygons=tuple(polygons))
+
+
+def compute_horizontal_constellations(
+    catalog: ConstellationCatalog,
+    observer: ObserverSettings,
+) -> HorizontalConstellationCatalog:
+    """一次性转换全部星座节点，避免逐线调用 Astropy。"""
+
+    source_lines = [line for constellation in catalog.constellations for line in constellation.lines]
+    if not source_lines:
+        return HorizontalConstellationCatalog(source_name=catalog.source_name, constellations=())
+
+    line_lengths = [line.ra_deg.size for line in source_lines]
+    all_ra = np.concatenate([line.ra_deg for line in source_lines])
+    all_dec = np.concatenate([line.dec_deg for line in source_lines])
+    all_alt, all_az = compute_altaz_from_radec(all_ra, all_dec, observer)
+
+    horizontal_lines: list[HorizontalConstellationLine] = []
+    offset = 0
+    for source_line, length in zip(source_lines, line_lengths):
+        next_offset = offset + length
+        horizontal_lines.append(
+            HorizontalConstellationLine(
+                hip_ids=source_line.hip_ids,
+                alt_deg=all_alt[offset:next_offset],
+                az_deg=all_az[offset:next_offset],
+                mag_v=source_line.mag_v,
+            )
+        )
+        offset = next_offset
+
+    constellations: list[HorizontalConstellation] = []
+    line_offset = 0
+    for source_constellation in catalog.constellations:
+        line_count = len(source_constellation.lines)
+        constellations.append(
+            HorizontalConstellation(
+                abbreviation=source_constellation.abbreviation,
+                chinese_name=source_constellation.chinese_name,
+                lines=tuple(horizontal_lines[line_offset : line_offset + line_count]),
+            )
+        )
+        line_offset += line_count
+    return HorizontalConstellationCatalog(
+        source_name=catalog.source_name,
+        constellations=tuple(constellations),
+    )
 
 
 def _local_vectors_from_altaz(alt_deg: np.ndarray, az_deg: np.ndarray) -> np.ndarray:
@@ -1145,6 +1241,83 @@ def _project_milky_way_polygons(
     return tuple(projected_polygons)
 
 
+def _constellation_node_radii(
+    mag_v: np.ndarray,
+    visible_mag_limit: float,
+    bright_mag: float,
+) -> np.ndarray:
+    """按恒星图相同尺度估算可见连线节点的圆面半径。"""
+
+    radii = np.zeros(mag_v.shape, dtype=np.float64)
+    visible = np.isfinite(mag_v) & (mag_v <= visible_mag_limit)
+    if not np.any(visible):
+        return radii
+    denominator = max(float(visible_mag_limit) - float(bright_mag), 1e-6)
+    normalized = np.clip((float(visible_mag_limit) - mag_v[visible]) / denominator, 0.0, 1.0)
+    radii[visible] = 0.8 + 4.8 * np.sqrt(normalized)
+    return radii
+
+
+def _project_constellations(
+    horizontal_constellations: HorizontalConstellationCatalog | None,
+    camera: CameraSettings,
+    basis: tuple[np.ndarray, np.ndarray, np.ndarray],
+    visible_mag_limit: float,
+    bright_mag: float,
+) -> tuple[ProjectedConstellation, ...]:
+    """把星座折线拆成独立线段，并抑制柱面投影接缝伪线。"""
+
+    if horizontal_constellations is None:
+        return ()
+
+    projected_constellations: list[ProjectedConstellation] = []
+    width = float(camera.image_width_px)
+    height = float(camera.image_height_px)
+    for constellation in horizontal_constellations.constellations:
+        segments: list[ProjectedConstellationSegment] = []
+        visible_label_points: list[tuple[float, float]] = []
+        for line in constellation.lines:
+            x_px, y_px, valid = _project_altaz_points(
+                line.alt_deg,
+                line.az_deg,
+                camera=camera,
+                basis=basis,
+            )
+            radii = _constellation_node_radii(line.mag_v, visible_mag_limit, bright_mag)
+            for index in range(len(line.hip_ids) - 1):
+                if not (valid[index] and valid[index + 1]):
+                    continue
+                start = (float(x_px[index]), float(y_px[index]))
+                end = (float(x_px[index + 1]), float(y_px[index + 1]))
+                if camera.lens_model in CYLINDRICAL_LENS_MODELS and abs(end[0] - start[0]) > width * 0.5:
+                    continue
+                segments.append(
+                    ProjectedConstellationSegment(
+                        start=start,
+                        end=end,
+                        start_radius_px=float(radii[index]),
+                        end_radius_px=float(radii[index + 1]),
+                    )
+                )
+                for point in (start, end):
+                    if 0.0 <= point[0] <= width - 1.0 and 0.0 <= point[1] <= height - 1.0:
+                        visible_label_points.append(point)
+
+        if not segments or not visible_label_points:
+            continue
+        label_points = np.asarray(visible_label_points, dtype=np.float64)
+        projected_constellations.append(
+            ProjectedConstellation(
+                abbreviation=constellation.abbreviation,
+                chinese_name=constellation.chinese_name,
+                segments=tuple(segments),
+                label_x_px=float(np.median(label_points[:, 0])),
+                label_y_px=float(np.median(label_points[:, 1])),
+            )
+        )
+    return tuple(projected_constellations)
+
+
 def _project_solar_system_objects(
     horizontal_solar_system: HorizontalSolarSystemCatalog | None,
     camera: CameraSettings,
@@ -1205,6 +1378,7 @@ def project_horizontal_catalog(
     view: ViewSettings,
     visible_mag_limit: float = 6.5,
     horizontal_milky_way: HorizontalMilkyWayCatalog | None = None,
+    horizontal_constellations: HorizontalConstellationCatalog | None = None,
     horizontal_solar_system: HorizontalSolarSystemCatalog | None = None,
     star_color_mag_limit: float = 6.0,
 ) -> ProjectedStarMap:
@@ -1251,6 +1425,15 @@ def project_horizontal_catalog(
     above_horizon = horizontal_catalog.alt_deg[inside] >= 0.0
     alpha = np.where(above_horizon, 255, 128).astype(np.uint8)
     milky_way_polygons = _project_milky_way_polygons(horizontal_milky_way, camera=camera, basis=basis)
+    finite_catalog_magnitudes = horizontal_catalog.mag_v[np.isfinite(horizontal_catalog.mag_v)]
+    bright_mag = float(np.min(finite_catalog_magnitudes)) if finite_catalog_magnitudes.size else -1.0
+    constellations = _project_constellations(
+        horizontal_constellations,
+        camera=camera,
+        basis=basis,
+        visible_mag_limit=visible_mag_limit,
+        bright_mag=bright_mag,
+    )
     solar_system_objects = _project_solar_system_objects(horizontal_solar_system, camera=camera, basis=basis)
     grid_lines, direction_labels = _build_horizontal_grid(camera=camera, basis=basis)
     horizon_shadow_rects = _build_horizon_shadow_rects(camera=camera, basis=basis)
@@ -1286,6 +1469,7 @@ def project_horizontal_catalog(
         sky_circle_radius_px=sky_circle_radius_px,
         horizon_shadow_rects=horizon_shadow_rects,
         milky_way_polygons=milky_way_polygons,
+        constellations=constellations,
         solar_system_objects=solar_system_objects,
     )
 

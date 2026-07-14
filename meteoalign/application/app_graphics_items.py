@@ -158,6 +158,13 @@ class LiveStarMapGraphicsItem(QGraphicsItem):
         if self.draw_background:
             painter.fillRect(rect, QColor(0, 0, 0))
 
+        self.renderer.draw_constellations(
+            painter,
+            star_map,
+            self.element_scale,
+            self.star_radius_zoom_scale(),
+        )
+
         if len(star_map) > 0:
             points = transform.transform_radec_points(np.column_stack((star_map.ra_deg, star_map.dec_deg)))
             inside = self._inside_rect_mask(points, rect)

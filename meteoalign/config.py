@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -15,6 +16,9 @@ class StarMapUiConfig:
     reference_label_font_size_pt: int = 15
     star_color_mag_limit: float = 6.0
     aligned_reference_scale_multiplier: float = 1.6
+    constellation_line_width_px: float = 1.2
+    constellation_line_color_hex: str = "#E6E6E6"
+    constellation_line_opacity: float = 0.9
     star_pick_circle_default_diameter_px: int = 50
     star_pick_circle_min_diameter_px: int = 20
     star_pick_circle_max_diameter_px: int = 200
@@ -145,6 +149,15 @@ def _read_bool(config: dict[str, object], key: str, default_value: bool) -> bool
     return default_value
 
 
+def _read_color_hex(config: dict[str, object], key: str, default_value: str) -> str:
+    """读取 #RRGGBB 颜色；无效配置回退到默认值。"""
+
+    value = str(config.get(key, default_value)).strip().upper()
+    if re.fullmatch(r"#[0-9A-F]{6}", value):
+        return value
+    return default_value
+
+
 def load_star_map_ui_config(path: Path | None = None) -> StarMapUiConfig:
     config_path = path or default_config_path()
     raw_config = ensure_preference_file(config_path)
@@ -167,6 +180,13 @@ def load_star_map_ui_config(path: Path | None = None) -> StarMapUiConfig:
             0.2,
             6.0,
         ),
+        constellation_line_width_px=_read_float(raw_config, "constellation_line_width_px", 1.2, 0.1, 20.0),
+        constellation_line_color_hex=_read_color_hex(
+            raw_config,
+            "constellation_line_color_hex",
+            "#E6E6E6",
+        ),
+        constellation_line_opacity=_read_float(raw_config, "constellation_line_opacity", 0.9, 0.0, 1.0),
         star_pick_circle_default_diameter_px=circle_default,
         star_pick_circle_min_diameter_px=circle_min,
         star_pick_circle_max_diameter_px=circle_max,

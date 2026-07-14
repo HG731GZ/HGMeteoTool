@@ -39,7 +39,7 @@ from ..alignment.constants import (
 from ..alignment.fitting import fit_sky_alignment
 from ..alignment.models import SkyAlignmentTransform
 from ..catalog_download import ensure_catalogs_ready_or_handle
-from ..catalog import load_default_catalog, project_root
+from ..catalog import load_constellation_catalog, load_default_catalog, project_root
 from ..camera_calibration import CameraCalibrationProfile
 from ..config import StarMapUiConfig, load_star_map_ui_config
 from ..preference_manager import ensure_preference_file, recent_import_directory, remember_import_path
@@ -55,6 +55,7 @@ from ..simulator import (
     CameraSettings,
     FISHEYE_EQUIDISTANT,
     FISHEYE_EQUISOLID,
+    HorizontalConstellationCatalog,
     HorizontalMilkyWayCatalog,
     HorizontalSolarSystemCatalog,
     HorizontalStarCatalog,
@@ -177,6 +178,7 @@ class MainWindow(
         self._apply_ui_font_config(self.ui_config)
 
         self.catalog = load_default_catalog(mag_limit=None)
+        self.constellation_catalog = load_constellation_catalog()
         self.milky_way_catalog: MilkyWayCatalog = load_milky_way()
         self.renderer = StarMapRenderer(self.ui_config)
         self.scene = QGraphicsScene(self)
@@ -230,6 +232,8 @@ class MainWindow(
         self._horizontal_cache: HorizontalStarCatalog | None = None
         self._milky_way_cache_key: tuple[object, ...] | None = None
         self._milky_way_cache: HorizontalMilkyWayCatalog | None = None
+        self._constellation_cache_key: tuple[object, ...] | None = None
+        self._constellation_cache: HorizontalConstellationCatalog | None = None
         self._solar_system_cache_key: tuple[object, ...] | None = None
         self._solar_system_cache: HorizontalSolarSystemCatalog | None = None
         self._last_render_size: tuple[int, int] | None = None

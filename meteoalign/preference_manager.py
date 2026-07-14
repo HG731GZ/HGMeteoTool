@@ -18,6 +18,9 @@ DEFAULT_PREFERENCE_VALUES: dict[str, object] = {
     "reference_label_font_size_pt": 15,
     "star_color_mag_limit": 4.0,
     "aligned_reference_scale_multiplier": 1.6,
+    "constellation_line_width_px": 1.2,
+    "constellation_line_color_hex": "#E6E6E6",
+    "constellation_line_opacity": 0.9,
     "star_pick_circle_default_diameter_px": 50,
     "star_pick_circle_min_diameter_px": 20,
     "star_pick_circle_max_diameter_px": 300,
@@ -100,6 +103,9 @@ PREFERENCE_COMMENTS: dict[str, str] = {
     "reference_label_font_size_pt": "参考星标注编号和名称的字体大小。",
     "star_color_mag_limit": "只有视觉星等不大于该值的恒星才渲染色度；更暗的恒星使用灰阶。",
     "aligned_reference_scale_multiplier": "叠加参考星图时的显示缩放倍率。",
+    "constellation_line_width_px": "星座连线宽度，单位为像素。",
+    "constellation_line_color_hex": "星座连线颜色，格式为 #RRGGBB。",
+    "constellation_line_opacity": "星座连线透明度，范围为 0 到 1。",
     "star_pick_circle_default_diameter_px": "点选星点时默认圆圈直径，单位为像素。",
     "star_pick_circle_min_diameter_px": "点选星点圆圈允许的最小直径，单位为像素。",
     "star_pick_circle_max_diameter_px": "点选星点圆圈允许的最大直径，单位为像素。",
@@ -175,6 +181,7 @@ PREFERENCE_COMMENTS: dict[str, str] = {
 }
 
 PREFERENCE_SECTION_START_KEYS = {
+    "constellation_line_width_px",
     "star_pick_circle_default_diameter_px",
     "default_latitude_deg",
     "auto_match_default_new_count",

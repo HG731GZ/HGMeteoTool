@@ -20,18 +20,23 @@ from ..simulator import (
     CameraSettings,
     FISHEYE_EQUIDISTANT,
     FISHEYE_EQUISOLID,
+    HorizontalConstellationCatalog,
     HorizontalMilkyWayCatalog,
     HorizontalSolarSystemCatalog,
     HorizontalStarCatalog,
     ObserverSettings,
-    ProjectedStarMap,
+    ProjectedConstellation,
+    ProjectedConstellationSegment,
     ProjectedSolarSystemObject,
+    ProjectedStarMap,
     RECTILINEAR_LENS_MODEL,
     ReferenceStar,
     ViewSettings,
+    _constellation_node_radii,
     _star_rgb,
     _star_style,
     compute_horizontal_catalog,
+    compute_horizontal_constellations,
     compute_horizontal_milky_way,
     compute_horizontal_solar_system,
     project_horizontal_catalog,
@@ -44,6 +49,7 @@ class RenderingMixin:
 
     ui: object
     catalog: object
+    constellation_catalog: object
     milky_way_catalog: object
     renderer: object
     scene: object
@@ -57,6 +63,8 @@ class RenderingMixin:
     _horizontal_cache: HorizontalStarCatalog | None
     _milky_way_cache_key: object
     _milky_way_cache: HorizontalMilkyWayCatalog | None
+    _constellation_cache_key: object
+    _constellation_cache: HorizontalConstellationCatalog | None
     _solar_system_cache_key: object
     _solar_system_cache: HorizontalSolarSystemCatalog | None
     _last_render_size: object
@@ -471,6 +479,21 @@ class RenderingMixin:
             self._milky_way_cache_key = cache_key
         return self._milky_way_cache
 
+    def _get_horizontal_constellations(self, observer: ObserverSettings) -> HorizontalConstellationCatalog:
+        cache_key = (
+            int(observer.observation_time_utc.timestamp()),
+            round(observer.latitude_deg, 8),
+            round(observer.longitude_deg, 8),
+            round(observer.elevation_m, 3),
+        )
+        if self._constellation_cache_key != cache_key or self._constellation_cache is None:
+            self._constellation_cache = compute_horizontal_constellations(
+                catalog=self.constellation_catalog,
+                observer=observer,
+            )
+            self._constellation_cache_key = cache_key
+        return self._constellation_cache
+
     def _get_horizontal_solar_system(self, observer: ObserverSettings) -> HorizontalSolarSystemCatalog:
         cache_key = (
             int(observer.observation_time_utc.timestamp()),
@@ -494,6 +517,7 @@ class RenderingMixin:
         mag_limit = self.ui.doubleSpinBoxMagLimit.value() if visible_mag_limit is None else float(visible_mag_limit)
         horizontal_catalog = self._get_horizontal_catalog(observer, mag_limit)
         horizontal_milky_way = self._get_horizontal_milky_way(observer)
+        horizontal_constellations = self._get_horizontal_constellations(observer)
         horizontal_solar_system = self._get_horizontal_solar_system(observer)
         star_map = project_horizontal_catalog(
             horizontal_catalog=horizontal_catalog,
@@ -501,6 +525,7 @@ class RenderingMixin:
             view=view,
             visible_mag_limit=mag_limit,
             horizontal_milky_way=horizontal_milky_way,
+            horizontal_constellations=horizontal_constellations,
             horizontal_solar_system=horizontal_solar_system,
             star_color_mag_limit=self.ui_config.star_color_mag_limit,
         )
@@ -565,6 +590,54 @@ class RenderingMixin:
             )
         return tuple(objects)
 
+    def _aligned_constellations(
+        self,
+        transform: object,
+        target_size: tuple[int, int],
+        visible_mag_limit: float,
+        bright_mag: float,
+    ) -> tuple[ProjectedConstellation, ...]:
+        """把星座节点直接投到已经配准的真实图像坐标。"""
+
+        width_px, height_px = target_size
+        projected: list[ProjectedConstellation] = []
+        for constellation in self.constellation_catalog.constellations:
+            segments: list[ProjectedConstellationSegment] = []
+            label_points: list[tuple[float, float]] = []
+            for line in constellation.lines:
+                points = transform.transform_radec_points(np.column_stack((line.ra_deg, line.dec_deg)))
+                valid = np.all(np.isfinite(points), axis=1)
+                radii = _constellation_node_radii(line.mag_v, visible_mag_limit, bright_mag)
+                for index in range(len(line.hip_ids) - 1):
+                    if not (valid[index] and valid[index + 1]):
+                        continue
+                    start = (float(points[index, 0]), float(points[index, 1]))
+                    end = (float(points[index + 1, 0]), float(points[index + 1, 1]))
+                    segments.append(
+                        ProjectedConstellationSegment(
+                            start=start,
+                            end=end,
+                            start_radius_px=float(radii[index]),
+                            end_radius_px=float(radii[index + 1]),
+                        )
+                    )
+                    for point in (start, end):
+                        if 0.0 <= point[0] <= width_px - 1 and 0.0 <= point[1] <= height_px - 1:
+                            label_points.append(point)
+            if not segments or not label_points:
+                continue
+            label_array = np.asarray(label_points, dtype=np.float64)
+            projected.append(
+                ProjectedConstellation(
+                    abbreviation=constellation.abbreviation,
+                    chinese_name=constellation.chinese_name,
+                    segments=tuple(segments),
+                    label_x_px=float(np.median(label_array[:, 0])),
+                    label_y_px=float(np.median(label_array[:, 1])),
+                )
+            )
+        return tuple(projected)
+
     def _build_aligned_reference_star_map(
         self,
         transform: object,
@@ -608,6 +681,14 @@ class RenderingMixin:
             transform=transform,
             target_size=(width_px, height_px),
         )
+        finite_magnitudes = horizontal_catalog.mag_v[np.isfinite(horizontal_catalog.mag_v)]
+        bright_mag = float(np.min(finite_magnitudes)) if finite_magnitudes.size else -1.0
+        constellations = self._aligned_constellations(
+            transform,
+            target_size=(width_px, height_px),
+            visible_mag_limit=mag_limit,
+            bright_mag=bright_mag,
+        )
 
         # 参考星图进入配准模式后只表达“当前模型投到真实图像窗口里的星”，不再附带地平线遮罩或模拟视野网格。
         return ProjectedStarMap(
@@ -638,6 +719,7 @@ class RenderingMixin:
             sky_circle_radius_px=None,
             horizon_shadow_rects=(),
             milky_way_polygons=(),
+            constellations=constellations,
             solar_system_objects=solar_system_objects,
         )
 

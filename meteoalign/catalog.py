@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gzip
+import json
 import re
 from dataclasses import dataclass
 from functools import lru_cache
@@ -42,6 +43,34 @@ class StarCatalog:
         return int(self.ra_deg.size)
 
 
+@dataclass(frozen=True)
+class ConstellationLine:
+    """一条按 HIP 编号依次连接的星座折线。"""
+
+    hip_ids: tuple[int, ...]
+    ra_deg: np.ndarray
+    dec_deg: np.ndarray
+    mag_v: np.ndarray
+
+
+@dataclass(frozen=True)
+class ConstellationDefinition:
+    """单个星座的中文名称及其全部连线。"""
+
+    constellation_id: str
+    abbreviation: str
+    chinese_name: str
+    lines: tuple[ConstellationLine, ...]
+
+
+@dataclass(frozen=True)
+class ConstellationCatalog:
+    """从 Stellarium 连线文件和 Hipparcos 主表组成的星座数据。"""
+
+    source_name: str
+    constellations: tuple[ConstellationDefinition, ...]
+
+
 def project_root() -> Path:
     return source_project_root()
 
@@ -60,6 +89,10 @@ def default_iau_csn_path() -> Path:
 
 def default_hipparcos_path() -> Path:
     return default_catalog_dir() / "hipparcos_i239" / "hip_main.dat"
+
+
+def default_constellation_path() -> Path:
+    return default_catalog_dir() / "constellation.json"
 
 
 def default_chinese_star_names_path() -> Path:
@@ -253,6 +286,111 @@ def _load_hip_ids_by_hd_cached(path_text: str) -> dict[int, int]:
 
 def load_hip_ids_by_hd(path: Path | None = None) -> dict[int, int]:
     return dict(_load_hip_ids_by_hd_cached(str(path or default_hipparcos_path())))
+
+
+@lru_cache(maxsize=4)
+def _load_hipparcos_positions_cached(path_text: str) -> dict[int, tuple[float, float, float]]:
+    """读取 Hipparcos 的 HIP、ICRS 坐标和 V 星等。"""
+
+    path = Path(path_text)
+    if not path.exists():
+        raise FileNotFoundError(f"未找到 Hipparcos 主表：{path}")
+
+    positions: dict[int, tuple[float, float, float]] = {}
+    with path.open("rt", encoding="latin-1") as handle:
+        for line in handle:
+            try:
+                hip_id = _parse_int(line[8:14])
+                ra_deg = _parse_float(line[51:63])
+                dec_deg = _parse_float(line[64:76])
+                mag_v = _parse_float(line[41:46])
+            except ValueError:
+                continue
+            if hip_id is None or ra_deg is None or dec_deg is None:
+                continue
+            positions[hip_id] = (
+                float(ra_deg),
+                float(dec_deg),
+                np.nan if mag_v is None else float(mag_v),
+            )
+    return positions
+
+
+def load_constellation_catalog(
+    path: Path | None = None,
+    hipparcos_path: Path | None = None,
+) -> ConstellationCatalog:
+    """加载 Stellarium 星座折线，并用 Hipparcos 主表补全节点坐标。"""
+
+    constellation_path = path or default_constellation_path()
+    if not constellation_path.exists():
+        raise FileNotFoundError(f"未找到星座连线文件：{constellation_path}")
+    try:
+        payload = json.loads(constellation_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"星座连线文件不是有效 JSON：{constellation_path}") from exc
+
+    raw_constellations = payload.get("constellations", []) if isinstance(payload, dict) else []
+    if not isinstance(raw_constellations, list):
+        raise ValueError(f"星座连线文件缺少 constellations 数组：{constellation_path}")
+
+    positions = _load_hipparcos_positions_cached(str(hipparcos_path or default_hipparcos_path()))
+    definitions: list[ConstellationDefinition] = []
+    for raw_constellation in raw_constellations:
+        if not isinstance(raw_constellation, dict):
+            continue
+        constellation_id = str(raw_constellation.get("id", "")).strip()
+        abbreviation = constellation_id.split()[-1] if constellation_id else ""
+        common_name = raw_constellation.get("common_name", {})
+        chinese_name = str(common_name.get("chinese", "")).strip() if isinstance(common_name, dict) else ""
+        if not chinese_name:
+            raise ValueError(f"星座 {abbreviation or constellation_id!r} 缺少 common_name.chinese")
+
+        lines: list[ConstellationLine] = []
+        raw_lines = raw_constellation.get("lines", [])
+        if not isinstance(raw_lines, list):
+            continue
+        for raw_line in raw_lines:
+            if not isinstance(raw_line, list):
+                continue
+            try:
+                hip_ids = tuple(int(value) for value in raw_line)
+            except (TypeError, ValueError):
+                continue
+            if len(hip_ids) < 2:
+                continue
+
+            # 缺坐标时按缺失节点切开，避免错误地跨节点补线。
+            current_ids: list[int] = []
+            for hip_id in (*hip_ids, -1):
+                if hip_id in positions:
+                    current_ids.append(hip_id)
+                    continue
+                if len(current_ids) >= 2:
+                    values = [positions[value] for value in current_ids]
+                    lines.append(
+                        ConstellationLine(
+                            hip_ids=tuple(current_ids),
+                            ra_deg=np.asarray([value[0] for value in values], dtype=np.float64),
+                            dec_deg=np.asarray([value[1] for value in values], dtype=np.float64),
+                            mag_v=np.asarray([value[2] for value in values], dtype=np.float64),
+                        )
+                    )
+                current_ids = []
+
+        definitions.append(
+            ConstellationDefinition(
+                constellation_id=constellation_id,
+                abbreviation=abbreviation,
+                chinese_name=chinese_name,
+                lines=tuple(lines),
+            )
+        )
+
+    return ConstellationCatalog(
+        source_name=f"Stellarium constellation lines ({constellation_path.name})",
+        constellations=tuple(definitions),
+    )
 
 
 def load_chinese_star_names_by_hr(

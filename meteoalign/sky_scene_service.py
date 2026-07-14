@@ -8,6 +8,7 @@ from PyQt5.QtGui import QImage
 from .renderer import StarMapRenderer
 from .simulator import (
     CameraSettings,
+    HorizontalConstellationCatalog,
     HorizontalMilkyWayCatalog,
     HorizontalSolarSystemCatalog,
     HorizontalStarCatalog,
@@ -23,6 +24,7 @@ class SkySceneData:
 
     horizontal_catalog: HorizontalStarCatalog
     horizontal_milky_way: HorizontalMilkyWayCatalog | None = None
+    horizontal_constellations: HorizontalConstellationCatalog | None = None
     horizontal_solar_system: HorizontalSolarSystemCatalog | None = None
 
 
@@ -67,6 +69,7 @@ class SkyPreviewRenderService:
             view=view,
             visible_mag_limit=visible_mag_limit,
             horizontal_milky_way=scene.horizontal_milky_way,
+            horizontal_constellations=scene.horizontal_constellations,
             horizontal_solar_system=scene.horizontal_solar_system,
             star_color_mag_limit=self.renderer.ui_config.star_color_mag_limit,
         )

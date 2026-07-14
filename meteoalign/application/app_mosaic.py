@@ -2151,10 +2151,12 @@ class MosaicProjectionMixin:
             if observer is not None:
                 horizontal_catalog = self._get_horizontal_catalog(observer, mag_limit)
                 horizontal_milky_way = self._get_horizontal_milky_way(observer)
+                horizontal_constellations = self._get_horizontal_constellations(observer)
                 horizontal_solar_system = self._get_horizontal_solar_system(observer)
                 scene = SkySceneData(
                     horizontal_catalog=horizontal_catalog,
                     horizontal_milky_way=horizontal_milky_way,
+                    horizontal_constellations=horizontal_constellations,
                     horizontal_solar_system=horizontal_solar_system,
                 )
             source_items = tuple(self._selected_mosaic_source_items())
