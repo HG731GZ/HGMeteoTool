@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from uuid import uuid4
 
 from PyQt5.QtCore import QObject, QProcess, pyqtSignal
@@ -55,7 +56,12 @@ class MetDetWorkerClient(QObject):
         self._process.setArguments(list(invocation.arguments))
         self._process.start()
 
-    def detect(self, image_paths: list[str], options: MeteorDetectionOptions) -> str:
+    def detect(
+        self,
+        image_paths: list[str],
+        options: MeteorDetectionOptions,
+        mask_path: str | Path | None = None,
+    ) -> str:
         """向已就绪 worker 发送串行批量检测请求。"""
 
         if not self.is_ready:
@@ -66,7 +72,7 @@ class MetDetWorkerClient(QObject):
                 "command": "detect",
                 "request_id": request_id,
                 "image_paths": image_paths,
-                "options": options.worker_options(),
+                "options": options.worker_options(mask_path),
             }
         )
         return request_id

@@ -68,6 +68,32 @@ def test_meteor_detection_options_round_trip(tmp_path) -> None:
     assert loaded.worker_options()["overwrite"] is True
 
 
+def test_meteor_detection_worker_options_include_optional_mask_path(tmp_path) -> None:
+    """流星蒙版应作为单次任务参数传给 worker，且不写入持久检测配置。"""
+
+    mask_path = tmp_path / "sky mask.png"
+    options = MeteorDetectionOptions()
+
+    assert "mask_path" not in options.worker_options()
+    assert options.worker_options(mask_path)["mask_path"] == str(mask_path.resolve())
+
+
+def test_worker_client_writes_mask_path_into_detect_options(tmp_path, monkeypatch) -> None:
+    """客户端发送 detect 消息时应把蒙版路径放在 options 内。"""
+
+    _application()
+    client = MetDetWorkerClient()
+    monkeypatch.setattr(MetDetWorkerClient, "is_ready", property(lambda _client: True))
+    messages: list[dict[str, object]] = []
+    monkeypatch.setattr(client, "_write_message", messages.append)
+    mask_path = tmp_path / "mask.tif"
+
+    client.detect([str(tmp_path / "image.tif")], MeteorDetectionOptions(), mask_path)
+
+    assert messages[-1]["command"] == "detect"
+    assert messages[-1]["options"]["mask_path"] == str(mask_path.resolve())  # type: ignore[index]
+
+
 def test_source_worker_directory_resolves_to_current_python(tmp_path) -> None:
     """开发环境允许把引擎位置指向包含 metdet_worker.py 的源码目录。"""
 

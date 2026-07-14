@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import shutil
+from collections import OrderedDict
 from pathlib import Path
 
+import numpy as np
 from PyQt5.QtCore import QTimer, Qt
-from PyQt5.QtGui import QBrush, QColor, QPalette
+from PyQt5.QtGui import QBrush, QColor, QImage, QPalette
 from PyQt5.QtWidgets import QAbstractItemView, QDialog, QFileDialog, QHeaderView, QMessageBox, QTableWidgetItem
 
+from ..binary_mask import image_with_binary_mask, scale_binary_mask_nearest
+from ..image_preview import IMAGE_FILE_FILTER, ImagePreview
 from ..image_sequence import read_image_capture_time, sequence_item_local_datetime
 from ..meteor_detection import (
     MeteorDetectionOptions,
@@ -17,6 +21,8 @@ from ..meteor_detection import (
 )
 from ..meteor_selection import MeteorBox, load_meteor_selection, meteor_json_path, save_meteor_selection
 from ..raw_image_preview import METEOR_IMAGE_FILE_FILTER, load_meteor_image_preview
+from ..qt_tasks import create_progress_dialog, start_qt_worker_task
+from ..meteor_mask import MeteorMaskLoadWorker
 from .metdet_worker_client import MetDetWorkerClient
 from .meteor_detection_options_dialog import MeteorDetectionOptionsDialog
 
@@ -27,6 +33,8 @@ METEOR_SELECTION_COUNT_COLUMN = 2
 METEOR_SELECTION_INDEX_ROLE = Qt.UserRole + 31
 METEOR_SELECTION_ROW_GREEN = QColor(220, 252, 231)
 METEOR_SIDECAR_JSON_SEPARATORS = ("_", ".", "-")
+METEOR_SELECTION_PREVIEW_CACHE_LIMIT = 12
+METEOR_SELECTION_MASKED_PREVIEW_CACHE_LIMIT = 12
 
 
 def meteor_sidecar_json_paths(image_path: str | Path) -> list[Path]:
@@ -58,6 +66,13 @@ class MeteorSelectionMixin:
         self._meteor_selection_image_sizes: dict[Path, tuple[int, int]] = {}
         self._meteor_selection_dirty_paths: set[Path] = set()
         self._meteor_selection_current_index = -1
+        self._meteor_selection_preview_cache: OrderedDict[str, ImagePreview] = OrderedDict()
+        self._meteor_selection_masked_preview_cache: OrderedDict[tuple[object, ...], QImage] = OrderedDict()
+        self._meteor_selection_mask_path: Path | None = None
+        self._meteor_selection_mask: np.ndarray | None = None
+        self._meteor_mask_import_thread: object | None = None
+        self._meteor_mask_import_worker: object | None = None
+        self._meteor_mask_import_progress: object | None = None
         self._meteor_detection_options = load_meteor_detection_options()
         self._meteor_detection_client = MetDetWorkerClient(self)
         self._meteor_detection_active = False
@@ -98,6 +113,9 @@ class MeteorSelectionMixin:
 
         self.ui.pushButtonImportMeteorImages.clicked.connect(self.import_meteor_images)
         self.ui.pushButtonClearMeteorImports.clicked.connect(self.clear_all_imported_meteor_images)
+        self.ui.pushButtonImportMeteorMask.clicked.connect(self.import_meteor_mask)
+        self.ui.pushButtonClearMeteorMask.clicked.connect(self.clear_meteor_mask)
+        self.ui.checkBoxShowMeteorMask.toggled.connect(self._refresh_meteor_mask_display)
         self.ui.pushButtonClearMeteorBoxes.clicked.connect(self.clear_meteor_boxes)
         self.ui.pushButtonSaveAllMeteorBoxes.clicked.connect(self.save_all_meteor_boxes)
         self.ui.pushButtonMeteorDetectionOptions.clicked.connect(self.show_meteor_detection_options)
@@ -125,6 +143,7 @@ class MeteorSelectionMixin:
         self._meteor_selection_image_sizes = {}
         self._meteor_selection_dirty_paths = set()
         self._meteor_selection_current_index = -1
+        self._clear_meteor_selection_preview_cache()
         self.ui.meteorSelectionView.clear_image()
         self.ui.labelMeteorSelectionPreviewTitle.setText("未导入流星图片")
         self.ui.labelMeteorSelectionPreviewTitle.setToolTip("")
@@ -165,6 +184,7 @@ class MeteorSelectionMixin:
         self._meteor_selection_boxes_by_path = {}
         self._meteor_selection_image_sizes = {}
         self._meteor_selection_dirty_paths = set()
+        self._clear_meteor_selection_preview_cache()
         read_errors: list[str] = []
         for image_path in paths:
             try:
@@ -196,6 +216,271 @@ class MeteorSelectionMixin:
         self._reset_meteor_selection_page()
         self.ui.statusbar.showMessage("已清除当前批次的所有导入，可以继续导入下一批图片。", 6000)
 
+    def _meteor_selection_preview_cache_key(self, image_path: str | Path) -> str:
+        """返回跨平台稳定的预览缓存键。"""
+
+        path = Path(image_path).expanduser()
+        try:
+            return str(path.resolve())
+        except OSError:
+            return str(path)
+
+    def _bounded_meteor_preview_cache_set(
+        self,
+        cache: OrderedDict,
+        key: object,
+        value: object,
+        limit: int,
+    ) -> None:
+        """写入流星页 LRU 缓存，并限制长序列的内存占用。"""
+
+        if key in cache:
+            cache.move_to_end(key)
+        cache[key] = value
+        while len(cache) > limit:
+            cache.popitem(last=False)
+
+    def _clear_meteor_selection_preview_cache(self) -> None:
+        """清空原始与蒙版预览缓存。"""
+
+        self._meteor_selection_preview_cache.clear()
+        self._meteor_selection_masked_preview_cache.clear()
+
+    def _meteor_selection_preview_for_path(self, image_path: Path) -> ImagePreview:
+        """优先返回原始预览缓存，未命中时只读取一次磁盘。"""
+
+        cache_key = self._meteor_selection_preview_cache_key(image_path)
+        cached = self._meteor_selection_preview_cache.get(cache_key)
+        if cached is not None:
+            self._meteor_selection_preview_cache.move_to_end(cache_key)
+            return cached
+        preview = load_meteor_image_preview(image_path)
+        self._bounded_meteor_preview_cache_set(
+            self._meteor_selection_preview_cache,
+            cache_key,
+            preview,
+            METEOR_SELECTION_PREVIEW_CACHE_LIMIT,
+        )
+        return preview
+
+    def _meteor_selection_mask_matches_preview(self, preview: ImagePreview) -> bool:
+        """判断当前蒙版是否与预览所代表的原始图像尺寸一致。"""
+
+        mask = self._meteor_selection_mask
+        return mask is not None and mask.shape == (preview.original_height, preview.original_width)
+
+    def _meteor_selection_masked_cache_key(
+        self,
+        image_path: Path,
+        preview: ImagePreview,
+    ) -> tuple[object, ...]:
+        """把图片、蒙版对象和预览尺寸组合为蒙版显示缓存键。"""
+
+        return (
+            self._meteor_selection_preview_cache_key(image_path),
+            id(self._meteor_selection_mask),
+            int(preview.image.width()),
+            int(preview.image.height()),
+        )
+
+    def _meteor_selection_display_image(self, image_path: Path, preview: ImagePreview) -> QImage:
+        """按勾选状态返回原始或已缓存的蒙版预览。"""
+
+        if not self.ui.checkBoxShowMeteorMask.isChecked() or self._meteor_selection_mask is None:
+            return preview.image
+        if not self._meteor_selection_mask_matches_preview(preview):
+            self.ui.statusbar.showMessage(
+                f"蒙版尺寸与 {image_path.name} 不一致，当前预览暂不显示蒙版。",
+                8000,
+            )
+            return preview.image
+
+        cache_key = self._meteor_selection_masked_cache_key(image_path, preview)
+        cached = self._meteor_selection_masked_preview_cache.get(cache_key)
+        if cached is not None:
+            self._meteor_selection_masked_preview_cache.move_to_end(cache_key)
+            return cached
+        preview_mask = scale_binary_mask_nearest(
+            self._meteor_selection_mask,
+            preview.image.width(),
+            preview.image.height(),
+        )
+        masked_image = image_with_binary_mask(preview.image, preview_mask)
+        self._bounded_meteor_preview_cache_set(
+            self._meteor_selection_masked_preview_cache,
+            cache_key,
+            masked_image,
+            METEOR_SELECTION_MASKED_PREVIEW_CACHE_LIMIT,
+        )
+        return masked_image
+
+    def import_meteor_mask(self) -> None:
+        """选择并导入供整批流星图片共同使用的检测蒙版。"""
+
+        if self._meteor_detection_active or self._meteor_mask_import_thread is not None:
+            return
+        if not self._has_current_meteor_selection_image():
+            QMessageBox.information(self, "尚未导入流星图片", "请先导入流星图片，再导入同尺寸蒙版。")
+            return
+        image_path = self._meteor_selection_paths[self._meteor_selection_current_index]
+        default_dir = self._import_dialog_directory(image_path.parent)
+        file_path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "导入流星检测蒙版",
+            str(default_dir),
+            IMAGE_FILE_FILTER,
+        )
+        if not file_path:
+            return
+        self._remember_import_path(file_path)
+        self.start_meteor_mask_import(file_path)
+
+    def start_meteor_mask_import(self, file_path: str | Path) -> None:
+        """在后台读取蒙版，并预先生成当前图片的蒙版显示缓存。"""
+
+        if self._meteor_detection_active or self._meteor_mask_import_thread is not None:
+            return
+        if not self._has_current_meteor_selection_image():
+            QMessageBox.information(self, "尚未导入流星图片", "请先导入流星图片，再导入同尺寸蒙版。")
+            return
+        image_path = self._meteor_selection_paths[self._meteor_selection_current_index]
+        try:
+            preview = self._meteor_selection_preview_for_path(image_path)
+            mask_path = Path(file_path).expanduser().resolve()
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, "导入蒙版失败", str(exc))
+            return
+
+        progress = create_progress_dialog(
+            self,
+            title="正在导入流星蒙版",
+            label_text=f"正在读取蒙版并生成缓存预览...\n{mask_path}",
+            minimum=0,
+            maximum=0,
+        )
+        worker = MeteorMaskLoadWorker(
+            mask_path,
+            expected_size=(preview.original_width, preview.original_height),
+            source_image=preview.image,
+            source_path=image_path,
+        )
+        task = start_qt_worker_task(
+            parent=self,
+            worker=worker,
+            finished_signal=worker.finished,
+            failed_signal=worker.failed,
+            on_finished=self._handle_meteor_mask_import_finished,
+            on_failed=self._handle_meteor_mask_import_failed,
+            on_cleanup=self._cleanup_meteor_mask_import,
+            progress_dialog=progress,
+        )
+        self._meteor_mask_import_thread = task.thread
+        self._meteor_mask_import_worker = task.worker
+        self._meteor_mask_import_progress = progress
+        self.ui.statusbar.showMessage(f"正在导入流星检测蒙版：{mask_path}")
+        self._update_meteor_selection_controls()
+
+    def _handle_meteor_mask_import_finished(self, result: object) -> None:
+        """应用后台读取结果，并把当前图片的蒙版预览放入缓存。"""
+
+        if self._meteor_mask_import_progress is not None:
+            self._meteor_mask_import_progress.close()
+        try:
+            mask_path, source_path, mask, masked_image = result  # type: ignore[misc]
+            mask_path = Path(mask_path).expanduser().resolve()
+            source_path = Path(source_path).expanduser().resolve()
+            if not self._has_current_meteor_selection_image():
+                raise ValueError("流星图片已清空，无法应用蒙版。")
+            current_path = self._meteor_selection_paths[self._meteor_selection_current_index].expanduser().resolve()
+            if current_path != source_path:
+                raise ValueError("当前流星图片已改变，请重新导入蒙版。")
+            preview = self._meteor_selection_preview_for_path(current_path)
+            mask_array = np.asarray(mask, dtype=bool)
+            if mask_array.shape != (preview.original_height, preview.original_width):
+                raise ValueError("蒙版尺寸与当前流星原图不一致，请重新导入。")
+
+            self._meteor_selection_mask_path = mask_path
+            self._meteor_selection_mask = mask_array
+            self._meteor_selection_masked_preview_cache.clear()
+            if isinstance(masked_image, QImage) and not masked_image.isNull():
+                cache_key = self._meteor_selection_masked_cache_key(current_path, preview)
+                self._bounded_meteor_preview_cache_set(
+                    self._meteor_selection_masked_preview_cache,
+                    cache_key,
+                    masked_image,
+                    METEOR_SELECTION_MASKED_PREVIEW_CACHE_LIMIT,
+                )
+            self.ui.pushButtonClearMeteorMask.setToolTip(f"清除当前流星检测蒙版：{mask_path}")
+            self.ui.checkBoxShowMeteorMask.setToolTip(f"显示应用蒙版后的预览：{mask_path}")
+            self._refresh_meteor_mask_display()
+            valid_fraction = float(np.count_nonzero(mask_array)) / max(float(mask_array.size), 1.0)
+            self.ui.statusbar.showMessage(
+                f"已导入流星检测蒙版，有效区域 {valid_fraction * 100.0:.1f}%：{mask_path}",
+                8000,
+            )
+        except Exception as exc:  # noqa: BLE001 - 主线程应用异步结果时需统一反馈状态错误。
+            self.ui.statusbar.showMessage(f"导入流星检测蒙版失败：{exc}", 10000)
+            QMessageBox.critical(self, "导入蒙版失败", str(exc))
+        finally:
+            self._update_meteor_selection_controls()
+
+    def _handle_meteor_mask_import_failed(self, error_message: str) -> None:
+        """显示后台蒙版读取错误。"""
+
+        if self._meteor_mask_import_progress is not None:
+            self._meteor_mask_import_progress.close()
+        self.ui.statusbar.showMessage(f"导入流星检测蒙版失败：{error_message}", 10000)
+        QMessageBox.critical(self, "导入蒙版失败", error_message)
+
+    def _cleanup_meteor_mask_import(self) -> None:
+        """释放蒙版导入线程引用并恢复页面控件。"""
+
+        if self._meteor_mask_import_progress is not None:
+            self._meteor_mask_import_progress.close()
+        self._meteor_mask_import_thread = None
+        self._meteor_mask_import_worker = None
+        self._meteor_mask_import_progress = None
+        self._update_meteor_selection_controls()
+
+    def _reset_meteor_mask_state(self) -> None:
+        """清除流星蒙版及其派生预览，但保留原始图像缓存。"""
+
+        self._meteor_selection_mask_path = None
+        self._meteor_selection_mask = None
+        self._meteor_selection_masked_preview_cache.clear()
+        was_blocked = self.ui.checkBoxShowMeteorMask.blockSignals(True)
+        self.ui.checkBoxShowMeteorMask.setChecked(False)
+        self.ui.checkBoxShowMeteorMask.blockSignals(was_blocked)
+        self.ui.pushButtonClearMeteorMask.setToolTip("清除当前流星检测蒙版，后续自动检测将使用整张图像。")
+        self.ui.checkBoxShowMeteorMask.setToolTip("在右侧预览中显示应用蒙版后的图像。")
+
+    def clear_meteor_mask(self) -> None:
+        """清除当前流星检测蒙版并恢复未遮罩预览。"""
+
+        if self._meteor_detection_active or self._meteor_mask_import_thread is not None:
+            return
+        if self._meteor_selection_mask is None:
+            self.ui.statusbar.showMessage("当前没有正在使用的流星检测蒙版。", 5000)
+            return
+        self._reset_meteor_mask_state()
+        self._refresh_meteor_mask_display()
+        self._update_meteor_selection_controls()
+        self.ui.statusbar.showMessage("已清除流星检测蒙版，后续自动检测将使用整张图像。", 6000)
+
+    def _refresh_meteor_mask_display(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        """切换当前图像的缓存显示，不重复生成蒙版预览。"""
+
+        if not self._has_current_meteor_selection_image():
+            return
+        image_path = self._meteor_selection_paths[self._meteor_selection_current_index]
+        try:
+            preview = self._meteor_selection_preview_for_path(image_path)
+            display_image = self._meteor_selection_display_image(image_path, preview)
+        except (OSError, ValueError) as exc:
+            self.ui.statusbar.showMessage(f"流星图片预览刷新失败：{image_path.name}：{exc}", 10000)
+            return
+        self.ui.meteorSelectionView.replace_display_image(display_image)
+
     def show_previous_meteor_image(self) -> None:
         """显示列表中的上一张图像。"""
 
@@ -226,7 +511,7 @@ class MeteorSelectionMixin:
         self.ui.labelMeteorSelectionPreviewTitle.setToolTip(str(image_path))
 
         try:
-            preview = load_meteor_image_preview(image_path)
+            preview = self._meteor_selection_preview_for_path(image_path)
         except Exception as exc:  # noqa: BLE001 - 单图预览失败不能阻断其他图片的框选。
             self._meteor_selection_image_sizes.pop(image_path, None)
             self.ui.meteorSelectionView.clear_image()
@@ -236,9 +521,19 @@ class MeteorSelectionMixin:
         else:
             image_size = (preview.original_width, preview.original_height)
             self._meteor_selection_image_sizes[image_path] = image_size
-            self.ui.meteorSelectionView.set_image(preview.image, *image_size)
+            mask_was_cleared = False
+            if self._meteor_selection_mask is not None and not self._meteor_selection_mask_matches_preview(preview):
+                self._reset_meteor_mask_state()
+                mask_was_cleared = True
+            display_image = self._meteor_selection_display_image(image_path, preview)
+            self.ui.meteorSelectionView.set_image(display_image, *image_size)
             self.ui.meteorSelectionView.set_boxes(self._meteor_selection_boxes_by_path.get(image_path, []))
             self._update_meteor_selection_capture_time(image_path)
+            if mask_was_cleared:
+                self.ui.statusbar.showMessage(
+                    "当前流星图片尺寸与已有蒙版不一致，已自动清除蒙版。",
+                    8000,
+                )
 
         self._refresh_meteor_selection_table()
         self._select_current_meteor_selection_table_row()
@@ -366,7 +661,7 @@ class MeteorSelectionMixin:
         image_size = self._meteor_selection_image_sizes.get(image_path)
         if image_size is not None:
             return image_size
-        preview = load_meteor_image_preview(image_path)
+        preview = self._meteor_selection_preview_for_path(image_path)
         image_size = (preview.original_width, preview.original_height)
         self._meteor_selection_image_sizes[image_path] = image_size
         return image_size
@@ -438,16 +733,22 @@ class MeteorSelectionMixin:
         current_index = self._meteor_selection_current_index
         total_count = len(self._meteor_selection_paths)
         detecting = self._meteor_detection_active
-        self.ui.pushButtonImportMeteorImages.setEnabled(not detecting)
-        self.ui.pushButtonClearMeteorImports.setEnabled(not detecting and bool(self._meteor_selection_paths))
-        self.ui.pushButtonMeteorDetectionOptions.setEnabled(not detecting)
-        self.ui.toolButtonMeteorSelectionPrevious.setEnabled(not detecting and has_current_image and current_index > 0)
+        importing_mask = self._meteor_mask_import_thread is not None
+        editing_busy = detecting or importing_mask
+        has_mask = self._meteor_selection_mask is not None and self._meteor_selection_mask_path is not None
+        self.ui.pushButtonImportMeteorImages.setEnabled(not editing_busy)
+        self.ui.pushButtonClearMeteorImports.setEnabled(not editing_busy and bool(self._meteor_selection_paths))
+        self.ui.pushButtonImportMeteorMask.setEnabled(not editing_busy and has_current_image)
+        self.ui.pushButtonClearMeteorMask.setEnabled(not editing_busy and has_mask)
+        self.ui.checkBoxShowMeteorMask.setEnabled(has_current_image and has_mask and not importing_mask)
+        self.ui.pushButtonMeteorDetectionOptions.setEnabled(not editing_busy)
+        self.ui.toolButtonMeteorSelectionPrevious.setEnabled(not editing_busy and has_current_image and current_index > 0)
         self.ui.toolButtonMeteorSelectionNext.setEnabled(
-            not detecting and has_current_image and current_index < total_count - 1
+            not editing_busy and has_current_image and current_index < total_count - 1
         )
-        self.ui.pushButtonClearMeteorBoxes.setEnabled(not detecting and has_current_image)
+        self.ui.pushButtonClearMeteorBoxes.setEnabled(not editing_busy and has_current_image)
         self.ui.pushButtonSaveAllMeteorBoxes.setEnabled(
-            not detecting
+            not editing_busy
             and (
                 bool(self._meteor_selection_dirty_paths)
                 or any(
@@ -460,9 +761,9 @@ class MeteorSelectionMixin:
             self._meteor_selection_boxes_by_path.get(image_path, []) for image_path in self._meteor_selection_paths
         )
         self.ui.pushButtonMoveMeteorFiles.setEnabled(
-            not detecting and not self._meteor_selection_dirty_paths and has_meteor_files
+            not editing_busy and not self._meteor_selection_dirty_paths and has_meteor_files
         )
-        self.ui.meteorSelectionView.set_box_editing_enabled(not detecting)
+        self.ui.meteorSelectionView.set_box_editing_enabled(not editing_busy)
         if detecting:
             self.ui.pushButtonAutoDetectMeteors.setText("取消检测")
             self.ui.pushButtonAutoDetectMeteors.setToolTip("终止当前检测；引擎会在后台重新启动。")
@@ -477,6 +778,7 @@ class MeteorSelectionMixin:
                 bool(self._meteor_selection_paths)
                 and not self._meteor_selection_dirty_paths
                 and self._meteor_detection_client.is_ready
+                and not importing_mask
             )
 
     def show_meteor_detection_options(self) -> None:
@@ -537,6 +839,7 @@ class MeteorSelectionMixin:
             request_id = self._meteor_detection_client.detect(
                 [str(path) for path in job_paths],
                 self._meteor_detection_options,
+                self._meteor_selection_mask_path,
             )
         except RuntimeError as exc:
             self._handle_meteor_detection_worker_error(str(exc))
@@ -544,7 +847,8 @@ class MeteorSelectionMixin:
         self._meteor_detection_request_id = request_id
         self._meteor_detection_job_paths = job_paths
         self._meteor_detection_active = True
-        self.ui.statusbar.showMessage(f"准备检测 {len(job_paths)} 张图片…")
+        mask_text = f"，蒙版：{self._meteor_selection_mask_path.name}" if self._meteor_selection_mask_path else ""
+        self.ui.statusbar.showMessage(f"准备检测 {len(job_paths)} 张图片{mask_text}…")
         self._update_meteor_selection_controls()
 
     def _prepare_meteor_detection_paths(self) -> list[Path]:
@@ -785,6 +1089,7 @@ class MeteorSelectionMixin:
         self._meteor_selection_dirty_paths = {
             moved_by_source.get(path, path) for path in old_dirty_paths
         }
+        self._clear_meteor_selection_preview_cache()
         self._refresh_meteor_selection_table()
         self._show_meteor_selection_current_image()
 

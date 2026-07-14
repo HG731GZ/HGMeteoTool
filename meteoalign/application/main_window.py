@@ -487,6 +487,10 @@ class MainWindow(
         )
 
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        if getattr(self, "_meteor_mask_import_thread", None) is not None:
+            QMessageBox.information(self, "正在导入流星蒙版", "流星检测蒙版仍在导入，请等待完成后再关闭窗口。")
+            event.ignore()
+            return
         ViewControlsMixin.closeEvent(self, event)
         if event.isAccepted():
             self._shutdown_meteor_detection_worker()

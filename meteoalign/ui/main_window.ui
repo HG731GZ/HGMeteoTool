@@ -88,6 +88,36 @@
                  </item>
                 </layout>
                </item>
+               <item>
+                <layout class="QHBoxLayout" name="horizontalLayoutMeteorSelectionMaskActions">
+                 <item>
+                  <widget class="QPushButton" name="pushButtonImportMeteorMask">
+                   <property name="enabled">
+                    <bool>false</bool>
+                   </property>
+                   <property name="toolTip">
+                    <string>导入与当前批次原图尺寸一致的流星检测蒙版。</string>
+                   </property>
+                   <property name="text">
+                    <string>导入自动检测蒙版</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QPushButton" name="pushButtonClearMeteorMask">
+                   <property name="enabled">
+                    <bool>false</bool>
+                   </property>
+                   <property name="toolTip">
+                    <string>清除当前流星检测蒙版，后续自动检测将使用整张图像。</string>
+                   </property>
+                   <property name="text">
+                    <string>清除蒙版</string>
+                   </property>
+                  </widget>
+                 </item>
+                </layout>
+               </item>
               </layout>
              </widget>
             </item>
@@ -271,6 +301,19 @@
                </property>
                <property name="wordWrap">
                 <bool>false</bool>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QCheckBox" name="checkBoxShowMeteorMask">
+               <property name="enabled">
+                <bool>false</bool>
+               </property>
+               <property name="toolTip">
+                <string>在右侧预览中显示应用蒙版后的图像。</string>
+               </property>
+               <property name="text">
+                <string>显示蒙版</string>
                </property>
               </widget>
              </item>

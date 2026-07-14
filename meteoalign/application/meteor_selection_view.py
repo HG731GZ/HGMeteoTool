@@ -90,6 +90,24 @@ class MeteorSelectionView(QGraphicsView):
         self._scene.setSceneRect(self._image_rect)
         QTimer.singleShot(0, self.fit_image)
 
+    def replace_display_image(self, image: QImage) -> None:
+        """只替换当前显示像素，保留缩放位置和已有流星框。"""
+
+        if image.isNull() or self._image_rect.isEmpty():
+            return
+        preview_width = image.width()
+        preview_height = image.height()
+        if preview_width <= 0 or preview_height <= 0:
+            return
+        self._pixmap_item.setPixmap(QPixmap.fromImage(image))
+        self._pixmap_item.setTransform(
+            QTransform().scale(
+                self._image_rect.width() / preview_width,
+                self._image_rect.height() / preview_height,
+            )
+        )
+        self.viewport().update()
+
     def set_boxes(self, boxes: Iterable[MeteorBox]) -> None:
         """替换当前图像的所有框选，不触发修改信号。"""
 

@@ -8,6 +8,7 @@ import os
 # 让无显示服务器的 CI 也能创建 Qt 视图。
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import numpy as np
 from PyQt5.QtCore import QEvent, QPointF, Qt
 from PyQt5.QtGui import QContextMenuEvent, QImage, QMouseEvent, QPalette
 from PyQt5.QtWidgets import QApplication, QMainWindow, QMenu, QMessageBox
@@ -262,6 +263,102 @@ def test_clear_all_meteor_imports_confirms_before_discarding_unsaved_changes(tmp
 
     assert host._meteor_selection_paths == [image_path]
     assert host._meteor_selection_dirty_paths == {image_path}
+    host.close()
+    app.processEvents()
+
+
+def test_meteor_mask_controls_follow_requested_ui_positions() -> None:
+    """蒙版按钮应位于导入图片下方，显示勾选项应位于预览标题右侧。"""
+
+    app = _application()
+    host = _MeteorSelectionHost()
+    controls_layout = host.ui.verticalLayoutMeteorSelectionControls
+    assert controls_layout.indexOf(host.ui.horizontalLayoutMeteorSelectionImportActions) < controls_layout.indexOf(
+        host.ui.horizontalLayoutMeteorSelectionMaskActions
+    )
+    mask_actions = host.ui.horizontalLayoutMeteorSelectionMaskActions
+    assert mask_actions.indexOf(host.ui.pushButtonImportMeteorMask) < mask_actions.indexOf(
+        host.ui.pushButtonClearMeteorMask
+    )
+    preview_header = host.ui.horizontalLayoutMeteorSelectionPreviewHeader
+    assert preview_header.indexOf(host.ui.labelMeteorSelectionPreviewTitle) < preview_header.indexOf(
+        host.ui.checkBoxShowMeteorMask
+    ) < preview_header.indexOf(host.ui.toolButtonMeteorSelectionNext)
+    host.close()
+    app.processEvents()
+
+
+def test_meteor_mask_preview_caches_unmasked_and_masked_images(tmp_path, monkeypatch) -> None:
+    """反复勾选显示蒙版时应复用原始与蒙版预览缓存。"""
+
+    app = _application()
+    host = _MeteorSelectionHost()
+    image_path = tmp_path / "meteor.png"
+    image = QImage(120, 80, QImage.Format_RGB32)
+    image.fill(Qt.white)
+    assert image.save(str(image_path))
+    host._meteor_selection_paths = [image_path]
+    host._meteor_selection_boxes_by_path = {image_path: []}
+    host._meteor_selection_current_index = 0
+    preview = host._meteor_selection_preview_for_path(image_path)
+    host._meteor_selection_mask_path = tmp_path / "mask.png"
+    host._meteor_selection_mask = np.ones((80, 120), dtype=bool)
+    host._meteor_selection_mask[:, :60] = False
+
+    calls = 0
+    from meteoalign.application import app_meteor_selection as module
+
+    original_apply = module.image_with_binary_mask
+
+    def counted_apply(source_image, mask):  # type: ignore[no-untyped-def]
+        nonlocal calls
+        calls += 1
+        return original_apply(source_image, mask)
+
+    monkeypatch.setattr(module, "image_with_binary_mask", counted_apply)
+    host.ui.checkBoxShowMeteorMask.setChecked(True)
+    first_masked = host._meteor_selection_display_image(image_path, preview)
+    host.ui.checkBoxShowMeteorMask.setChecked(False)
+    assert host._meteor_selection_display_image(image_path, preview).cacheKey() == preview.image.cacheKey()
+    host.ui.checkBoxShowMeteorMask.setChecked(True)
+    second_masked = host._meteor_selection_display_image(image_path, preview)
+
+    assert calls == 1
+    assert first_masked.cacheKey() == second_masked.cacheKey()
+    assert host._meteor_selection_preview_for_path(image_path) is preview
+    assert len(host._meteor_selection_preview_cache) == 1
+    assert len(host._meteor_selection_masked_preview_cache) == 1
+    host.close()
+    app.processEvents()
+
+
+def test_clearing_meteor_mask_keeps_original_preview_cache(tmp_path) -> None:
+    """清除蒙版只应释放派生显示缓存，不应重新读取原始预览。"""
+
+    app = _application()
+    host = _MeteorSelectionHost()
+    image_path = tmp_path / "meteor.png"
+    mask_path = tmp_path / "mask.png"
+    image = QImage(100, 60, QImage.Format_RGB32)
+    image.fill(Qt.white)
+    assert image.save(str(image_path))
+    host._meteor_selection_paths = [image_path]
+    host._meteor_selection_boxes_by_path = {image_path: []}
+    host._meteor_selection_current_index = 0
+    preview = host._meteor_selection_preview_for_path(image_path)
+    host.ui.meteorSelectionView.set_image(preview.image, 100, 60)
+    host._meteor_selection_mask_path = mask_path
+    host._meteor_selection_mask = np.ones((60, 100), dtype=bool)
+    host.ui.checkBoxShowMeteorMask.setChecked(True)
+    host._meteor_selection_display_image(image_path, preview)
+
+    host.clear_meteor_mask()
+
+    assert host._meteor_selection_mask_path is None
+    assert host._meteor_selection_mask is None
+    assert not host.ui.checkBoxShowMeteorMask.isChecked()
+    assert len(host._meteor_selection_masked_preview_cache) == 0
+    assert host._meteor_selection_preview_for_path(image_path) is preview
     host.close()
     app.processEvents()
 

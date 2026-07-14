@@ -3,8 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import numpy as np
-from PyQt5.QtGui import QImage
+from ..binary_mask import image_with_binary_mask as _image_with_binary_mask
+from ..binary_mask import qimage_to_binary_mask as _qimage_to_binary_mask
 
 from ..image_path_resolution import associated_image_candidates, expected_image_size, first_matching_image_path
 
@@ -78,50 +78,3 @@ def _relative_image_path_for_session(image_path: Path, json_path: Path) -> str:
     except ValueError:
         # Windows 不同盘符之间没有有效相对路径，此时保留文件名并继续依赖完整路径兜底。
         return image_path.name
-
-
-# ---------------------------------------------------------------------------
-# QImage ↔ numpy 蒙版互转
-# ---------------------------------------------------------------------------
-
-def _qimage_to_binary_mask(image: QImage) -> np.ndarray:
-    """将 QImage 转为二值蒙版 (bool ndarray)，非零像素视为有效。"""
-    if image.isNull():
-        raise ValueError("蒙版图像为空。")
-
-    rgb_image = image.convertToFormat(QImage.Format_RGB888)
-    width = rgb_image.width()
-    height = rgb_image.height()
-    bytes_per_line = rgb_image.bytesPerLine()
-    buffer_size = rgb_image.sizeInBytes() if hasattr(rgb_image, "sizeInBytes") else rgb_image.byteCount()
-    image_bits = rgb_image.bits()
-    image_bits.setsize(buffer_size)
-
-    raw = np.frombuffer(image_bits, dtype=np.uint8)
-    rows = raw.reshape((height, bytes_per_line))
-    rgb = rows[:, : width * 3].reshape((height, width, 3))
-    return np.any(rgb != 0, axis=2)
-
-
-def _image_with_binary_mask(image: QImage, mask: np.ndarray) -> QImage:
-    """将二值蒙版应用到图像上，蒙版外像素置零。"""
-    if image.isNull():
-        return QImage()
-
-    mask_array = np.asarray(mask, dtype=bool)
-    if mask_array.shape != (image.height(), image.width()):
-        raise ValueError("蒙版尺寸必须与图像尺寸一致。")
-
-    rgb_image = image.convertToFormat(QImage.Format_RGB888)
-    width = rgb_image.width()
-    height = rgb_image.height()
-    bytes_per_line = rgb_image.bytesPerLine()
-    buffer_size = rgb_image.sizeInBytes() if hasattr(rgb_image, "sizeInBytes") else rgb_image.byteCount()
-    image_bits = rgb_image.bits()
-    image_bits.setsize(buffer_size)
-
-    raw = np.frombuffer(image_bits, dtype=np.uint8)
-    rows = np.array(raw.reshape((height, bytes_per_line)), copy=True)
-    pixels = rows[:, : width * 3].reshape((height, width, 3))
-    pixels[~mask_array] = 0
-    return QImage(rows.data, width, height, bytes_per_line, QImage.Format_RGB888).copy()

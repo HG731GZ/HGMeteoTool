@@ -27,7 +27,7 @@ class MeteorDetectionOptions:
     provider: str = "auto"
     box_expansion_ratio: float = 0.10
 
-    def worker_options(self) -> dict[str, object]:
+    def worker_options(self, mask_path: str | Path | None = None) -> dict[str, object]:
         """返回 worker 协议中的 options 对象。"""
 
         options: dict[str, object] = {
@@ -42,6 +42,8 @@ class MeteorDetectionOptions:
         model_path = self.model_path.strip()
         if model_path:
             options["model_path"] = str(Path(model_path).expanduser().resolve())
+        if mask_path is not None and str(mask_path).strip():
+            options["mask_path"] = str(Path(mask_path).expanduser().resolve())
         return options
 
 
