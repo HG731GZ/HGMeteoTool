@@ -1182,7 +1182,40 @@
                    <string>重拟合RMS</string>
                   </property>
                  </column>
-                </widget>
+               </widget>
+              </item>
+               <item>
+                <layout class="QFormLayout" name="formLayoutSequencePsfSettings">
+                 <property name="fieldGrowthPolicy">
+                  <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
+                 </property>
+                 <item row="0" column="0">
+                  <widget class="QLabel" name="labelSequencePsfSearchRadius">
+                   <property name="text">
+                    <string>PSF 搜索半径</string>
+                   </property>
+                  </widget>
+                 </item>
+                 <item row="0" column="1">
+                  <widget class="QSpinBox" name="spinBoxSequencePsfSearchRadius">
+                   <property name="toolTip">
+                    <string>图像序列解析专用参数，与星点匹配页的搜索半径相互独立。</string>
+                   </property>
+                   <property name="suffix">
+                    <string> px</string>
+                   </property>
+                   <property name="minimum">
+                    <number>4</number>
+                   </property>
+                   <property name="maximum">
+                    <number>200</number>
+                   </property>
+                   <property name="value">
+                    <number>30</number>
+                   </property>
+                  </widget>
+                 </item>
+                </layout>
                </item>
                <item>
                 <layout class="QHBoxLayout" name="horizontalLayoutSequenceRefinement">

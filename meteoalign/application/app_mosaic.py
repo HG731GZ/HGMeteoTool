@@ -2132,6 +2132,24 @@ class MosaicProjectionMixin:
             control.setValue(float(value))
             control.blockSignals(was_blocked)
 
+    def _mosaic_sky_preview_style(self) -> SkyPreviewStyle:
+        """构建全景构图专用的文字与星点缩放样式。"""
+
+        show_grid = self.ui.checkBoxMosaicShowGrid.isChecked()
+        font_scale = float(getattr(self.ui_config, "mosaic_font_size_multiplier", 0.5))
+        star_scale = float(getattr(self.ui_config, "mosaic_star_marker_size_multiplier", 0.5))
+        return SkyPreviewStyle(
+            draw_common_names=False,
+            number_reference_stars=False,
+            draw_background=True,
+            draw_horizon_shadow=True,
+            draw_grid=show_grid,
+            draw_solar_system_labels=True,
+            draw_direction_labels=show_grid,
+            font_scale=max(0.1, min(2.0, font_scale)),
+            star_radius_scale=max(0.1, min(2.0, star_scale)),
+        )
+
     def render_mosaic_projection_now(self) -> None:
         """从 UI 和会话状态构建请求，并将协调器结果显示到场景。"""
 
@@ -2166,15 +2184,7 @@ class MosaicProjectionMixin:
                 observer=observer,
                 scene=scene,
                 visible_mag_limit=mag_limit,
-                sky_style=SkyPreviewStyle(
-                    draw_common_names=False,
-                    number_reference_stars=False,
-                    draw_background=True,
-                    draw_horizon_shadow=True,
-                    draw_grid=self.ui.checkBoxMosaicShowGrid.isChecked(),
-                    draw_solar_system_labels=True,
-                    draw_direction_labels=self.ui.checkBoxMosaicShowGrid.isChecked(),
-                ),
+                sky_style=self._mosaic_sky_preview_style(),
                 sources=source_items,
                 overlay_enabled=self._mosaic_overlay_enabled(),
                 overlay_mode=self._mosaic_overlay_mode(),

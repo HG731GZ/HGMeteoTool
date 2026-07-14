@@ -177,7 +177,14 @@ class LiveStarMapGraphicsItem(QGraphicsItem):
                 red, green, blue = (int(value) for value in star_map.star_rgb[index])
                 alpha = int(star_map.alpha[index])
                 painter.setBrush(QColor(red, green, blue, alpha))
-                radius = max(0.8, float(star_map.radius_px[index]) * self.element_scale * star_radius_scale)
+                radius = max(
+                    0.05,
+                    self.renderer.star_marker_radius(
+                        star_map.radius_px[index],
+                        self.element_scale,
+                        star_radius_scale,
+                    ),
+                )
                 center = QPointF(float(points[index, 0]), float(points[index, 1]))
                 painter.drawEllipse(QRectF(center.x() - radius, center.y() - radius, radius * 2.0, radius * 2.0))
 

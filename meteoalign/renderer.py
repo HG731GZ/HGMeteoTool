@@ -5,7 +5,7 @@ from PyQt5.QtCore import QPointF, QRectF, Qt
 from PyQt5.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPolygonF
 
 from .config import StarMapUiConfig
-from .simulator import ProjectedStarMap, ReferenceStar
+from .simulator import ProjectedStarMap, ReferenceStar, STAR_STYLE_BASE_RADIUS_PX
 
 
 def _reference_star_index_text(reference_star: ReferenceStar) -> str:
@@ -15,6 +15,25 @@ def _reference_star_index_text(reference_star: ReferenceStar) -> str:
 class StarMapRenderer:
     def __init__(self, ui_config: StarMapUiConfig | None = None) -> None:
         self.ui_config = ui_config or StarMapUiConfig()
+
+    def star_marker_radius(
+        self,
+        base_radius_px: float,
+        element_scale: float,
+        zoom_scale: float,
+    ) -> float:
+        """应用界面缩放、视图缩放和用户倍率，得到恒星最终渲染半径。"""
+
+        adjusted_base_radius = max(
+            0.05,
+            float(base_radius_px) - STAR_STYLE_BASE_RADIUS_PX + self.ui_config.base_star_marker_radius_px,
+        )
+        return (
+            adjusted_base_radius
+            * float(element_scale)
+            * float(zoom_scale)
+            * self.ui_config.star_marker_size_multiplier
+        )
 
     def render(
         self,
@@ -29,6 +48,7 @@ class StarMapRenderer:
         draw_solar_system_labels: bool = True,
         draw_direction_labels: bool = True,
         star_radius_scale: float = 1.0,
+        font_scale: float | None = None,
     ) -> QImage:
         element_scale = max(float(element_scale), 0.05)
         image = QImage(star_map.width, star_map.height, QImage.Format_ARGB32_Premultiplied)
@@ -51,6 +71,7 @@ class StarMapRenderer:
             draw_solar_system_labels=draw_solar_system_labels,
             draw_direction_labels=draw_direction_labels,
             star_radius_scale=star_radius_scale,
+            font_scale=font_scale,
         )
         painter.end()
         return image
@@ -69,15 +90,23 @@ class StarMapRenderer:
         draw_solar_system_labels: bool = True,
         draw_direction_labels: bool = True,
         star_radius_scale: float = 1.0,
+        font_scale: float | None = None,
     ) -> None:
         element_scale = max(float(element_scale), 0.05)
         star_radius_scale = max(float(star_radius_scale), 0.05)
+        resolved_font_scale = element_scale if font_scale is None else max(float(font_scale), 0.05)
         painter.setRenderHint(QPainter.Antialiasing, True)
 
         if draw_background:
             self._draw_sky_background(painter, star_map)
         self._draw_milky_way(painter, star_map)
-        self.draw_constellations(painter, star_map, element_scale, star_radius_scale)
+        self.draw_constellations(
+            painter,
+            star_map,
+            element_scale,
+            star_radius_scale,
+            resolved_font_scale,
+        )
         painter.setPen(Qt.NoPen)
 
         order = star_map.radius_px.argsort()
@@ -86,7 +115,7 @@ class StarMapRenderer:
             alpha = int(star_map.alpha[index])
             color = QColor(red, green, blue, alpha)
             painter.setBrush(color)
-            radius = float(star_map.radius_px[index]) * element_scale * star_radius_scale
+            radius = self.star_marker_radius(star_map.radius_px[index], element_scale, star_radius_scale)
             center = QPointF(float(star_map.x_px[index]), float(star_map.y_px[index]))
             painter.drawEllipse(QRectF(center.x() - radius, center.y() - radius, radius * 2.0, radius * 2.0))
 
@@ -97,15 +126,20 @@ class StarMapRenderer:
             self._draw_grid(painter, star_map, element_scale)
         reference_object_ids = {reference_star.star_id for reference_star in reference_stars}
         if reference_stars and number_reference_stars:
-            self._draw_reference_stars(painter, star_map, reference_stars, element_scale)
+            self._draw_reference_stars(painter, star_map, reference_stars, resolved_font_scale)
         elif reference_stars:
-            self._draw_reference_star_names(painter, star_map, reference_stars, element_scale)
+            self._draw_reference_star_names(painter, star_map, reference_stars, resolved_font_scale)
         elif draw_common_names:
-            self._draw_star_names(painter, star_map, element_scale)
+            self._draw_star_names(painter, star_map, resolved_font_scale)
         if draw_solar_system_labels:
-            self._draw_solar_system_labels(painter, star_map, element_scale, excluded_object_ids=reference_object_ids)
+            self._draw_solar_system_labels(
+                painter,
+                star_map,
+                resolved_font_scale,
+                excluded_object_ids=reference_object_ids,
+            )
         if draw_direction_labels:
-            self._draw_direction_labels(painter, star_map, element_scale)
+            self._draw_direction_labels(painter, star_map, resolved_font_scale)
 
     def _draw_sky_background(self, painter: QPainter, star_map: ProjectedStarMap) -> None:
         painter.setPen(Qt.NoPen)
@@ -155,42 +189,57 @@ class StarMapRenderer:
         star_map: ProjectedStarMap,
         element_scale: float,
         star_radius_scale: float,
+        font_scale: float | None = None,
     ) -> None:
         """绘制星座线与中文名，并在每个星点圆面外留出间隙。"""
 
-        if not star_map.constellations:
+        show_lines = self.ui_config.show_constellation_lines
+        show_names = self.ui_config.show_constellation_names
+        if not star_map.constellations or not (show_lines or show_names):
             return
+
+        resolved_font_scale = element_scale if font_scale is None else max(float(font_scale), 0.05)
 
         color = QColor(self.ui_config.constellation_line_color_hex)
         color.setAlphaF(self.ui_config.constellation_line_opacity)
         line_width = self.ui_config.constellation_line_width_px * element_scale
         pen = QPen(color, line_width)
         pen.setCapStyle(Qt.FlatCap)
-        painter.setPen(pen)
-        painter.setBrush(Qt.NoBrush)
+        if show_lines:
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+            node_padding = max(1.25 * element_scale, line_width * 0.75)
+            for constellation in star_map.constellations:
+                for segment in constellation.segments:
+                    start = QPointF(*segment.start)
+                    end = QPointF(*segment.end)
+                    dx = end.x() - start.x()
+                    dy = end.y() - start.y()
+                    length = float(np.hypot(dx, dy))
+                    start_gap = self.star_marker_radius(
+                        segment.start_radius_px,
+                        element_scale,
+                        star_radius_scale,
+                    ) + node_padding
+                    end_gap = self.star_marker_radius(
+                        segment.end_radius_px,
+                        element_scale,
+                        star_radius_scale,
+                    ) + node_padding
+                    if length <= start_gap + end_gap + 0.5:
+                        continue
+                    unit_x = dx / length
+                    unit_y = dy / length
+                    painter.drawLine(
+                        QPointF(start.x() + unit_x * start_gap, start.y() + unit_y * start_gap),
+                        QPointF(end.x() - unit_x * end_gap, end.y() - unit_y * end_gap),
+                    )
 
-        node_padding = max(1.25 * element_scale, line_width * 0.75)
-        marker_scale = element_scale * star_radius_scale
-        for constellation in star_map.constellations:
-            for segment in constellation.segments:
-                start = QPointF(*segment.start)
-                end = QPointF(*segment.end)
-                dx = end.x() - start.x()
-                dy = end.y() - start.y()
-                length = float(np.hypot(dx, dy))
-                start_gap = segment.start_radius_px * marker_scale + node_padding
-                end_gap = segment.end_radius_px * marker_scale + node_padding
-                if length <= start_gap + end_gap + 0.5:
-                    continue
-                unit_x = dx / length
-                unit_y = dy / length
-                painter.drawLine(
-                    QPointF(start.x() + unit_x * start_gap, start.y() + unit_y * start_gap),
-                    QPointF(end.x() - unit_x * end_gap, end.y() - unit_y * end_gap),
-                )
+        if not show_names:
+            return
 
         font = QFont()
-        font.setPointSizeF(max(6.0, self.ui_config.star_name_font_size_pt * 0.85 * element_scale))
+        font.setPointSizeF(max(1.0, self.ui_config.constellation_name_font_size_pt * resolved_font_scale))
         font.setBold(True)
         painter.setFont(font)
         for constellation in star_map.constellations:
@@ -198,9 +247,9 @@ class StarMapRenderer:
             if not label:
                 continue
             point = QPointF(constellation.label_x_px, constellation.label_y_px)
-            painter.setPen(QPen(QColor(0, 0, 0, 210), max(2.0, 2.5 * element_scale)))
+            painter.setPen(QPen(QColor(0, 0, 0, 210), max(1.0, 2.5 * resolved_font_scale)))
             painter.drawText(point, label)
-            painter.setPen(QPen(color, max(0.7, 0.8 * element_scale)))
+            painter.setPen(QPen(color, max(0.5, 0.8 * resolved_font_scale)))
             painter.drawText(point, label)
 
     def _draw_solar_system_objects(

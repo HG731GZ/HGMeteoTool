@@ -115,6 +115,7 @@ from .app_utils import (
     _qimage_to_binary_mask,
     _image_with_binary_mask,
 )
+from .preferences_page import PreferencesPage
 
 # ---------------------------------------------------------------------------
 # 重新导出辅助函数（供 app_workers 等模块使用）
@@ -160,6 +161,41 @@ class MainWindow(
     - ViewControlsMixin: 视图缩放与事件处理
     """
 
+    def _apply_saved_preferences(self, ui_config: StarMapUiConfig) -> None:
+        """热更新可立即生效的参数，同时保留当前任务中的用户输入。"""
+
+        self.ui_config = ui_config
+        self.renderer.ui_config = ui_config
+        self._apply_ui_font_config(ui_config)
+
+        if hasattr(self, "_star_pick_circle_diameter_px"):
+            self._star_pick_circle_diameter_px = min(
+                max(self._star_pick_circle_diameter_px, ui_config.star_pick_circle_min_diameter_px),
+                ui_config.star_pick_circle_max_diameter_px,
+            )
+
+        for item_name in ("star_map_item", "reference_star_map_item", "real_reference_overlay_item"):
+            item = getattr(self, item_name, None)
+            if item is not None:
+                item.update()
+
+        # 已存在的配对文字不是实时渲染项，需要直接同步字号。
+        for _ellipse_item, label_item in getattr(self, "_star_pair_annotations", {}).values():
+            label_font = label_item.font()
+            label_font.setPointSize(ui_config.star_name_font_size_pt)
+            label_item.setFont(label_font)
+
+        if hasattr(self, "_mosaic_min_render_interval_ms"):
+            self._mosaic_min_render_interval_ms = max(
+                1,
+                int(round(1000.0 / self._mosaic_render_fps_limit())),
+            )
+        if hasattr(self, "render_timer"):
+            self.schedule_render(delay_ms=0)
+        if hasattr(self, "schedule_mosaic_render"):
+            self.schedule_mosaic_render(delay_ms=0)
+        self.ui.statusbar.showMessage("软件参数已保存并立即生效。", 5000)
+
     def _import_dialog_directory(self, fallback: str | Path) -> Path:
         """让所有导入对话框共享最近一次选择的目录。"""
 
@@ -181,6 +217,11 @@ class MainWindow(
         self.constellation_catalog = load_constellation_catalog()
         self.milky_way_catalog: MilkyWayCatalog = load_milky_way()
         self.renderer = StarMapRenderer(self.ui_config)
+        self.preferences_page = PreferencesPage(self)
+        self.ui.tabPreferences = self.preferences_page
+        self.ui.tabWidgetMain.addTab(self.preferences_page, "软件参数")
+        self.preferences_page.preferences_saved.connect(self._apply_saved_preferences)
+        self._install_value_control_wheel_filters()
         self.scene = QGraphicsScene(self)
         self.star_map_item = LiveStarMapGraphicsItem(self.renderer)
         self.scene.addItem(self.star_map_item)
@@ -360,7 +401,8 @@ class MainWindow(
         )
         self.ui.comboBoxAutoMatchConstraintMode.setCurrentIndex(constraint_index)
         self.ui.doubleSpinBoxAutoMatchSoftWeight.setValue(self.ui_config.auto_match_default_soft_weight)
-        self.ui.spinBoxAutoMatchRadius.setValue(30)
+        self.ui.spinBoxAutoMatchRadius.setValue(self.ui_config.auto_match_default_search_radius_px)
+        self.ui.spinBoxSequencePsfSearchRadius.setValue(self.ui_config.sequence_psf_search_radius_px)
         self._reset_imported_image_labels()
         self._reset_sky_mask_status()
         self._reset_image_sequence_status()

@@ -1,0 +1,273 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>PreferencesPage</class>
+ <widget class="QWidget" name="PreferencesPage">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1120</width>
+    <height>760</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>软件参数</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayoutPreferencesPage">
+   <property name="leftMargin">
+    <number>12</number>
+   </property>
+   <property name="topMargin">
+    <number>12</number>
+   </property>
+   <property name="rightMargin">
+    <number>12</number>
+   </property>
+   <property name="bottomMargin">
+    <number>12</number>
+   </property>
+   <item>
+    <widget class="QLabel" name="labelPreferencesHint">
+     <property name="text">
+      <string>修改后请点击“保存并立即生效”。带“默认”字样的参数只用于后续新建或导入，不会覆盖当前页面中已经设定的值。</string>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QScrollArea" name="scrollAreaPreferences">
+     <property name="widgetResizable">
+      <bool>true</bool>
+     </property>
+     <widget class="QWidget" name="scrollAreaPreferencesContents">
+      <property name="geometry">
+       <rect>
+        <x>0</x>
+        <y>0</y>
+        <width>1076</width>
+        <height>930</height>
+       </rect>
+      </property>
+      <layout class="QGridLayout" name="gridLayoutPreferenceGroups" columnstretch="1,1">
+       <property name="horizontalSpacing">
+        <number>12</number>
+       </property>
+       <property name="verticalSpacing">
+        <number>12</number>
+       </property>
+       <item row="0" column="0">
+        <widget class="QGroupBox" name="groupBoxStarMapDisplay">
+         <property name="title">
+          <string>星空模拟显示选项</string>
+         </property>
+         <layout class="QFormLayout" name="formLayoutStarMapDisplay">
+          <property name="fieldGrowthPolicy">
+           <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
+          </property>
+          <item row="0" column="0"><widget class="QLabel" name="labelDirectionFontSize"><property name="text"><string>方向标签字号</string></property></widget></item>
+          <item row="0" column="1">
+           <widget class="QSpinBox" name="spinBoxDirectionLabelFontSize">
+            <property name="suffix"><string> pt</string></property><property name="minimum"><number>6</number></property><property name="maximum"><number>48</number></property>
+           </widget>
+          </item>
+          <item row="1" column="0"><widget class="QLabel" name="labelStarNameFontSize"><property name="text"><string>恒星名称字号</string></property></widget></item>
+          <item row="1" column="1">
+           <widget class="QSpinBox" name="spinBoxStarNameFontSize">
+            <property name="suffix"><string> pt</string></property><property name="minimum"><number>6</number></property><property name="maximum"><number>48</number></property>
+           </widget>
+          </item>
+          <item row="2" column="0"><widget class="QLabel" name="labelConstellationNameFontSize"><property name="text"><string>星座名称字号</string></property></widget></item>
+          <item row="2" column="1">
+           <widget class="QSpinBox" name="spinBoxConstellationNameFontSize">
+            <property name="suffix"><string> pt</string></property><property name="minimum"><number>6</number></property><property name="maximum"><number>48</number></property>
+           </widget>
+          </item>
+          <item row="3" column="0"><widget class="QLabel" name="labelReferenceFontSize"><property name="text"><string>参考星标注字号</string></property></widget></item>
+          <item row="3" column="1">
+           <widget class="QSpinBox" name="spinBoxReferenceLabelFontSize">
+            <property name="suffix"><string> pt</string></property><property name="minimum"><number>6</number></property><property name="maximum"><number>64</number></property>
+           </widget>
+          </item>
+          <item row="4" column="0"><widget class="QLabel" name="labelBaseStarMarkerRadius"><property name="text"><string>基础星点大小</string></property></widget></item>
+          <item row="4" column="1">
+           <widget class="QDoubleSpinBox" name="doubleSpinBoxBaseStarMarkerRadius">
+            <property name="suffix"><string> px</string></property><property name="decimals"><number>2</number></property><property name="minimum"><double>0.100000000000000</double></property><property name="maximum"><double>10.000000000000000</double></property><property name="singleStep"><double>0.100000000000000</double></property>
+           </widget>
+          </item>
+          <item row="5" column="0"><widget class="QLabel" name="labelStarMarkerSize"><property name="text"><string>星点大小倍率</string></property></widget></item>
+          <item row="5" column="1">
+           <widget class="QDoubleSpinBox" name="doubleSpinBoxStarMarkerSizeMultiplier">
+            <property name="suffix"><string> ×</string></property><property name="decimals"><number>2</number></property><property name="minimum"><double>0.200000000000000</double></property><property name="maximum"><double>5.000000000000000</double></property><property name="singleStep"><double>0.100000000000000</double></property>
+           </widget>
+          </item>
+          <item row="6" column="0"><widget class="QLabel" name="labelStarColorMagLimit"><property name="text"><string>彩色星点星等上限</string></property></widget></item>
+          <item row="6" column="1">
+           <widget class="QDoubleSpinBox" name="doubleSpinBoxStarColorMagLimit">
+            <property name="suffix"><string> mag</string></property><property name="decimals"><number>1</number></property><property name="minimum"><double>-10.000000000000000</double></property><property name="maximum"><double>30.000000000000000</double></property><property name="singleStep"><double>0.500000000000000</double></property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item row="0" column="1">
+        <widget class="QGroupBox" name="groupBoxConstellationStyle">
+         <property name="title"><string>星座显示选项</string></property>
+         <layout class="QFormLayout" name="formLayoutConstellationStyle">
+          <property name="fieldGrowthPolicy"><enum>QFormLayout::AllNonFixedFieldsGrow</enum></property>
+          <item row="0" column="0" colspan="2"><widget class="QCheckBox" name="checkBoxShowConstellationNames"><property name="text"><string>显示星座名</string></property></widget></item>
+          <item row="1" column="0" colspan="2"><widget class="QCheckBox" name="checkBoxShowConstellationLines"><property name="text"><string>显示星座连线</string></property></widget></item>
+          <item row="2" column="0"><widget class="QLabel" name="labelConstellationLineWidth"><property name="text"><string>线宽</string></property></widget></item>
+          <item row="2" column="1">
+           <widget class="QDoubleSpinBox" name="doubleSpinBoxConstellationLineWidth">
+            <property name="suffix"><string> px</string></property><property name="decimals"><number>1</number></property><property name="minimum"><double>0.100000000000000</double></property><property name="maximum"><double>20.000000000000000</double></property><property name="singleStep"><double>0.100000000000000</double></property>
+           </widget>
+          </item>
+          <item row="3" column="0"><widget class="QLabel" name="labelConstellationLineColor"><property name="text"><string>颜色</string></property></widget></item>
+          <item row="3" column="1">
+           <widget class="QWidget" name="widgetConstellationColor" native="true">
+            <layout class="QHBoxLayout" name="horizontalLayoutConstellationColor">
+             <property name="leftMargin"><number>0</number></property><property name="topMargin"><number>0</number></property><property name="rightMargin"><number>0</number></property><property name="bottomMargin"><number>0</number></property>
+             <item><widget class="QLineEdit" name="lineEditConstellationLineColor"><property name="maxLength"><number>7</number></property><property name="placeholderText"><string>#RRGGBB</string></property></widget></item>
+             <item><widget class="QPushButton" name="pushButtonChooseConstellationColor"><property name="text"><string>选择颜色…</string></property></widget></item>
+            </layout>
+           </widget>
+          </item>
+          <item row="4" column="0"><widget class="QLabel" name="labelConstellationOpacity"><property name="text"><string>透明度</string></property></widget></item>
+          <item row="4" column="1">
+           <widget class="QDoubleSpinBox" name="doubleSpinBoxConstellationLineOpacity">
+            <property name="decimals"><number>2</number></property><property name="minimum"><double>0.000000000000000</double></property><property name="maximum"><double>1.000000000000000</double></property><property name="singleStep"><double>0.050000000000000</double></property>
+           </widget>
+          </item>
+          <item row="5" column="0"><widget class="QLabel" name="labelAlignedReferenceScale"><property name="text"><string>配准叠加显示倍率</string></property></widget></item>
+          <item row="5" column="1">
+           <widget class="QDoubleSpinBox" name="doubleSpinBoxAlignedReferenceScale">
+            <property name="suffix"><string> ×</string></property><property name="decimals"><number>2</number></property><property name="minimum"><double>0.200000000000000</double></property><property name="maximum"><double>6.000000000000000</double></property><property name="singleStep"><double>0.100000000000000</double></property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item row="1" column="0">
+        <widget class="QGroupBox" name="groupBoxStarPicking">
+         <property name="title"><string>星点点选与 PSF 精修</string></property>
+         <layout class="QFormLayout" name="formLayoutStarPicking">
+          <property name="fieldGrowthPolicy"><enum>QFormLayout::AllNonFixedFieldsGrow</enum></property>
+          <item row="0" column="0"><widget class="QLabel" name="labelStarPickDefaultDiameter"><property name="text"><string>默认圆圈直径</string></property></widget></item>
+          <item row="0" column="1"><widget class="QSpinBox" name="spinBoxStarPickDefaultDiameter"><property name="suffix"><string> px</string></property><property name="minimum"><number>4</number></property><property name="maximum"><number>2000</number></property></widget></item>
+          <item row="1" column="0"><widget class="QLabel" name="labelStarPickMinDiameter"><property name="text"><string>最小圆圈直径</string></property></widget></item>
+          <item row="1" column="1"><widget class="QSpinBox" name="spinBoxStarPickMinDiameter"><property name="suffix"><string> px</string></property><property name="minimum"><number>4</number></property><property name="maximum"><number>1000</number></property></widget></item>
+          <item row="2" column="0"><widget class="QLabel" name="labelStarPickMaxDiameter"><property name="text"><string>最大圆圈直径</string></property></widget></item>
+          <item row="2" column="1"><widget class="QSpinBox" name="spinBoxStarPickMaxDiameter"><property name="suffix"><string> px</string></property><property name="minimum"><number>4</number></property><property name="maximum"><number>2000</number></property></widget></item>
+          <item row="3" column="0"><widget class="QLabel" name="labelStarPickPsfScale"><property name="text"><string>PSF 半径比例</string></property></widget></item>
+          <item row="3" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxStarPickPsfRadiusScale"><property name="decimals"><number>2</number></property><property name="minimum"><double>0.100000000000000</double></property><property name="maximum"><double>1.000000000000000</double></property><property name="singleStep"><double>0.050000000000000</double></property></widget></item>
+          <item row="4" column="0"><widget class="QLabel" name="labelStarPickPsfMaxRadius"><property name="text"><string>PSF 最大半径</string></property></widget></item>
+          <item row="4" column="1"><widget class="QSpinBox" name="spinBoxStarPickPsfMaxRadius"><property name="suffix"><string> px</string></property><property name="minimum"><number>8</number></property><property name="maximum"><number>200</number></property></widget></item>
+         </layout>
+        </widget>
+       </item>
+       <item row="1" column="1">
+        <widget class="QGroupBox" name="groupBoxDefaultObserver">
+         <property name="title"><string>默认观测位置</string></property>
+         <property name="toolTip"><string>只影响下次启动或后续使用默认观测位置的页面，不覆盖当前观测信息。</string></property>
+         <layout class="QFormLayout" name="formLayoutDefaultObserver">
+          <property name="fieldGrowthPolicy"><enum>QFormLayout::AllNonFixedFieldsGrow</enum></property>
+          <item row="0" column="0"><widget class="QLabel" name="labelDefaultLatitude"><property name="text"><string>默认纬度</string></property></widget></item>
+          <item row="0" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxDefaultLatitude"><property name="suffix"><string> deg</string></property><property name="decimals"><number>5</number></property><property name="minimum"><double>-90.000000000000000</double></property><property name="maximum"><double>90.000000000000000</double></property></widget></item>
+          <item row="1" column="0"><widget class="QLabel" name="labelDefaultLongitude"><property name="text"><string>默认经度</string></property></widget></item>
+          <item row="1" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxDefaultLongitude"><property name="suffix"><string> deg</string></property><property name="decimals"><number>5</number></property><property name="minimum"><double>-180.000000000000000</double></property><property name="maximum"><double>180.000000000000000</double></property></widget></item>
+          <item row="2" column="0"><widget class="QLabel" name="labelDefaultElevation"><property name="text"><string>默认海拔</string></property></widget></item>
+          <item row="2" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxDefaultElevation"><property name="suffix"><string> m</string></property><property name="decimals"><number>1</number></property><property name="minimum"><double>-500.000000000000000</double></property><property name="maximum"><double>9000.000000000000000</double></property></widget></item>
+         </layout>
+        </widget>
+       </item>
+       <item row="2" column="0">
+        <widget class="QGroupBox" name="groupBoxAutoMatch">
+         <property name="title"><string>自动扩展匹配默认值</string></property>
+         <layout class="QFormLayout" name="formLayoutAutoMatchPreferences">
+          <property name="fieldGrowthPolicy"><enum>QFormLayout::AllNonFixedFieldsGrow</enum></property>
+          <item row="0" column="0"><widget class="QLabel" name="labelAutoMatchCount"><property name="text"><string>每次新增候选星</string></property></widget></item>
+          <item row="0" column="1"><widget class="QSpinBox" name="spinBoxAutoMatchDefaultNewCount"><property name="suffix"><string> 颗</string></property><property name="minimum"><number>1</number></property><property name="maximum"><number>10000</number></property></widget></item>
+          <item row="1" column="0"><widget class="QLabel" name="labelAutoMatchMode"><property name="text"><string>默认约束模式</string></property></widget></item>
+          <item row="1" column="1">
+           <widget class="QComboBox" name="comboBoxAutoMatchDefaultConstraintMode">
+            <item><property name="text"><string>锚点模式</string></property></item>
+            <item><property name="text"><string>软约束模式</string></property></item>
+           </widget>
+          </item>
+          <item row="2" column="0"><widget class="QLabel" name="labelAutoMatchSoftWeight"><property name="text"><string>默认软约束权重</string></property></widget></item>
+          <item row="2" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxAutoMatchDefaultSoftWeight"><property name="decimals"><number>2</number></property><property name="minimum"><double>0.010000000000000</double></property><property name="maximum"><double>1.000000000000000</double></property><property name="singleStep"><double>0.050000000000000</double></property></widget></item>
+          <item row="3" column="0"><widget class="QLabel" name="labelAutoMatchDefaultSearchRadius"><property name="text"><string>默认搜索半径</string></property></widget></item>
+          <item row="3" column="1"><widget class="QSpinBox" name="spinBoxAutoMatchDefaultSearchRadius"><property name="suffix"><string> px</string></property><property name="minimum"><number>4</number></property><property name="maximum"><number>300</number></property><property name="value"><number>30</number></property></widget></item>
+         </layout>
+        </widget>
+       </item>
+       <item row="2" column="1">
+        <widget class="QGroupBox" name="groupBoxViewInteraction">
+         <property name="title"><string>预览交互</string></property>
+         <layout class="QVBoxLayout" name="verticalLayoutViewInteraction">
+          <item><widget class="QCheckBox" name="checkBoxWheelZoomEnabled"><property name="text"><string>启用鼠标滚轮缩放预览视图</string></property></widget></item>
+          <item><widget class="QCheckBox" name="checkBoxTouchpadPinchZoomEnabled"><property name="text"><string>启用触控板双指捏合缩放预览视图</string></property></widget></item>
+          <item><spacer name="verticalSpacerViewInteraction"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property></spacer></item>
+         </layout>
+        </widget>
+       </item>
+       <item row="3" column="0">
+        <widget class="QGroupBox" name="groupBoxSequenceProcessingDefaults">
+         <property name="title"><string>图像序列解析默认值</string></property>
+         <property name="toolTip"><string>只设置图像序列解析页下次启动时使用的默认值，不覆盖当前页面已输入的值。</string></property>
+         <layout class="QFormLayout" name="formLayoutSequenceProcessingDefaults">
+          <property name="fieldGrowthPolicy"><enum>QFormLayout::AllNonFixedFieldsGrow</enum></property>
+          <item row="0" column="0"><widget class="QLabel" name="labelSequencePsfSearchRadiusDefault"><property name="text"><string>默认 PSF 搜索半径</string></property></widget></item>
+          <item row="0" column="1"><widget class="QSpinBox" name="spinBoxSequencePsfSearchRadiusDefault"><property name="suffix"><string> px</string></property><property name="minimum"><number>4</number></property><property name="maximum"><number>200</number></property><property name="value"><number>30</number></property></widget></item>
+         </layout>
+        </widget>
+       </item>
+       <item row="4" column="0" colspan="2">
+        <widget class="QGroupBox" name="groupBoxMosaic">
+         <property name="title"><string>全景构图预览与导出</string></property>
+         <layout class="QGridLayout" name="gridLayoutMosaicPreferences">
+          <item row="0" column="0"><widget class="QLabel" name="labelMosaicTextureScale"><property name="text"><string>预览贴图长边比例</string></property></widget></item>
+          <item row="0" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxMosaicTextureScalePercent"><property name="suffix"><string> %</string></property><property name="decimals"><number>1</number></property><property name="minimum"><double>1.000000000000000</double></property><property name="maximum"><double>100.000000000000000</double></property><property name="singleStep"><double>1.000000000000000</double></property></widget></item>
+          <item row="0" column="2"><widget class="QLabel" name="labelMosaicTextureMaxSide"><property name="text"><string>预览贴图长边上限</string></property></widget></item>
+          <item row="0" column="3"><widget class="QSpinBox" name="spinBoxMosaicTextureMaxLongSide"><property name="suffix"><string> px</string></property><property name="minimum"><number>64</number></property><property name="maximum"><number>20000</number></property><property name="singleStep"><number>64</number></property></widget></item>
+          <item row="1" column="0"><widget class="QLabel" name="labelMosaicGridPrecision"><property name="text"><string>默认贴图网格精度</string></property></widget></item>
+          <item row="1" column="1"><widget class="QSpinBox" name="spinBoxMosaicGridPrecisionDefault"><property name="suffix"><string> 点/长边</string></property><property name="minimum"><number>12</number></property><property name="maximum"><number>180</number></property></widget></item>
+          <item row="1" column="2"><widget class="QLabel" name="labelMosaicFps"><property name="text"><string>预览最高刷新率</string></property></widget></item>
+          <item row="1" column="3"><widget class="QSpinBox" name="spinBoxMosaicRenderFpsLimit"><property name="suffix"><string> FPS</string></property><property name="minimum"><number>1</number></property><property name="maximum"><number>240</number></property></widget></item>
+          <item row="2" column="0"><widget class="QLabel" name="labelMosaicExportBlockRows"><property name="text"><string>TIFF 导出分块行数</string></property></widget></item>
+          <item row="2" column="1"><widget class="QSpinBox" name="spinBoxMosaicExportBlockRows"><property name="suffix"><string> 行</string></property><property name="minimum"><number>8</number></property><property name="maximum"><number>4096</number></property><property name="singleStep"><number>8</number></property></widget></item>
+          <item row="2" column="2"><widget class="QLabel" name="labelMosaicMapTileSize"><property name="text"><string>源图映射网格大小</string></property></widget></item>
+          <item row="2" column="3"><widget class="QSpinBox" name="spinBoxMosaicMapTileSize"><property name="suffix"><string> px</string></property><property name="minimum"><number>1</number></property><property name="maximum"><number>512</number></property></widget></item>
+          <item row="3" column="0"><widget class="QLabel" name="labelMosaicFontSizeMultiplier"><property name="text"><string>全景构图字号比例</string></property></widget></item>
+          <item row="3" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxMosaicFontSizeMultiplier"><property name="suffix"><string> ×</string></property><property name="decimals"><number>2</number></property><property name="minimum"><double>0.100000000000000</double></property><property name="maximum"><double>2.000000000000000</double></property><property name="singleStep"><double>0.100000000000000</double></property></widget></item>
+          <item row="3" column="2"><widget class="QLabel" name="labelMosaicStarMarkerSizeMultiplier"><property name="text"><string>全景构图星点大小比例</string></property></widget></item>
+          <item row="3" column="3"><widget class="QDoubleSpinBox" name="doubleSpinBoxMosaicStarMarkerSizeMultiplier"><property name="suffix"><string> ×</string></property><property name="decimals"><number>2</number></property><property name="minimum"><double>0.100000000000000</double></property><property name="maximum"><double>2.000000000000000</double></property><property name="singleStep"><double>0.100000000000000</double></property></widget></item>
+          <item row="4" column="0" colspan="4"><widget class="QCheckBox" name="checkBoxMosaicTiffLzwCompression"><property name="text"><string>导出 16-bit TIFF 时启用 LZW 压缩</string></property></widget></item>
+          <item row="5" column="0" colspan="4"><widget class="QLabel" name="labelMosaicReloadHint"><property name="text"><string>贴图尺寸参数会立即用于后续导入；已载入源图的缓存不会自动重建。</string></property><property name="wordWrap"><bool>true</bool></property></widget></item>
+         </layout>
+        </widget>
+       </item>
+       <item row="5" column="0" colspan="2">
+        <spacer name="verticalSpacerPreferenceGroups">
+         <property name="orientation"><enum>Qt::Vertical</enum></property>
+         <property name="sizeHint" stdset="0"><size><width>20</width><height>40</height></size></property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayoutPreferenceButtons">
+     <item><spacer name="horizontalSpacerPreferenceButtons"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+     <item><widget class="QPushButton" name="pushButtonSavePreferences"><property name="text"><string>保存并立即生效</string></property><property name="default"><bool>true</bool></property></widget></item>
+     <item><widget class="QPushButton" name="pushButtonCancelPreferences"><property name="text"><string>取消</string></property></widget></item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

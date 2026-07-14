@@ -169,3 +169,42 @@ def test_constellation_renderer_leaves_gap_around_endpoint_star_face() -> None:
 
     assert image.pixelColor(24, 20).alpha() == 0
     assert image.pixelColor(30, 20).alpha() > 0
+
+
+def test_constellation_renderer_can_hide_names_and_lines_independently() -> None:
+    """星座名与星座线开关互不依赖。"""
+
+    _qapp()
+    base_map = project_horizontal_catalog(
+        _empty_star_catalog(),
+        _camera(),
+        ViewSettings(center_az_deg=0.0, center_alt_deg=45.0),
+        visible_mag_limit=6.5,
+    )
+    constellation = ProjectedConstellation(
+        abbreviation="Test",
+        chinese_name="测试座",
+        segments=(
+            ProjectedConstellationSegment(
+                start=(20.0, 20.0),
+                end=(80.0, 20.0),
+                start_radius_px=1.0,
+                end_radius_px=1.0,
+            ),
+        ),
+        label_x_px=50.0,
+        label_y_px=50.0,
+    )
+    star_map = replace(base_map, constellations=(constellation,))
+    hidden_renderer = StarMapRenderer(
+        StarMapUiConfig(show_constellation_names=False, show_constellation_lines=False)
+    )
+    line_only_renderer = StarMapRenderer(
+        StarMapUiConfig(show_constellation_names=False, show_constellation_lines=True)
+    )
+
+    hidden = hidden_renderer.render(star_map, draw_background=False, draw_grid=False)
+    line_only = line_only_renderer.render(star_map, draw_background=False, draw_grid=False)
+
+    assert hidden.pixelColor(50, 20).alpha() == 0
+    assert line_only.pixelColor(50, 20).alpha() > 0

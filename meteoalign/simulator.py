@@ -659,11 +659,14 @@ def camera_basis_from_view(view: ViewSettings) -> tuple[np.ndarray, np.ndarray, 
     return _camera_basis(view)
 
 
+STAR_STYLE_BASE_RADIUS_PX = 0.8
+
+
 def _star_style(mag_v: np.ndarray, visible_mag_limit: float) -> tuple[np.ndarray, np.ndarray]:
     bright_mag = float(np.nanmin(mag_v)) if mag_v.size else -1.0
     denom = max(visible_mag_limit - bright_mag, 1e-6)
     normalized = np.clip((visible_mag_limit - mag_v) / denom, 0.0, 1.0)
-    radius = 0.8 + 4.8 * np.sqrt(normalized)
+    radius = STAR_STYLE_BASE_RADIUS_PX + 4.8 * np.sqrt(normalized)
     intensity = 70.0 + 185.0 * normalized
     return radius.astype(np.float64), intensity.astype(np.uint8)
 

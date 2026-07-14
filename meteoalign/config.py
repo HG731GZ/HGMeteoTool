@@ -13,7 +13,12 @@ class StarMapUiConfig:
     status_bar_font_size_pt: int = 10
     direction_label_font_size_pt: int = 16
     star_name_font_size_pt: int = 11
+    constellation_name_font_size_pt: int = 12
     reference_label_font_size_pt: int = 15
+    show_constellation_names: bool = True
+    show_constellation_lines: bool = True
+    base_star_marker_radius_px: float = 0.8
+    star_marker_size_multiplier: float = 1.0
     star_color_mag_limit: float = 6.0
     aligned_reference_scale_multiplier: float = 1.6
     constellation_line_width_px: float = 1.2
@@ -30,12 +35,16 @@ class StarMapUiConfig:
     auto_match_default_new_count: int = 200
     auto_match_default_constraint_mode: str = "soft"
     auto_match_default_soft_weight: float = 0.3
+    auto_match_default_search_radius_px: int = 30
+    sequence_psf_search_radius_px: int = 30
     wheel_zoom_enabled: bool = True
     touchpad_pinch_zoom_enabled: bool = True
     mosaic_texture_scale_percent: float = 25.0
     mosaic_texture_max_long_side_px: int = 1920
     mosaic_grid_precision_default: int = 36
     mosaic_render_fps_limit: int = 60
+    mosaic_font_size_multiplier: float = 0.5
+    mosaic_star_marker_size_multiplier: float = 0.5
     mosaic_export_block_rows: int = 1024
     mosaic_map_tile_size_px: int = 4
     mosaic_export_tiff_lzw_compression: bool = True
@@ -171,7 +180,24 @@ def load_star_map_ui_config(path: Path | None = None) -> StarMapUiConfig:
         status_bar_font_size_pt=_read_int(raw_config, "status_bar_font_size_pt", 10, 6, 32),
         direction_label_font_size_pt=_read_int(raw_config, "direction_label_font_size_pt", 16, 6, 48),
         star_name_font_size_pt=_read_int(raw_config, "star_name_font_size_pt", 11, 6, 48),
+        constellation_name_font_size_pt=_read_int(
+            raw_config,
+            "constellation_name_font_size_pt",
+            12,
+            6,
+            48,
+        ),
         reference_label_font_size_pt=_read_int(raw_config, "reference_label_font_size_pt", 15, 6, 64),
+        show_constellation_names=_read_bool(raw_config, "show_constellation_names", True),
+        show_constellation_lines=_read_bool(raw_config, "show_constellation_lines", True),
+        base_star_marker_radius_px=_read_float(raw_config, "base_star_marker_radius_px", 0.8, 0.1, 10.0),
+        star_marker_size_multiplier=_read_float(
+            raw_config,
+            "star_marker_size_multiplier",
+            1.0,
+            0.2,
+            5.0,
+        ),
         star_color_mag_limit=_read_float(raw_config, "star_color_mag_limit", 6.0, -10.0, 30.0),
         aligned_reference_scale_multiplier=_read_float(
             raw_config,
@@ -203,12 +229,34 @@ def load_star_map_ui_config(path: Path | None = None) -> StarMapUiConfig:
             ("anchor", "soft"),
         ),
         auto_match_default_soft_weight=_read_float(raw_config, "auto_match_default_soft_weight", 0.3, 0.01, 1.0),
+        auto_match_default_search_radius_px=_read_int(
+            raw_config,
+            "auto_match_default_search_radius_px",
+            30,
+            4,
+            300,
+        ),
+        sequence_psf_search_radius_px=_read_int(raw_config, "sequence_psf_search_radius_px", 30, 4, 200),
         wheel_zoom_enabled=_read_bool(raw_config, "wheel_zoom_enabled", True),
         touchpad_pinch_zoom_enabled=_read_bool(raw_config, "touchpad_pinch_zoom_enabled", True),
         mosaic_texture_scale_percent=_read_float(raw_config, "mosaic_texture_scale_percent", 25.0, 1.0, 100.0),
         mosaic_texture_max_long_side_px=_read_int(raw_config, "mosaic_texture_max_long_side_px", 1920, 64, 20000),
         mosaic_grid_precision_default=_read_int(raw_config, "mosaic_grid_precision_default", 36, 12, 180),
         mosaic_render_fps_limit=_read_int(raw_config, "mosaic_render_fps_limit", 60, 1, 240),
+        mosaic_font_size_multiplier=_read_float(
+            raw_config,
+            "mosaic_font_size_multiplier",
+            0.5,
+            0.1,
+            2.0,
+        ),
+        mosaic_star_marker_size_multiplier=_read_float(
+            raw_config,
+            "mosaic_star_marker_size_multiplier",
+            0.5,
+            0.1,
+            2.0,
+        ),
         mosaic_export_block_rows=_read_int(raw_config, "mosaic_export_block_rows", 1024, 8, 4096),
         mosaic_map_tile_size_px=_read_int(
             raw_config,

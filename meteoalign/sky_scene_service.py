@@ -45,6 +45,8 @@ class SkyPreviewStyle:
     clear_grid_lines: bool = False
     clear_direction_labels: bool = False
     clear_horizon_shadow: bool = False
+    font_scale: float = 1.0
+    star_radius_scale: float = 1.0
 
 
 class SkyPreviewRenderService:
@@ -106,4 +108,6 @@ class SkyPreviewRenderService:
             draw_grid=render_style.draw_grid,
             draw_solar_system_labels=render_style.draw_solar_system_labels,
             draw_direction_labels=render_style.draw_direction_labels,
+            font_scale=render_style.font_scale,
+            star_radius_scale=render_style.star_radius_scale,
         )

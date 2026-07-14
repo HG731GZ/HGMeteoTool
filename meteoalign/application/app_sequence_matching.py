@@ -591,7 +591,7 @@ class SequenceMatchingMixin:
         attempted_star_ids: set[str] = set()
         accepted_positions: list[tuple[float, float]] = []
         accepted_offsets: list[tuple[float, float]] = []
-        search_radius_px = int(self.ui.spinBoxAutoMatchRadius.value())
+        search_radius_px = self._sequence_psf_search_radius_px()
 
         anchor_pairs = self._fit_sequence_candidates_for_mode(
             preview.image,
@@ -671,7 +671,7 @@ class SequenceMatchingMixin:
             and math.isfinite(pair.predicted_x_px)
             and math.isfinite(pair.predicted_y_px)
         ]
-        search_radius_px = int(self.ui.spinBoxAutoMatchRadius.value())
+        search_radius_px = self._sequence_psf_search_radius_px()
         extra_pairs = self._fit_sequence_supplemental_candidates(
             preview.image,
             candidates,
@@ -770,3 +770,8 @@ class SequenceMatchingMixin:
         if len(updated_pairs) < MIN_ALIGNMENT_PAIRS:
             raise ValueError(f"时间修正后可靠配对只有 {len(updated_pairs)} 个，至少需要 {MIN_ALIGNMENT_PAIRS} 个。")
         return updated_pairs
+
+    def _sequence_psf_search_radius_px(self) -> int:
+        """读取图像序列专用 PSF 搜索半径，不依赖星点匹配页控件。"""
+
+        return max(4, min(200, int(self.ui.spinBoxSequencePsfSearchRadius.value())))

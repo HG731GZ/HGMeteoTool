@@ -199,6 +199,25 @@ def test_mosaic_render_fps_limit_is_clamped() -> None:
     assert MosaicProjectionMixin._mosaic_render_fps_limit(window) == 240
 
 
+def test_mosaic_sky_preview_uses_independent_font_and_star_scales() -> None:
+    """全景构图必须把独立字号和星点比例传给天空渲染服务。"""
+
+    window = SimpleNamespace(
+        ui=SimpleNamespace(checkBoxMosaicShowGrid=_CheckBox(True)),
+        ui_config=SimpleNamespace(
+            mosaic_font_size_multiplier=0.45,
+            mosaic_star_marker_size_multiplier=0.6,
+        ),
+    )
+
+    style = MosaicProjectionMixin._mosaic_sky_preview_style(window)
+
+    assert style.font_scale == 0.45
+    assert style.star_radius_scale == 0.6
+    assert style.draw_grid
+    assert style.draw_direction_labels
+
+
 def test_mosaic_exact_remap_repair_defaults_to_off() -> None:
     window = MosaicProjectionMixin.__new__(MosaicProjectionMixin)
     window.ui = SimpleNamespace()

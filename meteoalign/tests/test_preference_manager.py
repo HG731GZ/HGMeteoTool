@@ -68,6 +68,46 @@ def test_constellation_style_preferences_are_loaded_and_bounded(tmp_path: Path) 
     assert config.constellation_line_opacity == 1.0
 
 
+def test_constellation_and_star_marker_preferences_are_loaded_and_bounded(tmp_path: Path) -> None:
+    """星座显示开关、星点基础大小与倍率应独立读取并限制到安全范围。"""
+
+    preference_path = tmp_path / "preference.json"
+    preference_path.write_text(
+        """
+        {
+          "star_name_font_size_pt": 17,
+          "constellation_name_font_size_pt": 23,
+          "show_constellation_names": false,
+          "show_constellation_lines": false,
+          "base_star_marker_radius_px": 20.0,
+          "star_marker_size_multiplier": 9.0
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    config = load_star_map_ui_config(preference_path)
+
+    assert config.star_name_font_size_pt == 17
+    assert config.constellation_name_font_size_pt == 23
+    assert not config.show_constellation_names
+    assert not config.show_constellation_lines
+    assert config.base_star_marker_radius_px == 10.0
+    assert config.star_marker_size_multiplier == 5.0
+
+
+def test_mosaic_display_scales_and_search_radii_have_independent_defaults(tmp_path: Path) -> None:
+    """全景显示比例以及两处搜索半径都应具有独立默认配置。"""
+
+    preference_path = tmp_path / "preference.json"
+    config = load_star_map_ui_config(preference_path)
+
+    assert config.mosaic_font_size_multiplier == 0.5
+    assert config.mosaic_star_marker_size_multiplier == 0.5
+    assert config.auto_match_default_search_radius_px == 30
+    assert config.sequence_psf_search_radius_px == 30
+
+
 def test_adjacent_alignment_hyperparameters_are_loaded_and_bounded(tmp_path: Path) -> None:
     """相邻图像两种配准模式都应从 preference.json 获取超参数并限制有效范围。"""
 
