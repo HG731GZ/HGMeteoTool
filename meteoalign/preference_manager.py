@@ -96,7 +96,7 @@ DEFAULT_PREFERENCE_VALUES: dict[str, object] = {
     "mosaic_texture_max_long_side_px": 1920,
     "mosaic_grid_precision_default": 24,
     "mosaic_render_fps_limit": 60,
-    "mosaic_font_size_multiplier": 0.5,
+    "mosaic_font_size_multiplier": 0.4,
     "mosaic_star_marker_size_multiplier": 0.5,
     "mosaic_export_block_rows": 128,
     "mosaic_map_tile_size_px": 16,

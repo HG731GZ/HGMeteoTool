@@ -11,6 +11,8 @@ from ..alignment.models import SkyAlignmentTransform
 from ..matching_constants import (
     AUTO_MATCH_ANNOTATION_LIMIT,
     AUTO_MATCH_DUPLICATE_MIN_DISTANCE_PX,
+    AUTO_MATCH_FILL_GRID_COLUMNS,
+    AUTO_MATCH_FILL_GRID_ROWS,
     AUTO_MATCH_MIN_ALTITUDE_DEG,
     AUTO_MATCH_MIN_AMPLITUDE,
     AUTO_MATCH_SEARCH_MAG_LIMIT,
@@ -369,9 +371,105 @@ class AutoMatchMixin:
             seen_star_ids.add(star_id)
             candidates.append(reference_star)
             predicted_by_id[star_id] = (float(predicted[star_index, 0]), float(predicted[star_index, 1]))
-            if len(candidates) >= new_star_limit:
-                break
-        return candidates, predicted_by_id
+
+        candidates = self._auto_match_order_spatial_candidates(
+            candidates,
+            predicted_by_id=predicted_by_id,
+            accepted_positions=self._existing_matched_positions(),
+            target_size=(image.width(), image.height()),
+        )[:new_star_limit]
+        selected_predictions = {
+            reference_star.star_id.strip(): predicted_by_id[reference_star.star_id.strip()]
+            for reference_star in candidates
+        }
+        return candidates, selected_predictions
+
+    def _auto_match_spatial_cell_index(
+        self,
+        x_px: float,
+        y_px: float,
+        target_size: tuple[int, int],
+    ) -> int:
+        """返回图像坐标所在的自动匹配均衡网格编号。"""
+
+        width_px = max(float(target_size[0]), 1.0)
+        height_px = max(float(target_size[1]), 1.0)
+        column = int(
+            np.clip(
+                math.floor(float(x_px) / width_px * AUTO_MATCH_FILL_GRID_COLUMNS),
+                0,
+                AUTO_MATCH_FILL_GRID_COLUMNS - 1,
+            )
+        )
+        row = int(
+            np.clip(
+                math.floor(float(y_px) / height_px * AUTO_MATCH_FILL_GRID_ROWS),
+                0,
+                AUTO_MATCH_FILL_GRID_ROWS - 1,
+            )
+        )
+        return row * AUTO_MATCH_FILL_GRID_COLUMNS + column
+
+    def _auto_match_spatial_cell_counts(
+        self,
+        positions: list[tuple[float, float]],
+        target_size: tuple[int, int],
+    ) -> dict[int, int]:
+        """统计已有匹配点在各均衡网格中的数量。"""
+
+        counts: dict[int, int] = {}
+        for x_px, y_px in positions:
+            if not math.isfinite(x_px) or not math.isfinite(y_px):
+                continue
+            cell_index = self._auto_match_spatial_cell_index(x_px, y_px, target_size)
+            counts[cell_index] = counts.get(cell_index, 0) + 1
+        return counts
+
+    def _auto_match_order_spatial_candidates(
+        self,
+        candidates: list[ReferenceStar],
+        *,
+        predicted_by_id: dict[str, tuple[float, float]],
+        accepted_positions: list[tuple[float, float]],
+        target_size: tuple[int, int],
+    ) -> list[ReferenceStar]:
+        """按网格稀疏程度轮询候选，同一网格内优先匹配亮星。"""
+
+        counts = self._auto_match_spatial_cell_counts(accepted_positions, target_size)
+        grouped: dict[int, list[ReferenceStar]] = {}
+        for candidate in candidates:
+            star_id = candidate.star_id.strip()
+            predicted_position = predicted_by_id.get(star_id)
+            if not star_id or predicted_position is None:
+                continue
+            predicted_x, predicted_y = predicted_position
+            if not math.isfinite(predicted_x) or not math.isfinite(predicted_y):
+                continue
+            cell_index = self._auto_match_spatial_cell_index(predicted_x, predicted_y, target_size)
+            grouped.setdefault(cell_index, []).append(candidate)
+
+        for cell_candidates in grouped.values():
+            cell_candidates.sort(
+                key=lambda candidate: (
+                    float(candidate.mag_v),
+                    float(predicted_by_id[candidate.star_id.strip()][0]),
+                    float(predicted_by_id[candidate.star_id.strip()][1]),
+                )
+            )
+
+        ordered: list[ReferenceStar] = []
+        while grouped:
+            active_cells = sorted(grouped, key=lambda cell_index: (counts.get(cell_index, 0), cell_index))
+            for cell_index in active_cells:
+                cell_candidates = grouped.get(cell_index)
+                if not cell_candidates:
+                    grouped.pop(cell_index, None)
+                    continue
+                ordered.append(cell_candidates.pop(0))
+                counts[cell_index] = counts.get(cell_index, 0) + 1
+                if not cell_candidates:
+                    grouped.pop(cell_index, None)
+        return ordered
 
     def _auto_match_blocked_reference_star_ids(self) -> set[str]:
         """返回当前不能再次进入自动匹配候选池的星号。"""

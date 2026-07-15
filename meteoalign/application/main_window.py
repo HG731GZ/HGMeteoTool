@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 from PyQt5.QtCore import QDateTime, QEvent, QObject, QPoint, QPointF, QRectF, QTimer, Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QBrush, QCursor, QFont, QIcon, QImage, QPainter, QPen, QPixmap
+from PyQt5.QtGui import QColor, QBrush, QCursor, QFont, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -24,6 +24,7 @@ from PyQt5.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QProgressDialog,
+    QShortcut,
     QHeaderView,
     QTableWidgetItem,
 )
@@ -115,7 +116,7 @@ from .app_utils import (
     _qimage_to_binary_mask,
     _image_with_binary_mask,
 )
-from .preferences_page import PreferencesPage
+from .preferences_dialog import PreferencesDialog, PreferencesLauncher
 
 # ---------------------------------------------------------------------------
 # 重新导出辅助函数（供 app_workers 等模块使用）
@@ -161,7 +162,7 @@ class MainWindow(
     - ViewControlsMixin: 视图缩放与事件处理
     """
 
-    def _apply_saved_preferences(self, ui_config: StarMapUiConfig) -> None:
+    def _apply_preferences(self, ui_config: StarMapUiConfig) -> None:
         """热更新可立即生效的参数，同时保留当前任务中的用户输入。"""
 
         self.ui_config = ui_config
@@ -194,7 +195,19 @@ class MainWindow(
             self.schedule_render(delay_ms=0)
         if hasattr(self, "schedule_mosaic_render"):
             self.schedule_mosaic_render(delay_ms=0)
-        self.ui.statusbar.showMessage("软件参数已保存并立即生效。", 5000)
+        self.ui.statusbar.showMessage("软件参数已应用到当前会话，未写入 preference.json。", 5000)
+
+    def _notify_preferences_saved(self, _ui_config: StarMapUiConfig) -> None:
+        """提示配置已经写入磁盘。"""
+
+        self.ui.statusbar.showMessage("软件参数已保存到 preference.json。", 5000)
+
+    def _show_preferences_dialog(self) -> None:
+        """显示单实例非模态软件选项窗口，并将其提到前台。"""
+
+        self.preferences_dialog.show()
+        self.preferences_dialog.raise_()
+        self.preferences_dialog.activateWindow()
 
     def _import_dialog_directory(self, fallback: str | Path) -> Path:
         """让所有导入对话框共享最近一次选择的目录。"""
@@ -217,10 +230,15 @@ class MainWindow(
         self.constellation_catalog = load_constellation_catalog()
         self.milky_way_catalog: MilkyWayCatalog = load_milky_way()
         self.renderer = StarMapRenderer(self.ui_config)
-        self.preferences_page = PreferencesPage(self)
-        self.ui.tabPreferences = self.preferences_page
-        self.ui.tabWidgetMain.addTab(self.preferences_page, "软件参数")
-        self.preferences_page.preferences_saved.connect(self._apply_saved_preferences)
+        self.preferences_dialog = PreferencesDialog(self)
+        self.preferences_page = self.preferences_dialog.preferences_page
+        self.preferences_page.preferences_applied.connect(self._apply_preferences)
+        self.preferences_page.preferences_saved.connect(self._notify_preferences_saved)
+        self.preferences_launcher = PreferencesLauncher(self.ui.tabWidgetMain)
+        self.preferences_launcher.clicked.connect(self._show_preferences_dialog)
+        self.ui.tabWidgetMain.setCornerWidget(self.preferences_launcher, Qt.TopRightCorner)
+        self.preferences_shortcut = QShortcut(QKeySequence(QKeySequence.Preferences), self)
+        self.preferences_shortcut.activated.connect(self._show_preferences_dialog)
         self._install_value_control_wheel_filters()
         self.scene = QGraphicsScene(self)
         self.star_map_item = LiveStarMapGraphicsItem(self.renderer)

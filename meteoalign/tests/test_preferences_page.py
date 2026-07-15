@@ -1,4 +1,4 @@
-"""软件参数标签页的配置范围、保存与取消行为测试。"""
+"""软件选项弹窗的配置范围、即时应用、读写与关闭行为测试。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt5.QtWidgets import QApplication, QGroupBox
 import pytest
 
-from meteoalign.application.preferences_page import EDITABLE_PREFERENCE_KEYS, PreferencesPage
+from meteoalign.application.preferences_page import (
+    DEFAULT_ONLY_PREFERENCE_KEYS,
+    EDITABLE_PREFERENCE_KEYS,
+    PreferencesPage,
+)
+from meteoalign.application.preferences_dialog import PreferencesDialog, PreferencesLauncher
 from meteoalign.application.main_window import MainWindow
 from meteoalign.config import StarMapUiConfig
 from meteoalign.preference_manager import (
@@ -61,11 +66,20 @@ def test_page_groups_controls_and_saves_without_touching_excluded_values(tmp_pat
     )
     page = PreferencesPage(preference_path=preference_path)
     emitted = []
+    applied = []
     page.preferences_saved.connect(emitted.append)
+    page.preferences_applied.connect(applied.append)
 
     assert len(page.findChildren(QGroupBox)) >= 6
+    assert page.ui.pushButtonReadPreferences.text() == "读取配置"
+    assert page.ui.pushButtonSavePreferences.text() == "保存配置"
+    assert page.ui.pushButtonClosePreferences.text() == "关闭"
     page.ui.spinBoxStarNameFontSize.setValue(20)
+    assert applied and applied[-1].star_name_font_size_pt == 20
+    applied_count_before_default_change = len(applied)
     page.ui.doubleSpinBoxDefaultLatitude.setValue(35.5)
+    assert len(applied) == applied_count_before_default_change
+    applied_count_before_save = len(applied)
     page.save_preferences()
 
     written = _read_jsonc(preference_path)
@@ -78,12 +92,94 @@ def test_page_groups_controls_and_saves_without_touching_excluded_values(tmp_pat
     assert written["sequence_psf_search_radius_px"] == 55
     assert written[LAST_IMPORT_DIRECTORY_KEY] == "/keep/me"
     assert emitted and emitted[-1].star_name_font_size_pt == 20
+    assert len(applied) == applied_count_before_save
 
     page.ui.spinBoxStarNameFontSize.setValue(9)
-    page.reload_preferences()
+    page.read_preferences()
     assert page.ui.spinBoxStarNameFontSize.value() == 20
+    assert applied[-1].star_name_font_size_pt == 20
+    assert applied[-1].default_latitude_deg == 40.0
     page.close()
     app.processEvents()
+
+
+def test_non_default_changes_apply_immediately_without_writing_file(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """非默认控件变化应立即发出内存配置，默认控件和值文件保持不变。"""
+
+    app = QApplication.instance() or QApplication([])
+    preference_path = tmp_path / "preference.json"
+    preference_path.write_text(
+        json.dumps(
+            {
+                "star_name_font_size_pt": 14,
+                "default_latitude_deg": 40.0,
+                "auto_match_default_search_radius_px": 65,
+            }
+        ),
+        encoding="utf-8",
+    )
+    page = PreferencesPage(preference_path=preference_path)
+    before_apply = preference_path.read_bytes()
+    applied = []
+    saved = []
+    page.preferences_applied.connect(applied.append)
+    page.preferences_saved.connect(saved.append)
+
+    page.ui.spinBoxStarNameFontSize.setValue(20)
+    assert len(applied) == 1
+    applied_count_before_defaults = len(applied)
+    page.ui.doubleSpinBoxDefaultLatitude.setValue(35.5)
+    page.ui.spinBoxAutoMatchDefaultSearchRadius.setValue(80)
+
+    assert preference_path.read_bytes() == before_apply
+    assert len(applied) == applied_count_before_defaults
+    assert not saved
+    assert applied[0].star_name_font_size_pt == 20
+    assert applied[0].default_latitude_deg == 40.0
+    assert applied[0].auto_match_default_search_radius_px == 65
+    page.close()
+    app.processEvents()
+
+
+def test_preferences_dialog_is_non_modal_and_launcher_uses_text_button(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """软件选项应使用单独非模态弹窗和跨平台稳定的中文文字入口。"""
+
+    app = QApplication.instance() or QApplication([])
+    dialog = PreferencesDialog(preference_path=tmp_path / "preference.json")
+    launcher = PreferencesLauncher()
+
+    assert not dialog.isModal()
+    assert dialog.windowTitle() == "软件选项"
+    assert dialog.width() == 860
+    assert dialog.height() == 700
+    assert dialog.minimumWidth() == 760
+    assert launcher.ui.pushButtonOpenPreferences.text() == "选项"
+    assert launcher.ui.pushButtonOpenPreferences.accessibleName() == "打开软件选项"
+
+    dialog.show()
+    app.processEvents()
+    assert dialog.preferences_page.ui.scrollAreaPreferences.horizontalScrollBar().maximum() == 0
+    dialog.preferences_page.ui.pushButtonClosePreferences.click()
+    app.processEvents()
+    assert not dialog.isVisible()
+    launcher.close()
+
+
+def test_default_only_preference_keys_cover_all_default_groups() -> None:
+    """即时应用不得把任何默认类参数带入当前会话。"""
+
+    assert DEFAULT_ONLY_PREFERENCE_KEYS == {
+        "star_pick_circle_default_diameter_px",
+        "default_latitude_deg",
+        "default_longitude_deg",
+        "default_elevation_m",
+        "auto_match_default_new_count",
+        "auto_match_default_constraint_mode",
+        "auto_match_default_soft_weight",
+        "auto_match_default_search_radius_px",
+        "sequence_psf_search_radius_px",
+        "mosaic_grid_precision_default",
+    }
 
 
 def test_star_marker_multiplier_changes_only_computed_star_radius() -> None:
@@ -144,7 +240,7 @@ def test_hot_apply_does_not_replace_current_values_with_new_defaults() -> None:
         auto_match_default_new_count=999,
     )
 
-    MainWindow._apply_saved_preferences(host, config)
+    MainWindow._apply_preferences(host, config)
 
     assert host.ui_config is config
     assert host.renderer.ui_config is config

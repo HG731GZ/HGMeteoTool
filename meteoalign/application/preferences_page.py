@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from pathlib import Path
 
 from PyQt5.QtCore import pyqtSignal
@@ -55,76 +56,157 @@ EDITABLE_PREFERENCE_KEYS = frozenset(
     }
 )
 
+# 这些参数只定义后续任务或下次启动的初始值，不参与当前会话热更新。
+DEFAULT_ONLY_PREFERENCE_KEYS = frozenset(
+    {
+        "star_pick_circle_default_diameter_px",
+        "default_latitude_deg",
+        "default_longitude_deg",
+        "default_elevation_m",
+        "auto_match_default_new_count",
+        "auto_match_default_constraint_mode",
+        "auto_match_default_soft_weight",
+        "auto_match_default_search_radius_px",
+        "sequence_psf_search_radius_px",
+        "mosaic_grid_precision_default",
+    }
+)
+
 
 class PreferencesPage(QWidget):
-    """读取、编辑并保存普通软件参数的标签页。"""
+    """读取、编辑、应用并保存普通软件参数的标签页。"""
 
+    preferences_applied = pyqtSignal(object)
     preferences_saved = pyqtSignal(object)
+    close_requested = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None, *, preference_path: Path | None = None) -> None:
         super().__init__(parent)
         self.ui = Ui_PreferencesPage()
         self.ui.setupUi(self)
         self._preference_path = preference_path
+        self._populating_controls = False
         self.ui.pushButtonChooseConstellationColor.clicked.connect(self._choose_constellation_color)
+        self.ui.pushButtonReadPreferences.clicked.connect(self.read_preferences)
         self.ui.pushButtonSavePreferences.clicked.connect(self.save_preferences)
-        self.ui.pushButtonCancelPreferences.clicked.connect(self.reload_preferences)
+        self.ui.pushButtonClosePreferences.clicked.connect(self.close_requested.emit)
         self.ui.comboBoxAutoMatchDefaultConstraintMode.currentIndexChanged.connect(
             self._update_auto_match_soft_weight_state
         )
         self.ui.checkBoxShowConstellationLines.toggled.connect(self._update_constellation_line_controls_state)
         self.ui.lineEditConstellationLineColor.textChanged.connect(self._update_color_preview)
-        self.reload_preferences()
+        self._persisted_config = load_star_map_ui_config(self._preference_path)
+        self._runtime_config = self._persisted_config
+        self._populate_controls(self._persisted_config)
+        self._connect_immediate_apply_controls()
 
-    def reload_preferences(self) -> None:
-        """丢弃未保存改动，并从磁盘重新加载所有控件。"""
+    def read_preferences(self) -> None:
+        """从磁盘重读配置，并把其中非默认参数应用到当前会话。"""
 
         config = load_star_map_ui_config(self._preference_path)
+        self._persisted_config = config
         self._populate_controls(config)
+        self.apply_preferences()
+
+    def reload_preferences(self) -> None:
+        """兼容既有调用：重新读取磁盘配置。"""
+
+        self.read_preferences()
 
     def _populate_controls(self, config: StarMapUiConfig) -> None:
         """把经过边界校验的配置值显示到对应控件。"""
 
+        was_populating = self._populating_controls
+        self._populating_controls = True
         ui = self.ui
-        ui.spinBoxDirectionLabelFontSize.setValue(config.direction_label_font_size_pt)
-        ui.spinBoxStarNameFontSize.setValue(config.star_name_font_size_pt)
-        ui.spinBoxConstellationNameFontSize.setValue(config.constellation_name_font_size_pt)
-        ui.spinBoxReferenceLabelFontSize.setValue(config.reference_label_font_size_pt)
-        ui.checkBoxShowConstellationNames.setChecked(config.show_constellation_names)
-        ui.checkBoxShowConstellationLines.setChecked(config.show_constellation_lines)
-        ui.doubleSpinBoxBaseStarMarkerRadius.setValue(config.base_star_marker_radius_px)
-        ui.doubleSpinBoxStarMarkerSizeMultiplier.setValue(config.star_marker_size_multiplier)
-        ui.doubleSpinBoxStarColorMagLimit.setValue(config.star_color_mag_limit)
-        ui.doubleSpinBoxAlignedReferenceScale.setValue(config.aligned_reference_scale_multiplier)
-        ui.doubleSpinBoxConstellationLineWidth.setValue(config.constellation_line_width_px)
-        ui.lineEditConstellationLineColor.setText(config.constellation_line_color_hex)
-        ui.doubleSpinBoxConstellationLineOpacity.setValue(config.constellation_line_opacity)
-        ui.spinBoxStarPickDefaultDiameter.setValue(config.star_pick_circle_default_diameter_px)
-        ui.spinBoxStarPickMinDiameter.setValue(config.star_pick_circle_min_diameter_px)
-        ui.spinBoxStarPickMaxDiameter.setValue(config.star_pick_circle_max_diameter_px)
-        ui.doubleSpinBoxStarPickPsfRadiusScale.setValue(config.star_pick_psf_radius_scale)
-        ui.spinBoxStarPickPsfMaxRadius.setValue(config.star_pick_psf_max_radius_px)
-        ui.doubleSpinBoxDefaultLatitude.setValue(config.default_latitude_deg)
-        ui.doubleSpinBoxDefaultLongitude.setValue(config.default_longitude_deg)
-        ui.doubleSpinBoxDefaultElevation.setValue(config.default_elevation_m)
-        ui.spinBoxAutoMatchDefaultNewCount.setValue(config.auto_match_default_new_count)
-        self._set_combo_data(ui.comboBoxAutoMatchDefaultConstraintMode, config.auto_match_default_constraint_mode)
-        ui.doubleSpinBoxAutoMatchDefaultSoftWeight.setValue(config.auto_match_default_soft_weight)
-        ui.spinBoxAutoMatchDefaultSearchRadius.setValue(config.auto_match_default_search_radius_px)
-        ui.spinBoxSequencePsfSearchRadiusDefault.setValue(config.sequence_psf_search_radius_px)
-        ui.checkBoxWheelZoomEnabled.setChecked(config.wheel_zoom_enabled)
-        ui.checkBoxTouchpadPinchZoomEnabled.setChecked(config.touchpad_pinch_zoom_enabled)
-        ui.doubleSpinBoxMosaicTextureScalePercent.setValue(config.mosaic_texture_scale_percent)
-        ui.spinBoxMosaicTextureMaxLongSide.setValue(config.mosaic_texture_max_long_side_px)
-        ui.spinBoxMosaicGridPrecisionDefault.setValue(config.mosaic_grid_precision_default)
-        ui.spinBoxMosaicRenderFpsLimit.setValue(config.mosaic_render_fps_limit)
-        ui.doubleSpinBoxMosaicFontSizeMultiplier.setValue(config.mosaic_font_size_multiplier)
-        ui.doubleSpinBoxMosaicStarMarkerSizeMultiplier.setValue(config.mosaic_star_marker_size_multiplier)
-        ui.spinBoxMosaicExportBlockRows.setValue(config.mosaic_export_block_rows)
-        ui.spinBoxMosaicMapTileSize.setValue(config.mosaic_map_tile_size_px)
-        ui.checkBoxMosaicTiffLzwCompression.setChecked(config.mosaic_export_tiff_lzw_compression)
-        self._update_auto_match_soft_weight_state()
-        self._update_constellation_line_controls_state()
+        try:
+            ui.spinBoxDirectionLabelFontSize.setValue(config.direction_label_font_size_pt)
+            ui.spinBoxStarNameFontSize.setValue(config.star_name_font_size_pt)
+            ui.spinBoxConstellationNameFontSize.setValue(config.constellation_name_font_size_pt)
+            ui.spinBoxReferenceLabelFontSize.setValue(config.reference_label_font_size_pt)
+            ui.checkBoxShowConstellationNames.setChecked(config.show_constellation_names)
+            ui.checkBoxShowConstellationLines.setChecked(config.show_constellation_lines)
+            ui.doubleSpinBoxBaseStarMarkerRadius.setValue(config.base_star_marker_radius_px)
+            ui.doubleSpinBoxStarMarkerSizeMultiplier.setValue(config.star_marker_size_multiplier)
+            ui.doubleSpinBoxStarColorMagLimit.setValue(config.star_color_mag_limit)
+            ui.doubleSpinBoxAlignedReferenceScale.setValue(config.aligned_reference_scale_multiplier)
+            ui.doubleSpinBoxConstellationLineWidth.setValue(config.constellation_line_width_px)
+            ui.lineEditConstellationLineColor.setText(config.constellation_line_color_hex)
+            ui.doubleSpinBoxConstellationLineOpacity.setValue(config.constellation_line_opacity)
+            ui.spinBoxStarPickDefaultDiameter.setValue(config.star_pick_circle_default_diameter_px)
+            ui.spinBoxStarPickMinDiameter.setValue(config.star_pick_circle_min_diameter_px)
+            ui.spinBoxStarPickMaxDiameter.setValue(config.star_pick_circle_max_diameter_px)
+            ui.doubleSpinBoxStarPickPsfRadiusScale.setValue(config.star_pick_psf_radius_scale)
+            ui.spinBoxStarPickPsfMaxRadius.setValue(config.star_pick_psf_max_radius_px)
+            ui.doubleSpinBoxDefaultLatitude.setValue(config.default_latitude_deg)
+            ui.doubleSpinBoxDefaultLongitude.setValue(config.default_longitude_deg)
+            ui.doubleSpinBoxDefaultElevation.setValue(config.default_elevation_m)
+            ui.spinBoxAutoMatchDefaultNewCount.setValue(config.auto_match_default_new_count)
+            self._set_combo_data(ui.comboBoxAutoMatchDefaultConstraintMode, config.auto_match_default_constraint_mode)
+            ui.doubleSpinBoxAutoMatchDefaultSoftWeight.setValue(config.auto_match_default_soft_weight)
+            ui.spinBoxAutoMatchDefaultSearchRadius.setValue(config.auto_match_default_search_radius_px)
+            ui.spinBoxSequencePsfSearchRadiusDefault.setValue(config.sequence_psf_search_radius_px)
+            ui.checkBoxWheelZoomEnabled.setChecked(config.wheel_zoom_enabled)
+            ui.checkBoxTouchpadPinchZoomEnabled.setChecked(config.touchpad_pinch_zoom_enabled)
+            ui.doubleSpinBoxMosaicTextureScalePercent.setValue(config.mosaic_texture_scale_percent)
+            ui.spinBoxMosaicTextureMaxLongSide.setValue(config.mosaic_texture_max_long_side_px)
+            ui.spinBoxMosaicGridPrecisionDefault.setValue(config.mosaic_grid_precision_default)
+            ui.spinBoxMosaicRenderFpsLimit.setValue(config.mosaic_render_fps_limit)
+            ui.doubleSpinBoxMosaicFontSizeMultiplier.setValue(config.mosaic_font_size_multiplier)
+            ui.doubleSpinBoxMosaicStarMarkerSizeMultiplier.setValue(config.mosaic_star_marker_size_multiplier)
+            ui.spinBoxMosaicExportBlockRows.setValue(config.mosaic_export_block_rows)
+            ui.spinBoxMosaicMapTileSize.setValue(config.mosaic_map_tile_size_px)
+            ui.checkBoxMosaicTiffLzwCompression.setChecked(config.mosaic_export_tiff_lzw_compression)
+            self._update_auto_match_soft_weight_state()
+            self._update_constellation_line_controls_state()
+        finally:
+            self._populating_controls = was_populating
+
+    def _connect_immediate_apply_controls(self) -> None:
+        """让所有非默认参数在控件变化后立即应用。"""
+
+        ui = self.ui
+        value_controls = (
+            ui.spinBoxDirectionLabelFontSize,
+            ui.spinBoxStarNameFontSize,
+            ui.spinBoxConstellationNameFontSize,
+            ui.spinBoxReferenceLabelFontSize,
+            ui.doubleSpinBoxBaseStarMarkerRadius,
+            ui.doubleSpinBoxStarMarkerSizeMultiplier,
+            ui.doubleSpinBoxStarColorMagLimit,
+            ui.doubleSpinBoxAlignedReferenceScale,
+            ui.doubleSpinBoxConstellationLineWidth,
+            ui.doubleSpinBoxConstellationLineOpacity,
+            ui.spinBoxStarPickMinDiameter,
+            ui.spinBoxStarPickMaxDiameter,
+            ui.doubleSpinBoxStarPickPsfRadiusScale,
+            ui.spinBoxStarPickPsfMaxRadius,
+            ui.doubleSpinBoxMosaicTextureScalePercent,
+            ui.spinBoxMosaicTextureMaxLongSide,
+            ui.spinBoxMosaicRenderFpsLimit,
+            ui.doubleSpinBoxMosaicFontSizeMultiplier,
+            ui.doubleSpinBoxMosaicStarMarkerSizeMultiplier,
+            ui.spinBoxMosaicExportBlockRows,
+            ui.spinBoxMosaicMapTileSize,
+        )
+        for control in value_controls:
+            control.valueChanged.connect(self._apply_immediate_preferences)
+        for control in (
+            ui.checkBoxShowConstellationNames,
+            ui.checkBoxShowConstellationLines,
+            ui.checkBoxWheelZoomEnabled,
+            ui.checkBoxTouchpadPinchZoomEnabled,
+            ui.checkBoxMosaicTiffLzwCompression,
+        ):
+            control.toggled.connect(self._apply_immediate_preferences)
+        ui.lineEditConstellationLineColor.textChanged.connect(self._apply_immediate_preferences)
+
+    def _apply_immediate_preferences(self, *unused: object) -> None:
+        """静默应用有效的非默认参数，输入暂时无效时等待下一次变化。"""
+
+        if self._populating_controls:
+            return
+        self.apply_preferences(show_errors=False)
 
     @staticmethod
     def _set_combo_data(combo_box, value: str) -> None:  # type: ignore[no-untyped-def]
@@ -220,38 +302,87 @@ class PreferencesPage(QWidget):
             "mosaic_export_tiff_lzw_compression": ui.checkBoxMosaicTiffLzwCompression.isChecked(),
         }
 
-    def _validation_error(self, values: dict[str, object]) -> str | None:
+    def _validation_error(
+        self,
+        values: dict[str, object],
+        *,
+        validate_default_value: bool = True,
+    ) -> str | None:
         """校验跨控件约束以及无法由数值控件表达的颜色格式。"""
 
         color_text = str(values["constellation_line_color_hex"])
         if re.fullmatch(r"#[0-9A-F]{6}", color_text) is None:
             return "星座连线颜色必须使用 #RRGGBB 格式，例如 #E6E6E6。"
         minimum = int(values["star_pick_circle_min_diameter_px"])
-        default = int(values["star_pick_circle_default_diameter_px"])
         maximum = int(values["star_pick_circle_max_diameter_px"])
         if minimum > maximum:
             return "星点点选圆圈的最小直径不能大于最大直径。"
-        if not minimum <= default <= maximum:
+        default = int(values["star_pick_circle_default_diameter_px"])
+        if validate_default_value and not minimum <= default <= maximum:
             return "星点点选圆圈的默认直径必须位于最小值和最大值之间。"
         return None
 
-    def save_preferences(self) -> None:
-        """保存本页参数，重新读取规范值并通知主窗口热更新。"""
+    def _validated_control_values(
+        self,
+        *,
+        validate_default_value: bool,
+        show_errors: bool = True,
+    ) -> dict[str, object] | None:
+        """收集并校验控件值，校验失败时直接提示用户。"""
 
         values = self._control_values()
         if set(values) != set(EDITABLE_PREFERENCE_KEYS):
             raise RuntimeError("软件参数页面的控件映射与可编辑键清单不一致。")
-        error_message = self._validation_error(values)
-        if error_message:
+        error_message = self._validation_error(values, validate_default_value=validate_default_value)
+        if error_message and show_errors:
             QMessageBox.warning(self, "参数无效", error_message)
+        if error_message:
+            return None
+        return values
+
+    def apply_preferences(self, *, show_errors: bool = True) -> None:
+        """只把可热更新参数应用到当前会话，不写入配置文件。"""
+
+        values = self._validated_control_values(
+            validate_default_value=False,
+            show_errors=show_errors,
+        )
+        if values is None:
+            return
+
+        immediate_values = {
+            key: value
+            for key, value in values.items()
+            if key not in DEFAULT_ONLY_PREFERENCE_KEYS
+        }
+        minimum = int(values["star_pick_circle_min_diameter_px"])
+        maximum = int(values["star_pick_circle_max_diameter_px"])
+        runtime_default_diameter = min(
+            max(self._runtime_config.star_pick_circle_default_diameter_px, minimum),
+            maximum,
+        )
+        config = replace(
+            self._runtime_config,
+            **immediate_values,
+            star_pick_circle_default_diameter_px=runtime_default_diameter,
+        )
+        self._runtime_config = config
+        self.preferences_applied.emit(config)
+
+    def save_preferences(self) -> None:
+        """保存本页参数并重新读取规范值，但不改变当前会话配置。"""
+
+        values = self._validated_control_values(validate_default_value=True)
+        if values is None:
             return
         if not update_preference_values(values, path=self._preference_path):
             QMessageBox.critical(self, "保存参数失败", "无法写入 preference.json，请检查配置目录写入权限。")
             return
 
         config = load_star_map_ui_config(self._preference_path)
+        self._persisted_config = config
         self._populate_controls(config)
         self.preferences_saved.emit(config)
 
 
-__all__ = ["EDITABLE_PREFERENCE_KEYS", "PreferencesPage"]
+__all__ = ["DEFAULT_ONLY_PREFERENCE_KEYS", "EDITABLE_PREFERENCE_KEYS", "PreferencesPage"]
