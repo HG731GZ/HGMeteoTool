@@ -9,8 +9,10 @@ from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import QColorDialog, QMessageBox, QWidget
 
 from ..config import StarMapUiConfig, load_star_map_ui_config
+from ..meteor_showers import METEOR_SHOWER_BY_ID
 from ..preference_manager import update_preference_values
 from ..ui.ui_preferences_page import Ui_PreferencesPage
+from .meteor_shower_selection_dialog import MeteorShowerSelectionDialog
 
 
 # 本页只维护普通软件参数；界面字号、粗略取景、MetDet 和最近目录不在这里出现。
@@ -53,6 +55,16 @@ EDITABLE_PREFERENCE_KEYS = frozenset(
         "mosaic_export_block_rows",
         "mosaic_map_tile_size_px",
         "mosaic_export_tiff_lzw_compression",
+        "show_meteor_showers",
+        "meteor_radiant_only",
+        "meteor_radiant_label_font_size_pt",
+        "meteor_count_multiplier",
+        "meteor_max_length_deg",
+        "meteor_min_length_deg",
+        "meteor_opacity",
+        "meteor_thickness_ratio",
+        "meteor_random_seed",
+        "selected_meteor_shower_ids",
     }
 )
 
@@ -86,7 +98,9 @@ class PreferencesPage(QWidget):
         self.ui.setupUi(self)
         self._preference_path = preference_path
         self._populating_controls = False
+        self._selected_meteor_shower_ids: tuple[str, ...] = ()
         self.ui.pushButtonChooseConstellationColor.clicked.connect(self._choose_constellation_color)
+        self.ui.pushButtonSelectMeteorShowers.clicked.connect(self._choose_meteor_showers)
         self.ui.pushButtonReadPreferences.clicked.connect(self.read_preferences)
         self.ui.pushButtonSavePreferences.clicked.connect(self.save_preferences)
         self.ui.pushButtonClosePreferences.clicked.connect(self.close_requested.emit)
@@ -157,8 +171,20 @@ class PreferencesPage(QWidget):
             ui.spinBoxMosaicExportBlockRows.setValue(config.mosaic_export_block_rows)
             ui.spinBoxMosaicMapTileSize.setValue(config.mosaic_map_tile_size_px)
             ui.checkBoxMosaicTiffLzwCompression.setChecked(config.mosaic_export_tiff_lzw_compression)
+            ui.checkBoxShowMeteorShowers.setChecked(config.show_meteor_showers)
+            ui.checkBoxMeteorRadiantOnly.setChecked(config.meteor_radiant_only)
+            ui.spinBoxMeteorRadiantLabelFontSize.setValue(config.meteor_radiant_label_font_size_pt)
+            ui.doubleSpinBoxMeteorCountMultiplier.setValue(config.meteor_count_multiplier)
+            ui.doubleSpinBoxMeteorMaxLength.setValue(config.meteor_max_length_deg)
+            ui.doubleSpinBoxMeteorMinLength.setValue(config.meteor_min_length_deg)
+            ui.doubleSpinBoxMeteorOpacity.setValue(config.meteor_opacity)
+            ui.doubleSpinBoxMeteorThicknessRatio.setValue(config.meteor_thickness_ratio)
+            ui.spinBoxMeteorRandomSeed.setValue(config.meteor_random_seed)
+            self._selected_meteor_shower_ids = config.selected_meteor_shower_ids
+            self._update_selected_meteor_shower_label()
             self._update_auto_match_soft_weight_state()
             self._update_constellation_line_controls_state()
+            self._update_meteor_controls_state()
         finally:
             self._populating_controls = was_populating
 
@@ -188,6 +214,13 @@ class PreferencesPage(QWidget):
             ui.doubleSpinBoxMosaicStarMarkerSizeMultiplier,
             ui.spinBoxMosaicExportBlockRows,
             ui.spinBoxMosaicMapTileSize,
+            ui.spinBoxMeteorRadiantLabelFontSize,
+            ui.doubleSpinBoxMeteorCountMultiplier,
+            ui.doubleSpinBoxMeteorMaxLength,
+            ui.doubleSpinBoxMeteorMinLength,
+            ui.doubleSpinBoxMeteorOpacity,
+            ui.doubleSpinBoxMeteorThicknessRatio,
+            ui.spinBoxMeteorRandomSeed,
         )
         for control in value_controls:
             control.valueChanged.connect(self._apply_immediate_preferences)
@@ -197,8 +230,12 @@ class PreferencesPage(QWidget):
             ui.checkBoxWheelZoomEnabled,
             ui.checkBoxTouchpadPinchZoomEnabled,
             ui.checkBoxMosaicTiffLzwCompression,
+            ui.checkBoxShowMeteorShowers,
+            ui.checkBoxMeteorRadiantOnly,
         ):
             control.toggled.connect(self._apply_immediate_preferences)
+        ui.checkBoxShowMeteorShowers.toggled.connect(self._update_meteor_controls_state)
+        ui.checkBoxMeteorRadiantOnly.toggled.connect(self._update_meteor_controls_state)
         ui.lineEditConstellationLineColor.textChanged.connect(self._apply_immediate_preferences)
 
     def _apply_immediate_preferences(self, *unused: object) -> None:
@@ -244,6 +281,63 @@ class PreferencesPage(QWidget):
         selected = QColorDialog.getColor(initial, self, "选择星座连线颜色")
         if selected.isValid():
             self.ui.lineEditConstellationLineColor.setText(selected.name().upper())
+
+    def _choose_meteor_showers(self) -> None:
+        """打开全年流星雨多选窗口，并立即应用选择结果。"""
+
+        dialog = MeteorShowerSelectionDialog(
+            self,
+            selected_ids=self._selected_meteor_shower_ids,
+        )
+        if dialog.exec_() != dialog.Accepted:
+            return
+        self._selected_meteor_shower_ids = dialog.selected_ids()
+        self._update_selected_meteor_shower_label()
+        self._apply_immediate_preferences()
+
+    def _update_selected_meteor_shower_label(self) -> None:
+        """用简短名称显示当前选择，完整信息留在选择窗口中。"""
+
+        names = [
+            METEOR_SHOWER_BY_ID[shower_id].chinese_name
+            for shower_id in self._selected_meteor_shower_ids
+            if shower_id in METEOR_SHOWER_BY_ID
+        ]
+        self.ui.labelSelectedMeteorShowers.setText(
+            f"已选 {len(names)} 个：{'、'.join(names)}" if names else "尚未选择流星雨"
+        )
+
+    def _update_meteor_controls_state(self, *unused) -> None:  # type: ignore[no-untyped-def]
+        """按总开关与辐射点模式启用当前有效的流星雨参数。"""
+
+        enabled = self.ui.checkBoxShowMeteorShowers.isChecked()
+        radiant_only = self.ui.checkBoxMeteorRadiantOnly.isChecked()
+        for widget in (
+            self.ui.labelMeteorOpacity,
+            self.ui.doubleSpinBoxMeteorOpacity,
+            self.ui.checkBoxMeteorRadiantOnly,
+            self.ui.pushButtonSelectMeteorShowers,
+            self.ui.labelSelectedMeteorShowers,
+        ):
+            widget.setEnabled(enabled)
+        for widget in (
+            self.ui.labelMeteorCountMultiplier,
+            self.ui.doubleSpinBoxMeteorCountMultiplier,
+            self.ui.labelMeteorMinLength,
+            self.ui.doubleSpinBoxMeteorMinLength,
+            self.ui.labelMeteorMaxLength,
+            self.ui.doubleSpinBoxMeteorMaxLength,
+            self.ui.labelMeteorThicknessRatio,
+            self.ui.doubleSpinBoxMeteorThicknessRatio,
+            self.ui.labelMeteorRandomSeed,
+            self.ui.spinBoxMeteorRandomSeed,
+        ):
+            widget.setEnabled(enabled and not radiant_only)
+        for widget in (
+            self.ui.labelMeteorRadiantLabelFontSize,
+            self.ui.spinBoxMeteorRadiantLabelFontSize,
+        ):
+            widget.setEnabled(enabled and radiant_only)
 
     def _update_color_preview(self, color_text: str) -> None:
         """在颜色输入框左侧显示当前有效颜色。"""
@@ -300,6 +394,16 @@ class PreferencesPage(QWidget):
             "mosaic_export_block_rows": ui.spinBoxMosaicExportBlockRows.value(),
             "mosaic_map_tile_size_px": ui.spinBoxMosaicMapTileSize.value(),
             "mosaic_export_tiff_lzw_compression": ui.checkBoxMosaicTiffLzwCompression.isChecked(),
+            "show_meteor_showers": ui.checkBoxShowMeteorShowers.isChecked(),
+            "meteor_radiant_only": ui.checkBoxMeteorRadiantOnly.isChecked(),
+            "meteor_radiant_label_font_size_pt": ui.spinBoxMeteorRadiantLabelFontSize.value(),
+            "meteor_count_multiplier": ui.doubleSpinBoxMeteorCountMultiplier.value(),
+            "meteor_max_length_deg": ui.doubleSpinBoxMeteorMaxLength.value(),
+            "meteor_min_length_deg": ui.doubleSpinBoxMeteorMinLength.value(),
+            "meteor_opacity": ui.doubleSpinBoxMeteorOpacity.value(),
+            "meteor_thickness_ratio": ui.doubleSpinBoxMeteorThicknessRatio.value(),
+            "meteor_random_seed": ui.spinBoxMeteorRandomSeed.value(),
+            "selected_meteor_shower_ids": tuple(self._selected_meteor_shower_ids),
         }
 
     def _validation_error(
@@ -320,6 +424,8 @@ class PreferencesPage(QWidget):
         default = int(values["star_pick_circle_default_diameter_px"])
         if validate_default_value and not minimum <= default <= maximum:
             return "星点点选圆圈的默认直径必须位于最小值和最大值之间。"
+        if float(values["meteor_min_length_deg"]) > float(values["meteor_max_length_deg"]):
+            return "流星最短长度不能大于最长长度。"
         return None
 
     def _validated_control_values(

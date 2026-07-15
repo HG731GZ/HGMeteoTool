@@ -141,6 +141,33 @@ def test_non_default_changes_apply_immediately_without_writing_file(tmp_path) ->
     app.processEvents()
 
 
+def test_radiant_only_controls_switch_state_and_are_saved(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """辐射点模式应禁用轨迹参数、启用标注字号，并把两项写入 JSON。"""
+
+    app = QApplication.instance() or QApplication([])
+    preference_path = tmp_path / "preference.json"
+    page = PreferencesPage(preference_path=preference_path)
+
+    assert not page.ui.checkBoxShowMeteorShowers.isChecked()
+    assert not page.ui.checkBoxMeteorRadiantOnly.isEnabled()
+    assert not page.ui.spinBoxMeteorRadiantLabelFontSize.isEnabled()
+    page.ui.checkBoxShowMeteorShowers.setChecked(True)
+    assert page.ui.checkBoxMeteorRadiantOnly.isEnabled()
+    assert not page.ui.spinBoxMeteorRadiantLabelFontSize.isEnabled()
+    page.ui.checkBoxMeteorRadiantOnly.setChecked(True)
+    assert page.ui.spinBoxMeteorRadiantLabelFontSize.isEnabled()
+    assert not page.ui.doubleSpinBoxMeteorCountMultiplier.isEnabled()
+    assert page.ui.doubleSpinBoxMeteorOpacity.isEnabled()
+    page.ui.spinBoxMeteorRadiantLabelFontSize.setValue(18)
+    page.save_preferences()
+
+    written = _read_jsonc(preference_path)
+    assert written["meteor_radiant_only"] is True
+    assert written["meteor_radiant_label_font_size_pt"] == 18
+    page.close()
+    app.processEvents()
+
+
 def test_preferences_dialog_is_non_modal_and_launcher_uses_text_button(tmp_path) -> None:  # type: ignore[no-untyped-def]
     """软件选项应使用单独非模态弹窗和跨平台稳定的中文文字入口。"""
 

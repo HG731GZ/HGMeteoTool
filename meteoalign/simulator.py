@@ -187,6 +187,7 @@ class HorizontalStarCatalog:
     common_names: np.ndarray
     alt_deg: np.ndarray
     az_deg: np.ndarray
+    observer: ObserverSettings | None = None
 
     def __len__(self) -> int:
         return int(self.ra_deg.size)
@@ -343,6 +344,9 @@ class ProjectedStarMap:
     milky_way_polygons: tuple[ProjectedMilkyWayPolygon, ...] = ()
     constellations: tuple[ProjectedConstellation, ...] = ()
     solar_system_objects: tuple[ProjectedSolarSystemObject, ...] = ()
+    observer: ObserverSettings | None = None
+    camera: CameraSettings | None = None
+    view: ViewSettings | None = None
 
     def __len__(self) -> int:
         return int(self.x_px.size)
@@ -449,6 +453,7 @@ def compute_horizontal_catalog(
         common_names=limited_catalog.common_names,
         alt_deg=alt_deg,
         az_deg=az_deg,
+        observer=observer,
     )
 
 
@@ -1489,6 +1494,9 @@ def project_horizontal_catalog(
         milky_way_polygons=milky_way_polygons,
         constellations=constellations,
         solar_system_objects=solar_system_objects,
+        observer=horizontal_catalog.observer,
+        camera=camera,
+        view=view,
     )
 
 

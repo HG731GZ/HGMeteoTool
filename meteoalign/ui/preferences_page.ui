@@ -47,7 +47,7 @@
         <x>0</x>
         <y>0</y>
         <width>816</width>
-        <height>930</height>
+        <height>1190</height>
        </rect>
       </property>
       <layout class="QGridLayout" name="gridLayoutPreferenceGroups" columnstretch="1,1">
@@ -250,6 +250,32 @@
         </widget>
        </item>
        <item row="5" column="0" colspan="2">
+        <widget class="QGroupBox" name="groupBoxMeteorRendering">
+         <property name="title"><string>流星雨渲染</string></property>
+         <layout class="QGridLayout" name="gridLayoutMeteorRendering">
+          <item row="0" column="0" colspan="4"><widget class="QCheckBox" name="checkBoxShowMeteorShowers"><property name="text"><string>在“星空模拟”和“全景构图”中显示流星雨</string></property></widget></item>
+          <item row="1" column="0" colspan="2"><widget class="QCheckBox" name="checkBoxMeteorRadiantOnly"><property name="text"><string>仅显示辐射点</string></property></widget></item>
+          <item row="1" column="2"><widget class="QLabel" name="labelMeteorRadiantLabelFontSize"><property name="text"><string>辐射点标注字号</string></property></widget></item>
+          <item row="1" column="3"><widget class="QSpinBox" name="spinBoxMeteorRadiantLabelFontSize"><property name="suffix"><string> pt</string></property><property name="minimum"><number>6</number></property><property name="maximum"><number>48</number></property></widget></item>
+          <item row="2" column="0"><widget class="QLabel" name="labelMeteorCountMultiplier"><property name="text"><string>数量 / ZHR 比例</string></property></widget></item>
+          <item row="2" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxMeteorCountMultiplier"><property name="suffix"><string> ×</string></property><property name="decimals"><number>2</number></property><property name="minimum"><double>0.000000000000000</double></property><property name="maximum"><double>10.000000000000000</double></property><property name="singleStep"><double>0.050000000000000</double></property></widget></item>
+          <item row="2" column="2"><widget class="QLabel" name="labelMeteorOpacity"><property name="text"><string>整体透明度</string></property></widget></item>
+          <item row="2" column="3"><widget class="QDoubleSpinBox" name="doubleSpinBoxMeteorOpacity"><property name="decimals"><number>2</number></property><property name="minimum"><double>0.000000000000000</double></property><property name="maximum"><double>1.000000000000000</double></property><property name="singleStep"><double>0.050000000000000</double></property></widget></item>
+          <item row="3" column="0"><widget class="QLabel" name="labelMeteorMinLength"><property name="text"><string>最短长度</string></property></widget></item>
+          <item row="3" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxMeteorMinLength"><property name="suffix"><string> 天球度</string></property><property name="decimals"><number>1</number></property><property name="minimum"><double>0.100000000000000</double></property><property name="maximum"><double>150.000000000000000</double></property><property name="singleStep"><double>0.500000000000000</double></property></widget></item>
+          <item row="3" column="2"><widget class="QLabel" name="labelMeteorMaxLength"><property name="text"><string>最长长度</string></property></widget></item>
+          <item row="3" column="3"><widget class="QDoubleSpinBox" name="doubleSpinBoxMeteorMaxLength"><property name="suffix"><string> 天球度</string></property><property name="decimals"><number>1</number></property><property name="minimum"><double>0.100000000000000</double></property><property name="maximum"><double>150.000000000000000</double></property><property name="singleStep"><double>0.500000000000000</double></property></widget></item>
+          <item row="4" column="0"><widget class="QLabel" name="labelMeteorThicknessRatio"><property name="text"><string>最粗处 / 轨迹长度</string></property></widget></item>
+          <item row="4" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxMeteorThicknessRatio"><property name="decimals"><number>3</number></property><property name="minimum"><double>0.000000000000000</double></property><property name="maximum"><double>0.200000000000000</double></property><property name="singleStep"><double>0.005000000000000</double></property><property name="specialValueText"><string>0（单像素线）</string></property></widget></item>
+          <item row="4" column="2"><widget class="QLabel" name="labelMeteorRandomSeed"><property name="text"><string>随机种子</string></property></widget></item>
+          <item row="4" column="3"><widget class="QSpinBox" name="spinBoxMeteorRandomSeed"><property name="minimum"><number>0</number></property><property name="maximum"><number>2147483647</number></property></widget></item>
+          <item row="5" column="0" colspan="2"><widget class="QPushButton" name="pushButtonSelectMeteorShowers"><property name="text"><string>选择要渲染的流星雨…</string></property></widget></item>
+          <item row="5" column="2" colspan="2"><widget class="QLabel" name="labelSelectedMeteorShowers"><property name="text"><string>尚未选择</string></property><property name="wordWrap"><bool>true</bool></property></widget></item>
+          <item row="6" column="0" colspan="4"><widget class="QLabel" name="labelMeteorRenderingHint"><property name="text"><string>每个流星雨的渲染数 = 峰值 ZHR × 数量比例。位置、长度和亮度由种子复现；越靠近辐射点，允许生成的轨迹越短。</string></property><property name="wordWrap"><bool>true</bool></property></widget></item>
+         </layout>
+        </widget>
+       </item>
+       <item row="6" column="0" colspan="2">
         <spacer name="verticalSpacerPreferenceGroups">
          <property name="orientation"><enum>Qt::Vertical</enum></property>
          <property name="sizeHint" stdset="0"><size><width>20</width><height>40</height></size></property>

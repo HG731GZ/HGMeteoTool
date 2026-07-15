@@ -48,6 +48,16 @@ class StarMapUiConfig:
     mosaic_export_block_rows: int = 1024
     mosaic_map_tile_size_px: int = 4
     mosaic_export_tiff_lzw_compression: bool = True
+    show_meteor_showers: bool = True
+    meteor_radiant_only: bool = False
+    meteor_radiant_label_font_size_pt: int = 12
+    meteor_count_multiplier: float = 0.3
+    meteor_max_length_deg: float = 35.0
+    meteor_min_length_deg: float = 2.0
+    meteor_opacity: float = 0.9
+    meteor_thickness_ratio: float = 0.025
+    meteor_random_seed: int = 20260715
+    selected_meteor_shower_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -167,6 +177,24 @@ def _read_color_hex(config: dict[str, object], key: str, default_value: str) -> 
     return default_value
 
 
+def _read_string_tuple(
+    config: dict[str, object],
+    key: str,
+    default_value: tuple[str, ...],
+) -> tuple[str, ...]:
+    """读取去重后的字符串列表，非法类型回退到默认值。"""
+
+    value = config.get(key, default_value)
+    if not isinstance(value, (list, tuple)):
+        return default_value
+    result: list[str] = []
+    for item in value:
+        item_text = str(item).strip()
+        if item_text and item_text not in result:
+            result.append(item_text)
+    return tuple(result)
+
+
 def load_star_map_ui_config(path: Path | None = None) -> StarMapUiConfig:
     config_path = path or default_config_path()
     raw_config = ensure_preference_file(config_path)
@@ -269,6 +297,26 @@ def load_star_map_ui_config(path: Path | None = None) -> StarMapUiConfig:
             raw_config,
             "mosaic_export_tiff_lzw_compression",
             True,
+        ),
+        show_meteor_showers=_read_bool(raw_config, "show_meteor_showers", True),
+        meteor_radiant_only=_read_bool(raw_config, "meteor_radiant_only", False),
+        meteor_radiant_label_font_size_pt=_read_int(
+            raw_config,
+            "meteor_radiant_label_font_size_pt",
+            12,
+            6,
+            48,
+        ),
+        meteor_count_multiplier=_read_float(raw_config, "meteor_count_multiplier", 0.3, 0.0, 10.0),
+        meteor_max_length_deg=_read_float(raw_config, "meteor_max_length_deg", 35.0, 0.1, 150.0),
+        meteor_min_length_deg=_read_float(raw_config, "meteor_min_length_deg", 2.0, 0.1, 150.0),
+        meteor_opacity=_read_float(raw_config, "meteor_opacity", 0.9, 0.0, 1.0),
+        meteor_thickness_ratio=_read_float(raw_config, "meteor_thickness_ratio", 0.025, 0.0, 0.2),
+        meteor_random_seed=_read_int(raw_config, "meteor_random_seed", 20260715, 0, 2147483647),
+        selected_meteor_shower_ids=_read_string_tuple(
+            raw_config,
+            "selected_meteor_shower_ids",
+            (),
         ),
     )
 

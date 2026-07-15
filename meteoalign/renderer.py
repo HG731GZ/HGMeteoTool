@@ -2,14 +2,117 @@ from __future__ import annotations
 
 import numpy as np
 from PyQt5.QtCore import QPointF, QRectF, Qt
-from PyQt5.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPolygonF
+from PyQt5.QtGui import QBrush, QColor, QFont, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QPolygonF
 
 from .config import StarMapUiConfig
+from .meteor_showers import projected_meteor_radiants, projected_meteors
 from .simulator import ProjectedStarMap, ReferenceStar, STAR_STYLE_BASE_RADIUS_PX
 
 
 def _reference_star_index_text(reference_star: ReferenceStar) -> str:
     return str(getattr(reference_star, "index_label", "") or reference_star.index)
+
+
+def _meteor_brightness_profile(progress: float) -> float:
+    """返回流星沿途的平滑亮度，峰值固定在总长度约四分之三处。"""
+
+    safe_progress = max(0.0, min(1.0, float(progress)))
+    if safe_progress <= 0.75:
+        return (safe_progress / 0.75) ** 0.62
+    return ((1.0 - safe_progress) / 0.25) ** 0.72
+
+
+def _valid_meteor_point_runs(
+    points: tuple[tuple[float, float, float, bool], ...],
+) -> tuple[tuple[tuple[float, float, float, bool], ...], ...]:
+    """按投影连续性拆分轨迹，画面外但坐标有限的点仍属于连续段。"""
+
+    runs: list[tuple[tuple[float, float, float, bool], ...]] = []
+    current: list[tuple[float, float, float, bool]] = []
+    for point in points:
+        if point[3]:
+            current.append(point)
+            continue
+        if len(current) >= 2:
+            runs.append(tuple(current))
+        current = []
+    if len(current) >= 2:
+        runs.append(tuple(current))
+    return tuple(runs)
+
+
+def _meteor_run_length_px(
+    run: tuple[tuple[float, float, float, bool], ...],
+    width: int,
+    height: int,
+) -> float:
+    """估算轨迹屏幕长度，并限制透视投影边缘的数值发散。"""
+
+    diagonal = max(1.0, float(np.hypot(width, height)))
+    segment_limit = diagonal * 0.25
+    length = sum(
+        min(float(np.hypot(end[0] - start[0], end[1] - start[1])), segment_limit)
+        for start, end in zip(run, run[1:])
+    )
+    return min(length, diagonal * 2.0)
+
+
+def _meteor_shape_path(
+    run: tuple[tuple[float, float, float, bool], ...],
+    maximum_width_px: float,
+) -> QPainterPath:
+    """由连续中心线生成宽度随亮度变化的单个梭形路径。"""
+
+    coordinates = np.asarray([(point[0], point[1]) for point in run], dtype=np.float64)
+    tangents = np.empty_like(coordinates)
+    tangents[0] = coordinates[1] - coordinates[0]
+    tangents[-1] = coordinates[-1] - coordinates[-2]
+    if len(run) > 2:
+        tangents[1:-1] = coordinates[2:] - coordinates[:-2]
+    norms = np.hypot(tangents[:, 0], tangents[:, 1])
+    safe_norms = np.where(norms > 1e-9, norms, 1.0)
+    normals = np.column_stack((-tangents[:, 1] / safe_norms, tangents[:, 0] / safe_norms))
+    half_widths = np.asarray(
+        [_meteor_brightness_profile(point[2]) * maximum_width_px * 0.5 for point in run],
+        dtype=np.float64,
+    )
+    left = coordinates + normals * half_widths[:, None]
+    right = coordinates - normals * half_widths[:, None]
+
+    path = QPainterPath(QPointF(float(left[0, 0]), float(left[0, 1])))
+    for point in left[1:]:
+        path.lineTo(float(point[0]), float(point[1]))
+    for point in right[::-1]:
+        path.lineTo(float(point[0]), float(point[1]))
+    path.closeSubpath()
+    return path
+
+
+def _meteor_gradient(
+    run: tuple[tuple[float, float, float, bool], ...],
+    base_color: QColor,
+    maximum_alpha: int,
+) -> QLinearGradient:
+    """生成连续透明度渐变，避免逐段圆头画笔产生亮斑。"""
+
+    start = QPointF(run[0][0], run[0][1])
+    end = QPointF(run[-1][0], run[-1][1])
+    if abs(start.x() - end.x()) + abs(start.y() - end.y()) <= 1e-6:
+        end = QPointF(start.x() + 1.0, start.y())
+    gradient = QLinearGradient(start, end)
+    start_progress = float(run[0][2])
+    end_progress = float(run[-1][2])
+    progress_span = max(end_progress - start_progress, 1e-9)
+    stop_progresses = [start_progress]
+    if start_progress < 0.75 < end_progress:
+        stop_progresses.append(0.75)
+    stop_progresses.append(end_progress)
+    for progress in stop_progresses:
+        stop_position = (progress - start_progress) / progress_span
+        color = QColor(base_color)
+        color.setAlpha(int(round(maximum_alpha * _meteor_brightness_profile(progress))))
+        gradient.setColorAt(max(0.0, min(1.0, stop_position)), color)
+    return gradient
 
 
 class StarMapRenderer:
@@ -120,10 +223,14 @@ class StarMapRenderer:
             painter.drawEllipse(QRectF(center.x() - radius, center.y() - radius, radius * 2.0, radius * 2.0))
 
         self._draw_solar_system_objects(painter, star_map, element_scale, star_radius_scale)
+        if not self.ui_config.meteor_radiant_only:
+            self._draw_meteor_showers(painter, star_map)
         if draw_horizon_shadow:
             self._draw_horizon_shadow(painter, star_map)
         if draw_grid:
             self._draw_grid(painter, star_map, element_scale)
+        if self.ui_config.meteor_radiant_only:
+            self._draw_meteor_radiants(painter, star_map, resolved_font_scale)
         reference_object_ids = {reference_star.star_id for reference_star in reference_stars}
         if reference_stars and number_reference_stars:
             self._draw_reference_stars(painter, star_map, reference_stars, resolved_font_scale)
@@ -276,6 +383,136 @@ class StarMapRenderer:
             painter.setPen(QPen(QColor(255, 255, 255, min(alpha, 210)), max(0.7, 1.0 * marker_scale)))
             painter.setBrush(Qt.NoBrush)
             painter.drawEllipse(marker_rect)
+
+    def _draw_meteor_showers(self, painter: QPainter, star_map: ProjectedStarMap) -> None:
+        """用连续渐变梭形绘制流星，并由画布裁剪完整轨迹。"""
+
+        meteors = projected_meteors(star_map, self.ui_config)
+        if not meteors:
+            return
+        opacity = float(self.ui_config.meteor_opacity)
+        thickness_ratio = float(self.ui_config.meteor_thickness_ratio)
+        painter.save()
+        try:
+            painter.setClipRect(QRectF(0.0, 0.0, float(star_map.width), float(star_map.height)), Qt.IntersectClip)
+            if star_map.sky_circle_radius_px is not None:
+                radius = float(star_map.sky_circle_radius_px)
+                circle_clip = QPainterPath()
+                circle_clip.addEllipse(
+                    QRectF(
+                        star_map.width * 0.5 - radius,
+                        star_map.height * 0.5 - radius,
+                        radius * 2.0,
+                        radius * 2.0,
+                    )
+                )
+                painter.setClipPath(circle_clip, Qt.IntersectClip)
+
+            for meteor in meteors:
+                base_color = QColor(meteor.color_hex)
+                maximum_alpha = max(0, min(255, int(round(255.0 * opacity * meteor.brightness))))
+                for run in _valid_meteor_point_runs(meteor.points):
+                    run_length = _meteor_run_length_px(run, star_map.width, star_map.height)
+                    if run_length <= 0.0:
+                        continue
+                    gradient = _meteor_gradient(run, base_color, maximum_alpha)
+                    if thickness_ratio <= 0.0:
+                        center_path = QPainterPath(QPointF(run[0][0], run[0][1]))
+                        for point in run[1:]:
+                            center_path.lineTo(point[0], point[1])
+                        pen = QPen(QBrush(gradient), 0.0)
+                        pen.setCapStyle(Qt.FlatCap)
+                        pen.setJoinStyle(Qt.RoundJoin)
+                        painter.setPen(pen)
+                        painter.setBrush(Qt.NoBrush)
+                        painter.drawPath(center_path)
+                        continue
+                    maximum_width = max(0.2, run_length * thickness_ratio)
+                    painter.setPen(Qt.NoPen)
+                    painter.setBrush(QBrush(gradient))
+                    painter.drawPath(_meteor_shape_path(run, maximum_width))
+        finally:
+            painter.restore()
+
+    def _draw_meteor_radiants(
+        self,
+        painter: QPainter,
+        star_map: ProjectedStarMap,
+        font_scale: float,
+    ) -> None:
+        """用绿色米字符号及名称标注当前可见的流星雨辐射点。"""
+
+        radiants = projected_meteor_radiants(star_map, self.ui_config)
+        if not radiants:
+            return
+        scale = max(float(font_scale), 0.05)
+        alpha = max(0, min(255, int(round(255.0 * float(self.ui_config.meteor_opacity)))))
+        marker_color = QColor(80, 255, 80, alpha)
+        marker_radius = max(5.0, 8.0 * scale)
+        marker_pen = QPen(marker_color, max(1.2, 1.8 * scale))
+        marker_pen.setCapStyle(Qt.RoundCap)
+
+        font = QFont()
+        font.setPointSizeF(self.ui_config.meteor_radiant_label_font_size_pt * scale)
+        font.setBold(True)
+        painter.save()
+        try:
+            painter.setClipRect(QRectF(0.0, 0.0, float(star_map.width), float(star_map.height)), Qt.IntersectClip)
+            if star_map.sky_circle_radius_px is not None:
+                radius = float(star_map.sky_circle_radius_px)
+                circle_clip = QPainterPath()
+                circle_clip.addEllipse(
+                    QRectF(
+                        star_map.width * 0.5 - radius,
+                        star_map.height * 0.5 - radius,
+                        radius * 2.0,
+                        radius * 2.0,
+                    )
+                )
+                painter.setClipPath(circle_clip, Qt.IntersectClip)
+            painter.setFont(font)
+            metrics = painter.fontMetrics()
+            edge_padding = max(2.0, 4.0 * scale)
+            text_gap = max(3.0, 5.0 * scale)
+
+            for radiant in radiants:
+                center = QPointF(radiant.x_px, radiant.y_px)
+                painter.setPen(marker_pen)
+                painter.setBrush(Qt.NoBrush)
+                painter.drawLine(
+                    QPointF(center.x() - marker_radius, center.y()),
+                    QPointF(center.x() + marker_radius, center.y()),
+                )
+                painter.drawLine(
+                    QPointF(center.x(), center.y() - marker_radius),
+                    QPointF(center.x(), center.y() + marker_radius),
+                )
+                diagonal = marker_radius * 0.72
+                painter.drawLine(
+                    QPointF(center.x() - diagonal, center.y() - diagonal),
+                    QPointF(center.x() + diagonal, center.y() + diagonal),
+                )
+                painter.drawLine(
+                    QPointF(center.x() - diagonal, center.y() + diagonal),
+                    QPointF(center.x() + diagonal, center.y() - diagonal),
+                )
+
+                text_width = metrics.horizontalAdvance(radiant.label)
+                text_x = center.x() + marker_radius + text_gap
+                if text_x + text_width > star_map.width - edge_padding:
+                    text_x = center.x() - marker_radius - text_gap - text_width
+                text_x = max(edge_padding, min(text_x, star_map.width - text_width - edge_padding))
+                text_y = max(
+                    metrics.ascent() + edge_padding,
+                    min(center.y() - marker_radius - text_gap, star_map.height - metrics.descent() - edge_padding),
+                )
+                text_point = QPointF(text_x, text_y)
+                painter.setPen(QPen(QColor(0, 0, 0, min(alpha, 220)), max(1.0, 2.5 * scale)))
+                painter.drawText(text_point, radiant.label)
+                painter.setPen(QPen(marker_color, max(0.7, 0.9 * scale)))
+                painter.drawText(text_point, radiant.label)
+        finally:
+            painter.restore()
 
     def _draw_grid(self, painter: QPainter, star_map: ProjectedStarMap, element_scale: float) -> None:
         painter.setBrush(Qt.NoBrush)

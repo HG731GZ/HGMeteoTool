@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MeteorShowerSelectionDialog</class>
+ <widget class="QDialog" name="MeteorShowerSelectionDialog">
+  <property name="geometry"><rect><x>0</x><y>0</y><width>900</width><height>470</height></rect></property>
+  <property name="windowTitle"><string>选择要渲染的流星雨</string></property>
+  <layout class="QVBoxLayout" name="verticalLayoutMeteorSelection">
+   <item><widget class="QLabel" name="labelActiveDate"><property name="text"><string>全年流星雨</string></property></widget></item>
+   <item><widget class="QLabel" name="labelMeteorSelectionHint"><property name="text"><string>活动期、峰值辐射点和 ZHR 采用 IMO 2026 日历。辐射点会随日期漂移，此版本先使用峰值附近坐标作为取景参考。</string></property><property name="wordWrap"><bool>true</bool></property></widget></item>
+   <item>
+    <widget class="QTableWidget" name="tableWidgetMeteorShowers">
+     <property name="alternatingRowColors"><bool>true</bool></property>
+     <property name="selectionMode"><enum>QAbstractItemView::NoSelection</enum></property>
+     <property name="editTriggers"><set>QAbstractItemView::NoEditTriggers</set></property>
+     <property name="columnCount"><number>6</number></property>
+     <column><property name="text"><string>渲染</string></property></column>
+     <column><property name="text"><string>流星雨</string></property></column>
+     <column><property name="text"><string>活动期</string></property></column>
+     <column><property name="text"><string>峰值 ZHR</string></property></column>
+     <column><property name="text"><string>峰值辐射点</string></property></column>
+     <column><property name="text"><string>渲染颜色</string></property></column>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayoutMeteorSelectionButtons">
+     <item><widget class="QPushButton" name="pushButtonSelectAllMeteorShowers"><property name="text"><string>全选</string></property></widget></item>
+     <item><widget class="QPushButton" name="pushButtonClearMeteorShowers"><property name="text"><string>清空</string></property></widget></item>
+     <item><spacer name="horizontalSpacerMeteorSelection"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+     <item><widget class="QPushButton" name="pushButtonCancelMeteorSelection"><property name="text"><string>取消</string></property></widget></item>
+     <item><widget class="QPushButton" name="pushButtonAcceptMeteorSelection"><property name="text"><string>确定</string></property><property name="default"><bool>true</bool></property></widget></item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections>
+  <connection><sender>pushButtonCancelMeteorSelection</sender><signal>clicked()</signal><receiver>MeteorShowerSelectionDialog</receiver><slot>reject()</slot></connection>
+  <connection><sender>pushButtonAcceptMeteorSelection</sender><signal>clicked()</signal><receiver>MeteorShowerSelectionDialog</receiver><slot>accept()</slot></connection>
+ </connections>
+</ui>
