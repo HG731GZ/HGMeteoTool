@@ -1201,10 +1201,19 @@ def _cylindrical_ring_crosses_projection_seam(
     if longitudes.size < 3 or not np.all(np.isfinite(longitudes)):
         return True
 
-    # 圆柱类投影在相机经度 +/-pi 处有断点。银河环如果跨过该断点，
-    # 屏幕空间会出现一条贯穿画面的闭合边，QPainter 填充后就会变成大矩形面片。
+    # 圆柱类投影在相机经度 +/-pi 处有断点，跨过断点的边不能直接闭合。
     closed_longitudes = np.concatenate((longitudes, longitudes[:1]))
     return bool(np.any(np.abs(np.diff(closed_longitudes)) > np.pi))
+
+
+def _milky_way_ring_is_global(ring: HorizontalMilkyWayRing) -> bool:
+    """识别覆盖大范围天球、必须成组保留的银河外层环。"""
+
+    vectors = _local_vectors_from_altaz(ring.alt_deg, ring.az_deg)
+    if vectors.shape[0] < 3:
+        return False
+    # 局部等亮度环的顶点均值长度接近 1；环绕大半个天球的两条边界明显接近 0。
+    return float(np.linalg.norm(np.mean(vectors, axis=0))) < 0.75
 
 
 def _project_milky_way_polygons(
@@ -1218,27 +1227,33 @@ def _project_milky_way_polygons(
     projected_polygons: list[ProjectedMilkyWayPolygon] = []
     for polygon in horizontal_milky_way.polygons:
         projected_rings: list[tuple[tuple[float, float], ...]] = []
+        global_ring_failed = False
         for ring in polygon.rings:
+            is_global_ring = _milky_way_ring_is_global(ring)
             x_px, y_px, valid = _project_altaz_points(
                 alt_deg=ring.alt_deg,
                 az_deg=ring.az_deg,
                 camera=camera,
                 basis=basis,
             )
-            # 银河使用面填充渲染，必须先保证环在镜头投影上连续有效。
-            # 画面外的部分随后会裁剪掉，不能因为碰到图像边界就丢弃整块面片。
             projectable = np.isfinite(x_px) & np.isfinite(y_px)
             if camera.lens_model in FISHEYE_LENS_MODELS:
                 projectable &= valid
-            if not bool(np.all(projectable)):
+            crosses_seam = (
+                camera.lens_model in CYLINDRICAL_LENS_MODELS
+                and _cylindrical_ring_crosses_projection_seam(ring, basis)
+            )
+            if not bool(np.all(projectable)) or crosses_seam:
+                global_ring_failed |= is_global_ring
                 continue
-            if camera.lens_model in CYLINDRICAL_LENS_MODELS and _cylindrical_ring_crosses_projection_seam(ring, basis):
-                continue
+
             points = tuple((float(x_value), float(y_value)) for x_value, y_value in zip(x_px, y_px))
             clipped_points = _clip_polygon_to_image_rect(points, camera.image_width_px, camera.image_height_px)
             if len(clipped_points) >= 3:
                 projected_rings.append(clipped_points)
-        if projected_rings:
+            elif is_global_ring:
+                global_ring_failed = True
+        if projected_rings and not global_ring_failed:
             projected_polygons.append(ProjectedMilkyWayPolygon(rings=tuple(projected_rings)))
 
     return tuple(projected_polygons)

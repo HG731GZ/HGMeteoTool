@@ -64,6 +64,30 @@ def test_cylindrical_target_projection_modes_render_visible_catalog() -> None:
         assert star_map.grid_lines
 
 
+def _ring_at_camera_angle(
+    basis: tuple[np.ndarray, np.ndarray, np.ndarray],
+    theta_deg: float,
+) -> HorizontalMilkyWayRing:
+    polar_angle = np.deg2rad(np.linspace(0.0, 360.0, 361, dtype=np.float64))
+    theta = np.deg2rad(theta_deg)
+    camera_vectors = np.column_stack(
+        (
+            np.sin(theta) * np.cos(polar_angle),
+            np.sin(theta) * np.sin(polar_angle),
+            np.full_like(polar_angle, np.cos(theta)),
+        )
+    )
+    right, up, forward = basis
+    local_vectors = (
+        camera_vectors[:, 0, None] * right
+        + camera_vectors[:, 1, None] * up
+        + camera_vectors[:, 2, None] * forward
+    )
+    alt_deg, az_deg, valid = local_vectors_to_altaz(local_vectors)
+    assert np.all(valid)
+    return HorizontalMilkyWayRing(alt_deg=alt_deg, az_deg=az_deg)
+
+
 def test_cylindrical_milky_way_ring_crossing_projection_seam_is_skipped() -> None:
     camera = CameraSettings(
         sensor_width_mm=36.0,
@@ -95,6 +119,52 @@ def test_cylindrical_milky_way_ring_crossing_projection_seam_is_skipped() -> Non
 
     assert _project_milky_way_polygons(seam_catalog, camera=camera, basis=basis) == ()
     assert _project_milky_way_polygons(normal_catalog, camera=camera, basis=basis)
+
+
+def test_cylindrical_milky_way_drops_global_layer_when_one_boundary_crosses_seam() -> None:
+    camera = CameraSettings(
+        sensor_width_mm=36.0,
+        sensor_height_mm=18.0,
+        image_width_px=800,
+        image_height_px=400,
+        focal_length_mm=24.0,
+        lens_model=MERCATOR_LENS_MODEL,
+        fisheye_fov_deg=240.0,
+    )
+    basis = camera_basis_from_view(ViewSettings(center_az_deg=0.0, center_alt_deg=0.0, roll_deg=0.0))
+    front_boundary = _ring_at_camera_angle(basis, 80.0)
+    back_boundary = _ring_at_camera_angle(basis, 100.0)
+    catalog = HorizontalMilkyWayCatalog(
+        source_name="synthetic",
+        polygons=(HorizontalMilkyWayPolygon(rings=(front_boundary, back_boundary)),),
+    )
+
+    projected = _project_milky_way_polygons(catalog, camera=camera, basis=basis)
+
+    assert projected == ()
+
+
+def test_fisheye_milky_way_drops_global_layer_when_one_boundary_is_outside_view() -> None:
+    camera = CameraSettings(
+        sensor_width_mm=36.0,
+        sensor_height_mm=18.0,
+        image_width_px=800,
+        image_height_px=400,
+        focal_length_mm=24.0,
+        lens_model=FISHEYE_EQUIDISTANT,
+        fisheye_fov_deg=120.0,
+    )
+    basis = camera_basis_from_view(ViewSettings(center_az_deg=0.0, center_alt_deg=0.0, roll_deg=0.0))
+    inner_boundary = _ring_at_camera_angle(basis, 50.0)
+    outside_boundary = _ring_at_camera_angle(basis, 80.0)
+    catalog = HorizontalMilkyWayCatalog(
+        source_name="synthetic",
+        polygons=(HorizontalMilkyWayPolygon(rings=(inner_boundary, outside_boundary)),),
+    )
+
+    projected = _project_milky_way_polygons(catalog, camera=camera, basis=basis)
+
+    assert projected == ()
 
 
 def test_target_projection_pixel_inverse_round_trips_altaz() -> None:
