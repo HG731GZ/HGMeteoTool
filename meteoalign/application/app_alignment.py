@@ -7,9 +7,17 @@ import numpy as np
 from PyQt5.QtCore import QRectF, Qt
 from PyQt5.QtWidgets import QFileDialog, QTableWidgetItem, QGraphicsView, QMessageBox
 
-from ..alignment.constants import MIN_ALIGNMENT_PAIRS, SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION
-from ..alignment.fitting import fit_sky_alignment
-from ..alignment.models import SkyAlignmentTransform
+from ..alignment.constants import (
+    MIN_ALIGNMENT_PAIRS,
+    MIN_PRELIMINARY_ALIGNMENT_PAIRS,
+    SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION,
+)
+from ..alignment.fitting import (
+    fit_preliminary_sky_alignment,
+    fit_sky_alignment,
+    infer_sky_image_orientation,
+)
+from ..alignment.models import PreliminarySkyAlignmentTransform, SkyAlignmentTransform
 from ..adjacent_alignment import RoughFramingTransform
 from ..camera_calibration import CameraCalibrationProfile
 from ..coordinates import radec_to_unit_vectors
@@ -48,7 +56,7 @@ class AlignmentMixin:
     """配准管理 Mixin：天球配准变换、残差计算、参考星图联动。"""
 
     ui: object
-    _sky_alignment_transform: SkyAlignmentTransform | RoughFramingTransform | None
+    _sky_alignment_transform: PreliminarySkyAlignmentTransform | SkyAlignmentTransform | RoughFramingTransform | None
     _source_astrometric_model: SourceAstrometricModel | FixedProfilePoseSourceModel | None
     _imported_camera_calibration_profile: CameraCalibrationProfile | None
     _imported_camera_calibration_profile_path: Path | None
@@ -317,6 +325,22 @@ class AlignmentMixin:
             np.asarray(anchor_flags, dtype=bool),
         )
 
+    def _preliminary_sky_alignment_orientation(self) -> int:
+        """沿用当前模拟星图的镜像方向，消除两点相似变换的方向歧义。"""
+
+        reference_radec: list[tuple[float, float]] = []
+        reference_pixels: list[tuple[float, float]] = []
+        for star in self._current_reference_stars:
+            values = (star.ra_deg, star.dec_deg, star.sim_x, star.sim_y)
+            if not all(math.isfinite(float(value)) for value in values):
+                continue
+            reference_radec.append((float(star.ra_deg), float(star.dec_deg)))
+            reference_pixels.append((float(star.sim_x), float(star.sim_y)))
+        return infer_sky_image_orientation(
+            np.asarray(reference_radec, dtype=np.float64),
+            np.asarray(reference_pixels, dtype=np.float64),
+        )
+
     def _initial_projection_rotation_matrix(self) -> np.ndarray | None:
         reference_stars = [
             star
@@ -521,18 +545,37 @@ class AlignmentMixin:
             self._update_reference_alignment_display()
             return
 
-        if manual_pair_count < MIN_ALIGNMENT_PAIRS:
+        if manual_pair_count < MIN_PRELIMINARY_ALIGNMENT_PAIRS:
             self._reference_alignment_error_message = (
-                f"已配对 {manual_pair_count} 颗星；至少 {MIN_ALIGNMENT_PAIRS} 颗后可实时叠加星空。"
+                f"已配对 {manual_pair_count} 颗星；至少 {MIN_PRELIMINARY_ALIGNMENT_PAIRS} 颗后可低精度预测星点位置。"
             )
             self._sky_alignment_error_message = (
-                f"已配对 {manual_pair_count} 颗星；至少 {MIN_ALIGNMENT_PAIRS} 颗后可计算天球残差。"
+                f"已配对 {manual_pair_count} 颗星；至少 {MIN_PRELIMINARY_ALIGNMENT_PAIRS} 颗后可自动配对和双击聚焦。"
             )
             self._source_model_error_message = (
                 f"已配对 {manual_pair_count} 颗星；至少 {MIN_ALIGNMENT_PAIRS} 颗后可生成 xy→RA/Dec 映射。"
             )
             self._update_star_pair_residual_columns()
             self._update_reference_alignment_display()
+            return
+
+        if manual_pair_count < MIN_ALIGNMENT_PAIRS:
+            try:
+                self._sky_alignment_transform = fit_preliminary_sky_alignment(
+                    ra_dec_points=sky_points,
+                    target_points=sky_target_points,
+                    orientation=self._preliminary_sky_alignment_orientation(),
+                    point_weights=fit_weights,
+                )
+            except Exception as exc:  # noqa: BLE001 - 预配准失败需要直接反馈给交互界面。
+                self._reference_alignment_error_message = str(exc)
+                self._sky_alignment_error_message = str(exc)
+            self._source_model_error_message = (
+                f"当前只有 {manual_pair_count} 对星点；自动扩展匹配和导出映射至少需要 {MIN_ALIGNMENT_PAIRS} 对。"
+            )
+            self._update_star_pair_residual_columns()
+            self._update_reference_alignment_display()
+            self._show_adjacent_framing_workflow_status(manual_pair_count, using_rough_framing=False)
             return
 
         try:
@@ -639,6 +682,7 @@ class AlignmentMixin:
         has_alignment = self._sky_alignment_transform is not None and self.current_image_preview is not None
         has_source_model = self._source_astrometric_model is not None and self.current_image_preview is not None
         has_export_model = has_source_model
+        has_formal_pair_count = self._star_pair_position_count() >= MIN_ALIGNMENT_PAIRS
         self.ui.checkBoxOverlayReferenceMap.setEnabled(has_alignment)
         self.ui.labelReferenceOverlayOpacityTitle.setEnabled(True)
         self.ui.doubleSpinBoxReferenceOverlayOpacity.setEnabled(True)
@@ -656,7 +700,7 @@ class AlignmentMixin:
             was_blocked = self.ui.checkBoxShowSkyMask.blockSignals(True)
             self.ui.checkBoxShowSkyMask.setChecked(False)
             self.ui.checkBoxShowSkyMask.blockSignals(was_blocked)
-        self.ui.pushButtonAutoMatchFieldStars.setEnabled(has_alignment)
+        self.ui.pushButtonAutoMatchFieldStars.setEnabled(has_alignment and has_formal_pair_count)
         self.ui.pushButtonExportSourceModel.setEnabled(has_export_model)
         self._update_camera_profile_controls()
         if not has_alignment and self.ui.checkBoxSyncReferenceAndRealView.isChecked():
@@ -666,7 +710,8 @@ class AlignmentMixin:
 
         sky_transform = self._sky_alignment_transform
         if sky_transform is not None:
-            source_model_text = "，模型可导出"
+            is_preliminary = isinstance(sky_transform, PreliminarySkyAlignmentTransform)
+            source_model_text = "，低精度预测" if is_preliminary else "，模型可导出"
             distances = self._alignment_residual_distances()
             compact_summary = ""
             residual_summary = "暂无逐星残差"
@@ -726,7 +771,7 @@ class AlignmentMixin:
                 self._sky_alignment_error_message
                 or self._reference_alignment_error_message
                 or self._source_model_error_message
-                or f"至少配对 {MIN_ALIGNMENT_PAIRS} 颗星后可自动配准。"
+                or f"至少配对 {MIN_PRELIMINARY_ALIGNMENT_PAIRS} 颗星后可自动配对和双击聚焦。"
             )
             self._set_alignment_status_text(status_text)
 

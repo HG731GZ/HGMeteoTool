@@ -57,7 +57,7 @@ class _RoughTransform:
 
 
 class _RoughFocusHarness(StarPairAnnotationsMixin):
-    """验证不足四对时可用粗略取景进行双击聚焦。"""
+    """验证不足两对时可用粗略取景进行双击聚焦。"""
 
     def __init__(self) -> None:
         self.ui = SimpleNamespace(statusbar=_StatusBar())
@@ -79,7 +79,19 @@ class _RoughFocusHarness(StarPairAnnotationsMixin):
         return "测试星"
 
 
-def test_rough_framing_allows_double_click_focus_before_four_matches() -> None:
+class _TwoPairFocusHarness(_RoughFocusHarness):
+    """验证两对手工匹配已经足够使用双击聚焦。"""
+
+    def __init__(self, matched_count: int) -> None:
+        super().__init__()
+        self._rough_alignment_transform = None
+        self._matched_count = matched_count
+
+    def _star_pair_position_count(self) -> int:
+        return self._matched_count
+
+
+def test_rough_framing_allows_double_click_focus_before_two_matches() -> None:
     """已有粗略取景时，零个手工匹配也应允许聚焦理论位置。"""
 
     harness = _RoughFocusHarness()
@@ -88,3 +100,24 @@ def test_rough_framing_allows_double_click_focus_before_four_matches() -> None:
 
     assert harness.focused_position == (2, 120.0, 80.0)
     assert "已聚焦理论位置" in harness.ui.statusbar.messages[-1]
+
+
+def test_two_manual_pairs_allow_double_click_focus() -> None:
+    """无粗略取景时，两对手工匹配应解锁双击聚焦。"""
+
+    harness = _TwoPairFocusHarness(matched_count=2)
+
+    harness._focus_star_pair_theoretical_position(2)
+
+    assert harness.focused_position == (2, 120.0, 80.0)
+
+
+def test_one_manual_pair_does_not_allow_double_click_focus() -> None:
+    """无粗略取景时，一个手工匹配仍不能预测理论位置。"""
+
+    harness = _TwoPairFocusHarness(matched_count=1)
+
+    harness._focus_star_pair_theoretical_position(2)
+
+    assert harness.focused_position is None
+    assert "至少 2 个后可双击聚焦" in harness.ui.statusbar.messages[-1]

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# 两点相似变换只用于单星自动配对、双击聚焦和低精度预览。
+MIN_PRELIMINARY_ALIGNMENT_PAIRS = 2
+# 正式天球模型、自动扩展匹配和映射导出仍需要至少四对星点。
 MIN_ALIGNMENT_PAIRS = 4
 QUADRATIC_ALIGNMENT_PAIRS = 6
 MAX_ALIGNMENT_CONDITION_NUMBER = 1e10

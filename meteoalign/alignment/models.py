@@ -22,6 +22,57 @@ from .validation import (
 
 
 @dataclass(frozen=True)
+class PreliminarySkyAlignmentTransform:
+    """由少量星点建立的低精度相似变换，仅用于交互式位置预测。"""
+
+    pair_count: int
+    center_vector: np.ndarray
+    east_vector: np.ndarray
+    north_vector: np.ndarray
+    linear_matrix: np.ndarray
+    offset_px: np.ndarray
+    rms_px: float
+    orientation: int
+    residual_soft_constraint_count: int = 0
+    residual_soft_weight_min: float = 1.0
+    residual_soft_weight_max: float = 1.0
+
+    @property
+    def display_name(self) -> str:
+        return "两点相似预配准"
+
+    def transform_radec_points(self, ra_dec_points: np.ndarray) -> np.ndarray:
+        ra_dec_array = np.asarray(ra_dec_points, dtype=np.float64)
+        if ra_dec_array.ndim == 1:
+            ra_dec_array = ra_dec_array.reshape(1, 2)
+        if ra_dec_array.ndim != 2 or ra_dec_array.shape[1] != 2:
+            raise ValueError("天球预配准点必须是 Nx2 的 RA/Dec 数组。")
+        if (
+            self.linear_matrix.shape != (2, 2)
+            or self.offset_px.shape != (2,)
+            or not np.all(np.isfinite(self.linear_matrix))
+            or not np.all(np.isfinite(self.offset_px))
+        ):
+            return np.full((ra_dec_array.shape[0], 2), np.nan, dtype=np.float64)
+
+        sky_points = _project_radec_to_sky_plane(
+            ra_dec_array[:, 0],
+            ra_dec_array[:, 1],
+            self.center_vector,
+            self.east_vector,
+            self.north_vector,
+        )
+        with np.errstate(over="ignore", invalid="ignore"):
+            transformed = sky_points @ self.linear_matrix.T + self.offset_px
+        transformed[~np.all(np.isfinite(transformed), axis=1)] = np.nan
+        return transformed.astype(np.float64)
+
+    def transform_radec(self, ra_deg: float, dec_deg: float) -> tuple[float, float]:
+        transformed = self.transform_radec_points(np.asarray([[ra_deg, dec_deg]], dtype=np.float64))[0]
+        return float(transformed[0]), float(transformed[1])
+
+
+@dataclass(frozen=True)
 class ReferenceAlignmentTransform:
     degree: int
     pair_count: int

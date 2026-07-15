@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import numpy as np
+from PyQt5.QtWidgets import QMessageBox
 
 from meteoalign.application.app_auto_match import AutoMatchMixin
 from meteoalign.simulator import ReferenceStar
@@ -87,6 +88,17 @@ class _Transform:
         )
 
 
+class _BatchThresholdHarness(AutoMatchMixin):
+    """只验证批量自动扩展的四对门槛。"""
+
+    def __init__(self, matched_count: int) -> None:
+        self.current_image_preview = object()
+        self._matched_count = matched_count
+
+    def _star_pair_position_count(self) -> int:
+        return self._matched_count
+
+
 def test_auto_match_candidates_prefer_sparse_cells_over_brightness() -> None:
     harness = AutoMatchMixin()
     candidates = [
@@ -108,6 +120,22 @@ def test_auto_match_candidates_prefer_sparse_cells_over_brightness() -> None:
     )
 
     assert [candidate.star_id for candidate in ordered[:2]] == ["faint-empty", "mid-empty"]
+
+
+def test_auto_match_field_stars_stays_locked_before_four_pairs(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """两点预配准不得放开批量“自动扩展匹配”。"""
+
+    messages: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        lambda _parent, title, message: messages.append((title, message)),
+    )
+    harness = _BatchThresholdHarness(matched_count=2)
+
+    harness.auto_match_field_stars()
+
+    assert messages == [("无法自动扩展匹配", "当前只有 2 对星点；自动扩展匹配至少需要 4 对。")]
 
 
 def test_auto_match_candidate_limit_is_applied_after_grid_balancing() -> None:

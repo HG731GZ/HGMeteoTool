@@ -15,8 +15,11 @@ from meteoalign.alignment import (
     SKY_MATCHING_MODEL_MERCATOR,
     SKY_MATCHING_MODEL_RECTILINEAR,
     _project_unit_vectors_with_known_projection,
+    fit_preliminary_sky_alignment,
     fit_sky_alignment,
+    infer_sky_image_orientation,
 )
+from meteoalign.alignment.projections import _project_radec_to_sky_plane, _sky_plane_basis
 from meteoalign.coordinates import normalize_vector, radec_to_unit_vectors, sky_plane_to_radec
 from meteoalign.frame_astrometry import FrameAstrometricModel
 from meteoalign.simulator import ViewSettings, camera_basis_from_view, local_vectors_from_altaz
@@ -31,6 +34,52 @@ KNOWN_PROJECTION_MODELS = (
     SKY_MATCHING_MODEL_MERCATOR,
     SKY_MATCHING_MODEL_CYLINDRICAL_EQUIDISTANT,
 )
+
+
+def test_two_pairs_build_preliminary_reflected_similarity() -> None:
+    """两对星应能建立与模拟星图同方向的低精度位置预测。"""
+
+    radec = np.asarray(
+        ((120.0, 25.0), (124.0, 27.0), (121.5, 28.0)),
+        dtype=np.float64,
+    )
+    center, east, north = _sky_plane_basis(radec[:2])
+    sky_points = _project_radec_to_sky_plane(radec[:, 0], radec[:, 1], center, east, north)
+    reflected_matrix = np.asarray(((82.0, 17.0), (17.0, -82.0)), dtype=np.float64)
+    offset = np.asarray((640.0, 420.0), dtype=np.float64)
+    pixels = sky_points @ reflected_matrix.T + offset
+
+    transform = fit_preliminary_sky_alignment(radec[:2], pixels[:2], orientation=-1)
+
+    predicted = transform.transform_radec_points(radec)
+    assert transform.pair_count == 2
+    assert transform.display_name == "两点相似预配准"
+    assert transform.rms_px < 1e-8
+    assert np.max(np.linalg.norm(predicted - pixels, axis=1)) < 1e-7
+
+
+def test_preliminary_alignment_rejects_one_pair() -> None:
+    """单个配对仍不足以确定位置、比例和旋转。"""
+
+    with pytest.raises(ValueError, match="至少需要 2 对"):
+        fit_preliminary_sky_alignment(
+            np.asarray(((120.0, 25.0),), dtype=np.float64),
+            np.asarray(((640.0, 420.0),), dtype=np.float64),
+        )
+
+
+def test_orientation_is_inferred_from_simulated_reference_stars() -> None:
+    """模拟星图中的像素纵轴翻转应被识别为镜像方向。"""
+
+    radec = np.asarray(
+        ((120.0, 25.0), (124.0, 27.0), (121.5, 28.0), (118.0, 26.0)),
+        dtype=np.float64,
+    )
+    center, east, north = _sky_plane_basis(radec)
+    sky_points = _project_radec_to_sky_plane(radec[:, 0], radec[:, 1], center, east, north)
+    image_points = sky_points @ np.asarray(((60.0, 8.0), (8.0, -60.0)), dtype=np.float64).T
+
+    assert infer_sky_image_orientation(radec, image_points) == -1
 
 
 def _projection_fixture(lens_model: str) -> tuple[np.ndarray, np.ndarray]:

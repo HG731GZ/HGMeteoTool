@@ -1734,7 +1734,7 @@ class Ui_MainWindow(object):
         self.pushButtonAutoMatchFieldStars.setText(_translate("MainWindow", "自动扩展匹配"))
         self.pushButtonExportSourceModel.setText(_translate("MainWindow", "导出映射"))
         self.groupBoxReferenceAlignment.setTitle(_translate("MainWindow", "自动配准辅助"))
-        self.labelAlignmentTransformStatus.setText(_translate("MainWindow", "至少配对 4 颗星后可自动配准"))
+        self.labelAlignmentTransformStatus.setText(_translate("MainWindow", "至少配对 2 颗星后可自动配对和双击聚焦"))
         self.labelReferencePreviewTitle.setText(_translate("MainWindow", "参考星图"))
         self.checkBoxSyncReferenceAndRealView.setText(_translate("MainWindow", "同步"))
         self.checkBoxHideReferenceAnnotations.setText(_translate("MainWindow", "标注"))

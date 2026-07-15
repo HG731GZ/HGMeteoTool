@@ -69,6 +69,19 @@ def test_meteor_tab_is_leftmost_while_simulator_remains_default() -> None:
     window.close()
 
 
+def test_star_pair_initial_status_uses_two_pair_interaction_threshold() -> None:
+    """设计器源文件生成的界面应提示两对星解锁交互预测。"""
+
+    app = QApplication.instance() or QApplication([])
+    window = QMainWindow()
+    ui = Ui_MainWindow()
+    ui.setupUi(window)
+
+    assert ui.labelAlignmentTransformStatus.text() == "至少配对 2 颗星后可自动配对和双击聚焦"
+
+    window.close()
+
+
 def test_status_image_context_is_visible_only_on_star_matching_tab() -> None:
     """状态栏右侧图像上下文不得出现在星点匹配以外的页面。"""
 

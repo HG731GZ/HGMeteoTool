@@ -2092,7 +2092,7 @@
                  </size>
                 </property>
                 <property name="text">
-                 <string>至少配对 4 颗星后可自动配准</string>
+                 <string>至少配对 2 颗星后可自动配对和双击聚焦</string>
                 </property>
                 <property name="wordWrap">
                  <bool>false</bool>

@@ -7,6 +7,7 @@ from .constants import (
     MAX_ALIGNMENT_CONDITION_NUMBER,
     MAX_TRANSFORM_ABS_PX,
     MIN_ALIGNMENT_PAIRS,
+    MIN_PRELIMINARY_ALIGNMENT_PAIRS,
     PROJECTION_FIT_MAX_NFEV,
     PROJECTION_INVALID_RESIDUAL_PX,
     QUADRATIC_ALIGNMENT_PAIRS,
@@ -17,6 +18,7 @@ from .constants import (
 )
 from .interpolation import fit_anchor_interpolation
 from .models import (
+    PreliminarySkyAlignmentTransform,
     ProjectionSkyAlignmentTransform,
     ReferenceAlignmentTransform,
     SkyAlignmentTransform,
@@ -58,6 +60,111 @@ def _polynomial_terms(x_values: np.ndarray, y_values: np.ndarray, degree: int) -
                 )
             )
     return np.column_stack((np.ones_like(x_values), x_values, y_values))
+
+
+def fit_preliminary_sky_alignment(
+    ra_dec_points: np.ndarray,
+    target_points: np.ndarray,
+    *,
+    orientation: int = -1,
+    point_weights: np.ndarray | None = None,
+) -> PreliminarySkyAlignmentTransform:
+    """用两对或三对星拟合相似变换，供正式四点模型就绪前预测位置。"""
+
+    sky_radec = np.asarray(ra_dec_points, dtype=np.float64)
+    target = np.asarray(target_points, dtype=np.float64)
+    if sky_radec.ndim != 2 or target.ndim != 2 or sky_radec.shape[1] != 2 or target.shape[1] != 2:
+        raise ValueError("天球预配准需要 Nx2 的 RA/Dec 点与目标点。")
+    if sky_radec.shape[0] != target.shape[0]:
+        raise ValueError("天球预配准的 RA/Dec 点与目标点数量不一致。")
+    raw_weights = _fit_point_weights(sky_radec.shape[0], point_weights)
+    finite_mask = np.all(np.isfinite(sky_radec), axis=1) & np.all(np.isfinite(target), axis=1)
+    sky_radec = sky_radec[finite_mask]
+    target = target[finite_mask]
+    fit_weights = raw_weights[finite_mask]
+    pair_count = int(sky_radec.shape[0])
+    if pair_count < MIN_PRELIMINARY_ALIGNMENT_PAIRS:
+        raise ValueError(f"至少需要 {MIN_PRELIMINARY_ALIGNMENT_PAIRS} 对参考星才能计算低精度预配准。")
+    if int(orientation) not in (-1, 1):
+        raise ValueError("天球预配准方向必须是 -1 或 1。")
+
+    center, east, north = _sky_plane_basis(sky_radec)
+    sky_points = _project_radec_to_sky_plane(sky_radec[:, 0], sky_radec[:, 1], center, east, north)
+    if not _array_is_finite(sky_points):
+        raise ValueError("天球预配准投影包含无效数值。")
+
+    weight_sum = float(np.sum(fit_weights))
+    source_center = np.sum(sky_points * fit_weights[:, None], axis=0) / weight_sum
+    target_center = np.sum(target * fit_weights[:, None], axis=0) / weight_sum
+    source_delta = sky_points - source_center
+    target_delta = target - target_center
+    denominator = float(np.sum(fit_weights * np.sum(source_delta * source_delta, axis=1)))
+    if not np.isfinite(denominator) or denominator <= 1e-12:
+        raise ValueError("两颗参考星在天球上的间距过小，无法稳定计算预配准。")
+
+    source_x = source_delta[:, 0]
+    source_y = source_delta[:, 1]
+    target_x = target_delta[:, 0]
+    target_y = target_delta[:, 1]
+    if int(orientation) > 0:
+        coefficient_a = float(np.sum(fit_weights * (source_x * target_x + source_y * target_y)) / denominator)
+        coefficient_b = float(np.sum(fit_weights * (source_x * target_y - source_y * target_x)) / denominator)
+        linear_matrix = np.asarray(
+            ((coefficient_a, -coefficient_b), (coefficient_b, coefficient_a)),
+            dtype=np.float64,
+        )
+    else:
+        coefficient_a = float(np.sum(fit_weights * (source_x * target_x - source_y * target_y)) / denominator)
+        coefficient_b = float(np.sum(fit_weights * (source_y * target_x + source_x * target_y)) / denominator)
+        linear_matrix = np.asarray(
+            ((coefficient_a, coefficient_b), (coefficient_b, -coefficient_a)),
+            dtype=np.float64,
+        )
+    if not _array_is_finite(linear_matrix) or abs(float(np.linalg.det(linear_matrix))) <= 1e-12:
+        raise ValueError("两点预配准的比例过小或包含无效数值。")
+
+    offset_px = target_center - linear_matrix @ source_center
+    predicted = sky_points @ linear_matrix.T + offset_px
+    residual = predicted - target
+    rms_px = float(np.sqrt(np.mean(np.sum(residual * residual, axis=1))))
+    if not np.isfinite(rms_px):
+        raise ValueError("两点预配准残差包含无效数值。")
+    return PreliminarySkyAlignmentTransform(
+        pair_count=pair_count,
+        center_vector=center,
+        east_vector=east,
+        north_vector=north,
+        linear_matrix=linear_matrix,
+        offset_px=np.asarray(offset_px, dtype=np.float64),
+        rms_px=rms_px,
+        orientation=int(orientation),
+    )
+
+
+def infer_sky_image_orientation(ra_dec_points: np.ndarray, image_points: np.ndarray) -> int:
+    """从模拟星图的多个星点判断天球到图像映射是否发生镜像。"""
+
+    sky_radec = np.asarray(ra_dec_points, dtype=np.float64)
+    image = np.asarray(image_points, dtype=np.float64)
+    if sky_radec.ndim != 2 or image.ndim != 2 or sky_radec.shape != image.shape or sky_radec.shape[1] != 2:
+        return -1
+    finite = np.all(np.isfinite(sky_radec), axis=1) & np.all(np.isfinite(image), axis=1)
+    sky_radec = sky_radec[finite]
+    image = image[finite]
+    if sky_radec.shape[0] < 3:
+        return -1
+    try:
+        center, east, north = _sky_plane_basis(sky_radec)
+        sky_points = _project_radec_to_sky_plane(sky_radec[:, 0], sky_radec[:, 1], center, east, north)
+        source_delta = sky_points - np.mean(sky_points, axis=0)
+        image_delta = image - np.mean(image, axis=0)
+        coefficients, _residuals, rank, _singular_values = np.linalg.lstsq(source_delta, image_delta, rcond=None)
+        determinant = float(np.linalg.det(coefficients))
+    except (ValueError, np.linalg.LinAlgError):
+        return -1
+    if rank < 2 or not np.isfinite(determinant) or abs(determinant) <= 1e-12:
+        return -1
+    return 1 if determinant > 0.0 else -1
 
 
 def _initial_projection_basis(ra_dec_points: np.ndarray, target_points: np.ndarray) -> tuple[np.ndarray, float, float, float]:

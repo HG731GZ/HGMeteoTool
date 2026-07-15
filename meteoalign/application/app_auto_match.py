@@ -6,7 +6,7 @@ import numpy as np
 from PyQt5.QtCore import QPoint, Qt
 from PyQt5.QtWidgets import QApplication, QGraphicsView, QMessageBox, QProgressDialog
 
-from ..alignment.constants import MIN_ALIGNMENT_PAIRS
+from ..alignment.constants import MIN_ALIGNMENT_PAIRS, MIN_PRELIMINARY_ALIGNMENT_PAIRS
 from ..alignment.models import SkyAlignmentTransform
 from ..matching_constants import (
     AUTO_MATCH_ANNOTATION_LIMIT,
@@ -52,6 +52,7 @@ class AutoMatchMixin:
     _build_aligned_reference_star_map: object  # method
     _reference_selection_star_map: object  # method
     _focus_star_pair_image_point: object  # method
+    _star_pair_position_count: object  # method
 
     def _scene_radius_from_screen_radius(
         self,
@@ -234,7 +235,7 @@ class AutoMatchMixin:
                 "无法自动配对",
                 self._sky_alignment_error_message
                 or self._reference_alignment_error_message
-                or f"至少需要 {MIN_ALIGNMENT_PAIRS} 对已配准参考星。",
+                or f"至少需要 {MIN_PRELIMINARY_ALIGNMENT_PAIRS} 对已配准参考星。",
             )
             return
 
@@ -556,6 +557,14 @@ class AutoMatchMixin:
     def auto_match_field_stars(self) -> None:
         if self.current_image_preview is None:
             QMessageBox.information(self, "尚未导入图像", "请先导入真实图像，再自动扩展匹配。")
+            return
+        matched_count = int(self._star_pair_position_count())
+        if matched_count < MIN_ALIGNMENT_PAIRS:
+            QMessageBox.information(
+                self,
+                "无法自动扩展匹配",
+                f"当前只有 {matched_count} 对星点；自动扩展匹配至少需要 {MIN_ALIGNMENT_PAIRS} 对。",
+            )
             return
 
         transform = self._sky_alignment_transform
