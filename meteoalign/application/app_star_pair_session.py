@@ -19,7 +19,11 @@ from .app_constants import (
     STAR_PAIR_SESSION_JSON_FILTER,
     STAR_PAIR_SESSION_VERSION,
 )
-from .app_utils import _relative_image_path_for_session, _resolve_star_pair_session_real_image_path
+from .app_utils import (
+    _relative_image_path_for_session,
+    _resolve_star_pair_session_real_image_path,
+    _validate_star_pair_session_current_image,
+)
 from .app_workers import StarPairSessionImportWorker
 from ..catalog import project_root
 from ..image_preview import load_image_preview, ImagePreview
@@ -67,6 +71,7 @@ class StarPairSessionMixin:
 
     def _default_star_pair_session_path(self) -> Path:
         if self.current_image_preview is not None:
+            # 导入的配对 JSON 可能位于别处；导出始终跟随当前真实图像，避免覆盖外部 JSON。
             return self._star_pair_session_path_for_image(Path(self.current_image_preview.path))
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         return project_root() / "outputs" / f"star_pairs_{timestamp}.json"
@@ -242,7 +247,15 @@ class StarPairSessionMixin:
             self._json_import_progress = None
             self.ui.statusbar.showMessage(f"正在后台导入星点配对 JSON: {json_path}")
 
-        worker = StarPairSessionImportWorker(json_path)
+        current_preview = self.current_image_preview
+        if current_preview is None:
+            worker = StarPairSessionImportWorker(json_path)
+        else:
+            worker = StarPairSessionImportWorker(
+                json_path,
+                current_image_path=current_preview.path,
+                current_image_size=(current_preview.original_width, current_preview.original_height),
+            )
         task = start_qt_worker_task(
             parent=self,
             worker=worker,
@@ -523,7 +536,14 @@ class StarPairSessionMixin:
             auto_match_next_group_index,
         ) = self._session_auto_match_groups(payload, pair_payloads, auto_match_star_ids)
 
-        image_path = self._session_real_image_path(payload, source_path)
+        if preview is None:
+            image_path = self._session_real_image_path(payload, source_path)
+        else:
+            image_path = _validate_star_pair_session_current_image(
+                payload,
+                preview.path,
+                (preview.original_width, preview.original_height),
+            )
         self._active_star_pair_row = None
         current_tab = self.ui.tabWidgetMain.currentWidget() if not switch_to_reference else None
         previous_suspend_alignment = self._suspend_alignment_updates

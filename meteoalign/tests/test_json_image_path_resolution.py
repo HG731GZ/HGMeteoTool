@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 from PyQt5.QtGui import QImage
 
 from meteoalign.adjacent_alignment import resolve_model_source_image_path
-from meteoalign.application.app_utils import _resolve_star_pair_session_real_image_path
+from meteoalign.application.app_star_pair_session import StarPairSessionMixin
+from meteoalign.application.app_utils import (
+    _resolve_star_pair_session_real_image_path,
+    _validate_star_pair_session_current_image,
+)
+from meteoalign.application.app_workers import StarPairSessionImportWorker
 from meteoalign.image_path_resolution import associated_image_candidates
 from meteoalign.mosaic_model_io import _resolve_source_image_path
 
@@ -19,6 +26,7 @@ def _touch(path: Path) -> Path:
 def _write_image(path: Path, width: int, height: int) -> Path:
     """写入可由 QImageReader 读取尺寸的测试图像。"""
 
+    path.parent.mkdir(parents=True, exist_ok=True)
     image = QImage(width, height, QImage.Format_RGB32)
     image.fill(0)
     assert image.save(str(path))
@@ -48,6 +56,82 @@ def test_star_pair_session_image_lookup_prefers_same_dir_name_then_relative_then
     relative_image.unlink()
 
     assert _resolve_star_pair_session_real_image_path(payload, json_path) == absolute_image.resolve()
+
+
+def test_star_pair_session_accepts_current_image_when_recorded_paths_are_stale(tmp_path: Path) -> None:
+    """已有图像与 JSON 的名称、尺寸一致时，不应再用失效路径阻拦导入。"""
+
+    current_image = _write_image(tmp_path / "images" / "scene.tif", 120, 80)
+    payload = {
+        "format": "meteoalign_star_pair_session",
+        "real_image": {
+            "path": "/old/computer/archive/scene.jpg",
+            "relative_path": "../wrong/place/scene.jpg",
+            "file_name": "scene.jpg",
+            "file_stem": "scene",
+            "original_width_px": 120,
+            "original_height_px": 80,
+        },
+    }
+
+    assert _validate_star_pair_session_current_image(payload, current_image, (120, 80)) == current_image.resolve()
+
+    worker = StarPairSessionImportWorker(
+        tmp_path / "elsewhere" / "scene_starpairs.json",
+        current_image_path=current_image,
+        current_image_size=(120, 80),
+    )
+    assert worker._real_image_path(payload) == current_image.resolve()
+
+
+def test_star_pair_session_rejects_current_image_with_different_stem(tmp_path: Path) -> None:
+    """已有图像的无后缀文件名不同时必须阻拦导入。"""
+
+    current_image = _write_image(tmp_path / "other.tif", 120, 80)
+    payload = {
+        "format": "meteoalign_star_pair_session",
+        "real_image": {
+            "file_stem": "scene",
+            "original_width_px": 120,
+            "original_height_px": 80,
+        },
+    }
+
+    with pytest.raises(ValueError, match="图像名称"):
+        _validate_star_pair_session_current_image(payload, current_image, (120, 80))
+
+
+def test_star_pair_session_rejects_current_image_with_different_size(tmp_path: Path) -> None:
+    """已有图像的宽高与 JSON 记录不同时必须阻拦导入。"""
+
+    current_image = _write_image(tmp_path / "scene.tif", 120, 80)
+    payload = {
+        "format": "meteoalign_star_pair_session",
+        "real_image": {
+            "file_stem": "scene",
+            "original_width_px": 240,
+            "original_height_px": 160,
+        },
+    }
+
+    with pytest.raises(ValueError, match="图像尺寸"):
+        _validate_star_pair_session_current_image(payload, current_image, (120, 80))
+
+
+def test_star_pair_export_path_is_always_next_to_current_image(tmp_path: Path) -> None:
+    """导入外部目录的 JSON 后，默认导出位置仍应跟随当前图像。"""
+
+    class _Harness(StarPairSessionMixin):
+        pass
+
+    image_path = tmp_path / "images" / "scene.tif"
+    imported_json_path = tmp_path / "metadata" / "scene_starpairs.json"
+    harness = _Harness()
+    harness.current_image_preview = SimpleNamespace(path=image_path)
+
+    export_path = harness._default_star_pair_session_path()
+    assert export_path == image_path.parent / "scene_starpairs.json"
+    assert export_path != imported_json_path
 
 
 def test_mosaic_source_image_lookup_prefers_same_dir_name_then_relative_then_absolute(tmp_path: Path) -> None:

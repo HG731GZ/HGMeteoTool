@@ -46,8 +46,19 @@ def _session_image_file_name(real_image: dict[str, object]) -> str:
     return ""
 
 
-def _resolve_star_pair_session_real_image_path(payload: object, source_path: Path) -> Path:
-    """从星点配对 JSON 中解析真实图像路径。"""
+def _session_image_file_stem(real_image: dict[str, object]) -> str:
+    """读取 JSON 记录的无后缀图像名，并兼容旧版路径字段。"""
+
+    file_stem = real_image.get("file_stem")
+    if isinstance(file_stem, str) and file_stem.strip():
+        return Path(file_stem.strip()).name
+    file_name = _session_image_file_name(real_image)
+    return Path(file_name).stem if file_name else ""
+
+
+def _star_pair_session_real_image_metadata(payload: object) -> dict[str, object]:
+    """校验星点配对 JSON 的基本结构并返回真实图像元数据。"""
+
     if not isinstance(payload, dict):
         raise ValueError("JSON 根对象必须是字典。")
     if payload.get("format") != "meteoalign_star_pair_session":
@@ -55,6 +66,39 @@ def _resolve_star_pair_session_real_image_path(payload: object, source_path: Pat
     real_image = payload.get("real_image")
     if not isinstance(real_image, dict):
         raise ValueError("JSON 缺少 real_image 字段。")
+    return real_image
+
+
+def _validate_star_pair_session_current_image(
+    payload: object,
+    image_path: str | Path,
+    image_size: tuple[int, int],
+) -> Path:
+    """仅按无后缀文件名和尺寸确认当前图像是否属于配对 JSON。"""
+
+    real_image = _star_pair_session_real_image_metadata(payload)
+    current_path = Path(image_path).expanduser().resolve()
+    recorded_stem = _session_image_file_stem(real_image)
+    if recorded_stem and recorded_stem.casefold() != current_path.stem.casefold():
+        raise ValueError(
+            "当前图像名称与 JSON 记录不一致："
+            f"JSON 记录为 {recorded_stem}，当前图像为 {current_path.stem}。"
+        )
+
+    recorded_size = expected_image_size(real_image)
+    current_size = (int(image_size[0]), int(image_size[1]))
+    if recorded_size is not None and recorded_size != current_size:
+        raise ValueError(
+            "当前图像尺寸与 JSON 记录不一致："
+            f"JSON 记录为 {recorded_size[0]} x {recorded_size[1]} px，"
+            f"当前图像为 {current_size[0]} x {current_size[1]} px。"
+        )
+    return current_path
+
+
+def _resolve_star_pair_session_real_image_path(payload: object, source_path: Path) -> Path:
+    """从星点配对 JSON 中解析真实图像路径。"""
+    real_image = _star_pair_session_real_image_metadata(payload)
 
     searched_paths = associated_image_candidates(real_image, source_path)
     image_path = first_matching_image_path(searched_paths, expected_image_size(real_image))

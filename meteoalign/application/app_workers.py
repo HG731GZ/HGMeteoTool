@@ -10,6 +10,7 @@ from .app_utils import (
     _image_with_binary_mask,
     _qimage_to_binary_mask,
     _resolve_star_pair_session_real_image_path,
+    _validate_star_pair_session_current_image,
 )
 from ..image_preview import ImagePreview, load_image_preview
 from ..image_sequence import collect_image_sequence
@@ -119,9 +120,16 @@ class StarPairSessionImportWorker(QObject):
     finished = pyqtSignal(object)
     failed = pyqtSignal(str)
 
-    def __init__(self, file_path: str | Path) -> None:
+    def __init__(
+        self,
+        file_path: str | Path,
+        current_image_path: str | Path | None = None,
+        current_image_size: tuple[int, int] | None = None,
+    ) -> None:
         super().__init__()
         self.file_path = Path(file_path)
+        self.current_image_path = Path(current_image_path) if current_image_path is not None else None
+        self.current_image_size = current_image_size
 
     def run(self) -> None:
         try:
@@ -133,4 +141,10 @@ class StarPairSessionImportWorker(QObject):
             self.failed.emit(str(exc))
 
     def _real_image_path(self, payload: object) -> Path:
+        if self.current_image_path is not None and self.current_image_size is not None:
+            return _validate_star_pair_session_current_image(
+                payload,
+                self.current_image_path,
+                self.current_image_size,
+            )
         return _resolve_star_pair_session_real_image_path(payload, self.file_path)
