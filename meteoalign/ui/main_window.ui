@@ -1635,7 +1635,7 @@
               <item>
                <widget class="QGroupBox" name="groupBoxAdjacentImageFraming">
                 <property name="title">
-                 <string>相邻图像粗略取景</string>
+                 <string>参考图像粗略取景</string>
                 </property>
                 <layout class="QVBoxLayout" name="verticalLayoutAdjacentImageFraming">
                  <item>
@@ -1649,25 +1649,39 @@
                    <item row="0" column="0">
                     <widget class="QLabel" name="labelAdjacentImageModelTitle">
                      <property name="text">
-                      <string>相邻图像</string>
+                      <string>参考图像</string>
                      </property>
                     </widget>
                    </item>
                    <item row="0" column="1">
-                    <widget class="QLabel" name="labelAdjacentImageModel">
-                     <property name="sizePolicy">
-                      <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
-                       <horstretch>0</horstretch>
-                       <verstretch>0</verstretch>
-                      </sizepolicy>
-                     </property>
-                     <property name="text">
-                      <string>未导入 model.json</string>
-                     </property>
-                     <property name="wordWrap">
-                      <bool>false</bool>
-                     </property>
-                    </widget>
+                    <layout class="QHBoxLayout" name="horizontalLayoutAdjacentImageInfo">
+                     <item>
+                      <widget class="QLabel" name="labelAdjacentImageModel">
+                       <property name="sizePolicy">
+                        <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+                         <horstretch>1</horstretch>
+                         <verstretch>0</verstretch>
+                        </sizepolicy>
+                       </property>
+                       <property name="text">
+                        <string>未导入参考图像</string>
+                       </property>
+                       <property name="wordWrap">
+                        <bool>false</bool>
+                       </property>
+                      </widget>
+                     </item>
+                     <item>
+                      <widget class="QPushButton" name="pushButtonPreviewAdjacentImage">
+                       <property name="enabled">
+                        <bool>false</bool>
+                       </property>
+                       <property name="text">
+                        <string>预览</string>
+                       </property>
+                      </widget>
+                     </item>
+                    </layout>
                    </item>
                    <item row="1" column="0">
                     <widget class="QLabel" name="labelAdjacentAlignmentMode">
@@ -1720,7 +1734,17 @@
                    <item>
                     <widget class="QPushButton" name="pushButtonImportAdjacentImage">
                      <property name="text">
-                      <string>导入相邻图像模型</string>
+                      <string>导入参考图像</string>
+                     </property>
+                    </widget>
+                   </item>
+                   <item>
+                    <widget class="QPushButton" name="pushButtonSelectAdjacentImageFromGroup">
+                     <property name="enabled">
+                      <bool>false</bool>
+                     </property>
+                     <property name="text">
+                      <string>从组中选取</string>
                      </property>
                     </widget>
                    </item>

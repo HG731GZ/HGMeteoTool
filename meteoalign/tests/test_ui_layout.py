@@ -141,6 +141,7 @@ def test_star_pair_assistant_owns_moved_controls_and_uses_normal_window_layer() 
     assert main_ui.tableWidgetStarPairs is dialog.ui.tableWidgetStarPairs
     assert dialog.ui.pushButtonDeleteStarPairs.text() == "重置匹配列表"
     assert dialog.ui.pushButtonClearStarPairs.text() == "清除所有匹配"
+    assert not dialog.ui.pushButtonExportStarPairs.isEnabled()
     assert dialog.ui.horizontalLayoutStarPairSessionButtons.itemAt(0).widget() is dialog.ui.pushButtonImportStarPairs
     assert dialog.ui.horizontalLayoutStarPairSessionButtons.itemAt(1).widget() is dialog.ui.pushButtonExportStarPairs
     assert dialog.ui.horizontalLayoutStarPairResetButtons.itemAt(0).widget() is dialog.ui.pushButtonClearStarPairs

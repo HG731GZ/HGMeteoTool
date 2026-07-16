@@ -70,6 +70,8 @@ class ImageGroupMixin:
         button = getattr(self.ui, "pushButtonOpenImageGroupAssistant", None)
         if button is not None:
             button.setEnabled(self._image_group_mode_active() and self._image_group_controls_idle())
+        if hasattr(self, "_update_adjacent_framing_controls"):
+            self._update_adjacent_framing_controls()
 
     def _sync_image_group_current_image(self, image_path: str | Path | None = None) -> None:
         """让助手列表选中主窗口当前图像。"""

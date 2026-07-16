@@ -6,7 +6,7 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>352</width>
+    <width>440</width>
     <height>560</height>
    </rect>
   </property>
@@ -18,7 +18,7 @@
   </property>
   <property name="maximumSize">
    <size>
-    <width>390</width>
+    <width>480</width>
     <height>16777215</height>
    </size>
   </property>
@@ -29,7 +29,7 @@
    <item>
     <widget class="QLabel" name="labelImageGroupHint">
      <property name="text">
-      <string>双击任意图像，切换到该图像继续星点匹配。</string>
+      <string>双击任意图像即可跳转到该图像。</string>
      </property>
      <property name="wordWrap">
       <bool>true</bool>
@@ -57,7 +57,7 @@
       <number>0</number>
      </property>
      <property name="columnCount">
-      <number>3</number>
+      <number>5</number>
      </property>
      <attribute name="horizontalHeaderStretchLastSection">
       <bool>false</bool>
@@ -78,6 +78,16 @@
      <column>
       <property name="text">
        <string>映射</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>蒙版</string>
+      </property>
+     </column>
+     <column>
+      <property name="text">
+       <string>预览</string>
       </property>
      </column>
     </widget>

@@ -10,6 +10,7 @@ from PyQt5.QtWidgets import (
     QFileDialog, QMessageBox, QTableWidgetItem,
 )
 
+from ..alignment.constants import MIN_ALIGNMENT_PAIRS
 from .app_constants import (
     AUTO_MATCH_CONSTRAINT_ANCHOR,
     AUTO_MATCH_CONSTRAINT_MODES,
@@ -35,6 +36,19 @@ from ..star_pair_model import (
 
 class StarPairSessionMixin:
     """星对会话导入导出、记录快照和恢复。"""
+
+    def _update_star_pair_export_control(
+        self,
+        *,
+        controls_enabled: bool | None = None,
+    ) -> None:
+        """仅在 JSON 控件可用且有效匹配达到正式配准门槛时允许导出。"""
+
+        if controls_enabled is None:
+            controls_enabled = getattr(self, "_json_import_thread", None) is None
+        self.ui.pushButtonExportStarPairs.setEnabled(
+            bool(controls_enabled) and self._star_pair_position_count() >= MIN_ALIGNMENT_PAIRS
+        )
 
     def _star_pair_records(self) -> list[dict[str, object]]:
         return self._star_pair_store.records_to_json_payloads()

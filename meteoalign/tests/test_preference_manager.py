@@ -135,7 +135,7 @@ def test_psf_interaction_preferences_are_loaded_and_bounded(tmp_path: Path) -> N
 
 
 def test_adjacent_alignment_hyperparameters_are_loaded_and_bounded(tmp_path: Path) -> None:
-    """相邻图像两种配准模式都应从 preference.json 获取超参数并限制有效范围。"""
+    """参考图像两种配准模式都应从 preference.json 获取超参数并限制有效范围。"""
 
     preference_path = tmp_path / "preference.json"
     preference_path.write_text(

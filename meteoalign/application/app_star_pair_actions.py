@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PyQt5.QtCore import QEvent, QPoint, Qt
-from PyQt5.QtWidgets import QApplication, QInputDialog, QMenu, QMessageBox, QTableWidgetItem
+from PyQt5.QtWidgets import QApplication, QInputDialog, QMenu, QMessageBox, QTableWidgetItem, QWidget
 
 from .app_constants import (
     AUTO_MATCH_CONSTRAINT_ANCHOR,
@@ -20,6 +20,20 @@ from ..star_pair_model import (
 
 class StarPairActionsMixin:
     """星对右键菜单、拾取模式、位置编辑和删除动作。"""
+
+    def _star_pair_assistant_message_parent(self) -> QWidget:
+        """优先让匹配助手内发起的消息框依附于助手，避免主窗口遮住助手。"""
+
+        assistant = getattr(self, "star_pair_assistant", None)
+        return assistant if isinstance(assistant, QWidget) else self
+
+    def _reactivate_star_pair_assistant(self) -> None:
+        """确认操作结束后让仍然可见的匹配助手继续位于当前交互层。"""
+
+        assistant = getattr(self, "star_pair_assistant", None)
+        if isinstance(assistant, QWidget) and assistant.isVisible():
+            assistant.raise_()
+            assistant.activateWindow()
 
     def _selected_star_pair_rows(self) -> list[int]:
         table = self.ui.tableWidgetStarPairs
@@ -342,7 +356,7 @@ class StarPairActionsMixin:
             self.ui.statusbar.showMessage("当前没有可清除的星点匹配。")
             return
         reply = QMessageBox.question(
-            self,
+            self._star_pair_assistant_message_parent(),
             "确认清除所有匹配",
             f"确定要清除当前全部 {pair_count} 个星点匹配吗？\n\n此操作会删除手工和自动匹配记录。",
             QMessageBox.Yes | QMessageBox.No,
@@ -353,6 +367,7 @@ class StarPairActionsMixin:
             return
         cleared_count = self._clear_star_pair_positions()
         self.ui.statusbar.showMessage(f"已清除 {cleared_count} 个星点匹配。")
+        self._reactivate_star_pair_assistant()
 
     def delete_all_star_pair_rows(self) -> None:
         """确认后重置匹配表，并按当前参考星图范围恢复启动时的参考星列表。"""
@@ -361,7 +376,7 @@ class StarPairActionsMixin:
         row_count = sum(1 for row in range(table.rowCount()) if not self._is_star_pair_group_row(row))
         if row_count > 0:
             reply = QMessageBox.question(
-                self,
+                self._star_pair_assistant_message_parent(),
                 "确认重置匹配列表",
                 (
                     f"确定要重置当前匹配列表吗？\n\n"
@@ -380,6 +395,7 @@ class StarPairActionsMixin:
             f"已重置匹配列表：清空 {deleted_count} 行参考星，并按当前参考星图重新添加 "
             f"{rebuilt_count} 颗标注星。"
         )
+        self._reactivate_star_pair_assistant()
 
     def _clear_star_pair_position(self, row: int) -> None:
         star_label = self._star_pair_label(row)

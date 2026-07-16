@@ -155,7 +155,7 @@ class MainWindow(
 
     采用 Mixin 多重继承模式将不同功能拆分到独立模块：
     - AppWidgetMixin: UI 辅助（标签、字体）
-    - AdjacentFramingMixin: 相邻图像粗略取景
+    - AdjacentFramingMixin: 参考图像粗略取景
     - StarPairTableMixin: 星对表格管理
     - AlignmentMixin: 天球配准与残差
     - StarPairIOMixin: JSON 导入导出
@@ -335,7 +335,9 @@ class MainWindow(
         self._adjacent_framing_thread: object | None = None
         self._adjacent_framing_worker: AdjacentFramingWorker | None = None
         self._adjacent_framing_progress: QProgressDialog | None = None
+        self._adjacent_image_path: Path | None = None
         self._adjacent_model_json_path: Path | None = None
+        self._adjacent_image_preview_dialog: object | None = None
         self._adjacent_framing_result = None
         self._rough_alignment_transform = None
         self._rough_source_astrometric_model = None
@@ -492,6 +494,8 @@ class MainWindow(
         self.ui.pushButtonImportImages.clicked.connect(self.import_images)
         if hasattr(self.ui, "pushButtonImportAdjacentImage"):
             self.ui.pushButtonImportAdjacentImage.clicked.connect(self.import_adjacent_image)
+        if hasattr(self.ui, "pushButtonPreviewAdjacentImage"):
+            self.ui.pushButtonPreviewAdjacentImage.clicked.connect(self.show_adjacent_image_preview)
         if hasattr(self.ui, "pushButtonCalculateAdjacentFraming"):
             self.ui.pushButtonCalculateAdjacentFraming.clicked.connect(self.calculate_adjacent_rough_framing)
         if hasattr(self.ui, "toolButtonAdjacentAlignmentSettings"):
@@ -591,6 +595,9 @@ class MainWindow(
             self.preferences_dialog.close()
             self.star_pair_assistant.close()
             self.image_group_assistant.close()
+            adjacent_preview = getattr(self, "_adjacent_image_preview_dialog", None)
+            if adjacent_preview is not None:
+                adjacent_preview.close()
             self._shutdown_meteor_detection_worker()
 
     def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]

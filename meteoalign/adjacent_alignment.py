@@ -1,4 +1,4 @@
-"""相邻图像配准与粗略取景计算。
+"""参考图像配准与粗略取景计算。
 
 本模块复用了 StarAlign 中的 SEP 星点检测、Astroalign/球面三角形初配准、
 OpenCV SIFT + RANSAC 地景配准思路。计算结果只用于快速建立当前图像的
@@ -57,7 +57,7 @@ class StarCatalog:
 
 @dataclass(frozen=True)
 class PixelMatch:
-    """一对经过几何验证的相邻图像像素坐标。"""
+    """一对经过几何验证的参考图像像素坐标。"""
 
     a_index: int
     b_index: int
@@ -65,7 +65,7 @@ class PixelMatch:
 
 
 class PointTransform(Protocol):
-    """定义将相邻图像 A 像素预测到当前图像 B 的接口。"""
+    """定义将参考图像 A 像素预测到当前图像 B 的接口。"""
 
     def predict(self, points: np.ndarray) -> np.ndarray:
         """返回 B 图中的预测像素位置。"""
@@ -124,7 +124,7 @@ class RoughFramingTransform:
 
     @property
     def display_name(self) -> str:
-        return f"相邻图像{adjacent_alignment_mode_display_name(self.mode)}"
+        return f"参考图像{adjacent_alignment_mode_display_name(self.mode)}"
 
     @property
     def lens_model(self) -> str:
@@ -152,14 +152,14 @@ class AdjacentFramingResult:
 
 
 def resolve_model_source_image_path(payload: object, model_json_path: str | Path) -> Path:
-    """从导出 model.json 的 source_image 字段恢复相邻图像 A 的路径。"""
+    """从导出 model.json 的 source_image 字段恢复参考图像 A 的路径。"""
 
     json_path = Path(model_json_path).expanduser().resolve()
     if not isinstance(payload, dict):
-        raise ValueError("相邻图像模型 JSON 根对象必须是对象。")
+        raise ValueError("参考图像模型 JSON 根对象必须是对象。")
     source_image = payload.get("source_image")
     if not isinstance(source_image, dict):
-        raise ValueError("相邻图像模型 JSON 缺少 source_image，无法定位相邻原图。")
+        raise ValueError("参考图像模型 JSON 缺少 source_image，无法定位参考原图。")
 
     candidates = associated_image_candidates(source_image, json_path)
     expected_size = expected_image_size(source_image)
@@ -177,24 +177,33 @@ def resolve_model_source_image_path(payload: object, model_json_path: str | Path
     if candidate is not None:
         return candidate
     if not candidates:
-        raise ValueError("相邻图像模型 JSON 的 source_image 未提供图像路径。")
+        raise ValueError("参考图像模型 JSON 的 source_image 未提供图像路径。")
     searched = "\n".join(str(path) for path in candidates)
-    raise FileNotFoundError(f"找不到尺寸匹配的相邻图像 A，已尝试：\n{searched}")
+    raise FileNotFoundError(f"找不到尺寸匹配的参考图像 A，已尝试：\n{searched}")
 
 
-def load_adjacent_frame_model(model_json_path: str | Path) -> tuple[FrameAstrometricModel, Path]:
-    """读取并验证由软件导出的相邻图像 FrameAstrometricModel。"""
+def load_adjacent_frame_model(
+    model_json_path: str | Path,
+    image_path: str | Path | None = None,
+) -> tuple[FrameAstrometricModel, Path]:
+    """读取参考图像模型；可显式指定本次需要使用的原图。"""
 
     json_path = Path(model_json_path).expanduser().resolve()
     try:
         payload = json.loads(json_path.read_text(encoding="utf-8"))
     except OSError as exc:
-        raise OSError(f"无法读取相邻图像模型 JSON：{json_path}") from exc
+        raise OSError(f"无法读取参考图像模型 JSON：{json_path}") from exc
     except json.JSONDecodeError as exc:
-        raise ValueError(f"相邻图像模型 JSON 格式无效：{exc}") from exc
+        raise ValueError(f"参考图像模型 JSON 格式无效：{exc}") from exc
     frame_model = FrameAstrometricModel.from_json_payload(payload)
-    image_path = resolve_model_source_image_path(payload, json_path)
-    return frame_model, image_path
+    resolved_image_path = (
+        resolve_model_source_image_path(payload, json_path)
+        if image_path is None
+        else Path(image_path).expanduser().resolve()
+    )
+    if not resolved_image_path.is_file():
+        raise FileNotFoundError(f"参考图像不存在：{resolved_image_path}")
+    return frame_model, resolved_image_path
 
 
 def _load_image(path: Path) -> np.ndarray:
@@ -682,7 +691,7 @@ def _select_correspondences(
             settings.landscape,
             max_correspondences=settings.max_correspondences,
         )
-    raise ValueError(f"不支持的相邻图像对齐模式：{mode}")
+    raise ValueError(f"不支持的参考图像对齐模式：{mode}")
 
 
 def calculate_adjacent_rough_framing(
@@ -690,27 +699,29 @@ def calculate_adjacent_rough_framing(
     image_b_path: str | Path,
     mode: str,
     settings: AdjacentAlignmentConfig | None = None,
+    *,
+    image_a_path: str | Path | None = None,
 ) -> AdjacentFramingResult:
     """由 A 的 model.json 与 A↔B 像素关系快速建立 B 的 Pixel↔ICRS 取景。"""
 
     if mode not in ADJACENT_ALIGNMENT_MODES:
-        raise ValueError(f"不支持的相邻图像对齐模式：{mode}")
+        raise ValueError(f"不支持的参考图像对齐模式：{mode}")
     active_settings = settings or load_adjacent_alignment_config()
     json_path = Path(model_json_path).expanduser().resolve()
     b_path = Path(image_b_path).expanduser().resolve()
-    frame_model_a, image_a_path = load_adjacent_frame_model(json_path)
-    image_a = _load_image(image_a_path)
+    frame_model_a, resolved_image_a_path = load_adjacent_frame_model(json_path, image_a_path)
+    image_a = _load_image(resolved_image_a_path)
     image_b = _load_image(b_path)
     height_a, width_a = image_a.shape[:2]
     height_b, width_b = image_b.shape[:2]
     if (width_a, height_a) != (frame_model_a.image_width_px, frame_model_a.image_height_px):
         raise ValueError(
-            "相邻图像 A 尺寸与 model.json 不一致："
+            "参考图像 A 尺寸与 model.json 不一致："
             f"图像 {width_a} x {height_a} px，模型 {frame_model_a.image_width_px} x {frame_model_a.image_height_px} px。"
         )
     if (width_b, height_b) != (frame_model_a.image_width_px, frame_model_a.image_height_px):
         raise ValueError(
-            "当前图像 B 的尺寸必须与相邻图像 model.json 的标定尺寸一致："
+            "当前图像 B 的尺寸必须与参考图像 model.json 的标定尺寸一致："
             f"当前 {width_b} x {height_b} px，模型 {frame_model_a.image_width_px} x {frame_model_a.image_height_px} px。"
         )
 
@@ -748,7 +759,7 @@ def calculate_adjacent_rough_framing(
     )
     return AdjacentFramingResult(
         model_json_path=json_path,
-        image_a_path=image_a_path,
+        image_a_path=resolved_image_a_path,
         image_b_path=b_path,
         mode=mode,
         correspondence_count=int(len(radec)),

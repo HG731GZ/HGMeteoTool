@@ -151,7 +151,7 @@ PREFERENCE_COMMENTS: dict[str, str] = {
     "auto_match_default_soft_weight": "soft 约束模式下新增匹配点的默认权重。",
     "auto_match_default_search_radius_px": "星点匹配页预测位置到检测星源的默认允许距离，单位为像素。",
     "sequence_psf_search_radius_px": "图像序列解析使用的独立星源匹配距离，单位为像素。",
-    "adjacent_alignment_max_correspondences": "相邻图像粗略取景最多保留的 PixelA↔PixelB 对应点数；较大值更稳健但姿态拟合更慢。",
+    "adjacent_alignment_max_correspondences": "参考图像粗略取景最多保留的 PixelA↔PixelB 对应点数；较大值更稳健但姿态拟合更慢。",
     "adjacent_star_background_bw_px": "星点对齐 SEP 背景估计网格宽度，单位为像素。",
     "adjacent_star_background_bh_px": "星点对齐 SEP 背景估计网格高度，单位为像素。",
     "adjacent_star_background_fw_px": "星点对齐 SEP 背景估计的水平滤波网格大小。",

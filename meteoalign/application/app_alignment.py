@@ -410,7 +410,7 @@ class AlignmentMixin:
         return self._initial_projection_rotation_matrix()
 
     def _has_rough_framing(self) -> bool:
-        """判断当前图像是否保留可回退的相邻图像粗略取景。"""
+        """判断当前图像是否保留可回退的参考图像粗略取景。"""
 
         return (
             self.current_image_preview is not None
@@ -431,11 +431,11 @@ class AlignmentMixin:
         if using_rough_framing:
             message = (
                 f"已记录 {manual_pair_count} 对手工匹配，暂不执行手工配准；"
-                f"参考星图同步拖拽由相邻图像粗略取景提供，达到 {MIN_ALIGNMENT_PAIRS} 对后将切换。"
+                f"参考星图同步拖拽由参考图像粗略取景提供，达到 {MIN_ALIGNMENT_PAIRS} 对后将切换。"
             )
         else:
             message = (
-                f"已记录 {manual_pair_count} 对手工匹配，已停止使用相邻图像粗略取景显示；"
+                f"已记录 {manual_pair_count} 对手工匹配，已停止使用参考图像粗略取景显示；"
                 "当前结果仅由手工匹配求解，粗略姿态仅作为已知投影的初始值。"
             )
         self.ui.statusbar.showMessage(message)
@@ -683,6 +683,8 @@ class AlignmentMixin:
         has_source_model = self._source_astrometric_model is not None and self.current_image_preview is not None
         has_export_model = has_source_model
         has_formal_pair_count = self._star_pair_position_count() >= MIN_ALIGNMENT_PAIRS
+        if hasattr(self, "_update_star_pair_export_control"):
+            self._update_star_pair_export_control()
         self.ui.checkBoxOverlayReferenceMap.setEnabled(has_alignment)
         self.ui.labelReferenceOverlayOpacityTitle.setEnabled(True)
         self.ui.doubleSpinBoxReferenceOverlayOpacity.setEnabled(True)

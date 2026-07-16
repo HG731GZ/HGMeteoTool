@@ -9,6 +9,7 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QColor, QImage
 from PyQt5.QtWidgets import QApplication, QMainWindow, QPushButton
 
 from meteoalign.application.app_image_group import ImageGroupMixin
@@ -16,6 +17,9 @@ from meteoalign.application.image_group_assistant_dialog import (
     IMAGE_GROUP_CELL_HORIZONTAL_PADDING,
     IMAGE_GROUP_FILE_NAME_CHAR_COUNT,
     IMAGE_GROUP_FILE_NAME_WIDTH_SAMPLE,
+    IMAGE_GROUP_PREVIEW_COLUMN,
+    IMAGE_GROUP_PREVIEW_HORIZONTAL_PADDING,
+    IMAGE_GROUP_PREVIEW_TEXT,
     IMAGE_GROUP_READY_COLOR,
     ImageGroupAssistantDialog,
 )
@@ -58,6 +62,14 @@ class _ImageGroupHost(ImageGroupMixin):
         self.started_imports.append((image_path, preserve_image_group_status))
 
 
+def _write_test_image(path: Path) -> None:
+    """写入可供真实预览加载器读取的小尺寸测试图像。"""
+
+    image = QImage(48, 32, QImage.Format_RGB888)
+    image.fill(QColor("#203050"))
+    assert image.save(str(path))
+
+
 def test_main_ui_places_image_group_assistant_left_of_star_pair_assistant() -> None:
     """主界面应提供多图导入入口和顺序正确的两个助手按钮。"""
 
@@ -82,6 +94,7 @@ def test_image_group_dialog_marks_existing_outputs_green(tmp_path: Path) -> None
     first_image.touch()
     second_image.touch()
     (tmp_path / "first_starpairs.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "first_Mask.png").touch()
     (tmp_path / "second_model.json").write_text("{}", encoding="utf-8")
 
     dialog = ImageGroupAssistantDialog()
@@ -89,19 +102,29 @@ def test_image_group_dialog_marks_existing_outputs_green(tmp_path: Path) -> None
     # 主窗口启动后助手会先隐藏一段时间；隐藏状态不得用无效布局放大窗口。
     app.processEvents()
     assert not dialog.isVisible()
-    assert dialog.maximumWidth() == 390
+    assert dialog.maximumWidth() == 480
     dialog.show()
     app.processEvents()
     table = dialog.ui.tableWidgetImageGroup
 
-    assert [table.horizontalHeaderItem(column).text() for column in range(3)] == ["文件名", "匹配", "映射"]
+    assert [table.horizontalHeaderItem(column).text() for column in range(5)] == [
+        "文件名",
+        "匹配",
+        "映射",
+        "蒙版",
+        "预览",
+    ]
     assert table.item(0, 0).text() == "first.tif"
     assert table.item(0, 1).text() == "已有"
     assert table.item(0, 1).background().color() == IMAGE_GROUP_READY_COLOR
     assert table.item(0, 2).text() == ""
+    assert table.item(0, 3).text() == "已有"
+    assert table.item(0, 3).background().color() == IMAGE_GROUP_READY_COLOR
+    assert table.item(0, 3).toolTip() == str((tmp_path / "first_Mask.png").resolve())
     assert table.item(1, 1).text() == ""
     assert table.item(1, 2).text() == "已有"
     assert table.item(1, 2).background().color() == IMAGE_GROUP_READY_COLOR
+    assert table.item(1, 3).text() == ""
     expected_file_width = (
         table.fontMetrics().horizontalAdvance(
             IMAGE_GROUP_FILE_NAME_WIDTH_SAMPLE[:IMAGE_GROUP_FILE_NAME_CHAR_COUNT]
@@ -109,10 +132,16 @@ def test_image_group_dialog_marks_existing_outputs_green(tmp_path: Path) -> None
         + IMAGE_GROUP_CELL_HORIZONTAL_PADDING
     )
     assert table.columnWidth(0) == expected_file_width
-    assert dialog.width() < 390
+    expected_preview_width = (
+        table.fontMetrics().horizontalAdvance(IMAGE_GROUP_PREVIEW_TEXT)
+        + IMAGE_GROUP_PREVIEW_HORIZONTAL_PADDING
+    )
+    assert table.columnWidth(IMAGE_GROUP_PREVIEW_COLUMN) == expected_preview_width
+    assert table.cellWidget(0, IMAGE_GROUP_PREVIEW_COLUMN).width() == expected_preview_width
+    assert dialog.width() < 480
     assert dialog.minimumWidth() == 250
     assert dialog.maximumWidth() == dialog.width()
-    assert table.viewport().width() == sum(table.columnWidth(column) for column in range(3))
+    assert table.viewport().width() == sum(table.columnWidth(column) for column in range(5))
     dialog.close()
 
 
@@ -184,6 +213,44 @@ def test_image_group_dialog_emits_path_for_any_double_clicked_column(tmp_path: P
     assert dialog.parentWidget() is None
     assert not dialog.isModal()
     dialog.close()
+
+
+def test_preview_button_reuses_image_preview_dialog(tmp_path: Path) -> None:
+    """各行预览按钮应刷新并复用同一个通用图像预览窗口。"""
+
+    app = QApplication.instance() or QApplication([])
+    first_image = tmp_path / "first.png"
+    second_image = tmp_path / "second.png"
+    _write_test_image(first_image)
+    _write_test_image(second_image)
+    dialog = ImageGroupAssistantDialog()
+    dialog.set_image_paths((first_image, second_image))
+    activated: list[Path] = []
+    dialog.image_activated.connect(activated.append)
+    table = dialog.ui.tableWidgetImageGroup
+
+    first_button = table.cellWidget(0, IMAGE_GROUP_PREVIEW_COLUMN)
+    second_button = table.cellWidget(1, IMAGE_GROUP_PREVIEW_COLUMN)
+    assert isinstance(first_button, QPushButton)
+    assert isinstance(second_button, QPushButton)
+    assert first_button.text() == "预览"
+
+    first_button.click()
+    app.processEvents()
+    preview_dialog = dialog._image_preview_dialog
+    assert preview_dialog is not None
+    assert preview_dialog.image_path == first_image.resolve()
+
+    second_button.click()
+    app.processEvents()
+    assert dialog._image_preview_dialog is preview_dialog
+    assert preview_dialog.image_path == second_image.resolve()
+    assert preview_dialog.ui.labelImageName.text() == second_image.name
+    assert activated == []
+
+    dialog.close()
+    app.processEvents()
+    assert not preview_dialog.isVisible()
 
 
 def test_unsaved_switch_prompt_has_three_required_actions(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

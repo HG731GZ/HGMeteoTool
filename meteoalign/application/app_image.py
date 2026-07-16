@@ -9,14 +9,14 @@ from PyQt5.QtCore import QDateTime
 from PyQt5.QtGui import QImage
 from PyQt5.QtWidgets import QApplication, QFileDialog, QMenu, QMessageBox, QProgressDialog
 
-from ..image_preview import IMAGE_FILE_FILTER
-from .app_utils import _image_with_binary_mask
-from .app_workers import ImagePreviewLoadWorker, SkyMaskLoadWorker
 from ..catalog import project_root
+from ..image_path_resolution import companion_sky_mask_path, is_reserved_mask_path
+from ..image_preview import IMAGE_FILE_FILTER, ImagePreview, load_image_preview
 from ..image_sequence import read_image_capture_time, sequence_item_local_datetime
-from ..image_preview import ImagePreview, load_image_preview
 from ..qt_tasks import create_progress_dialog, start_qt_worker_task
 from ..reference import build_reference_payload, save_reference_outputs
+from .app_utils import _image_with_binary_mask
+from .app_workers import ImagePreviewLoadWorker, SkyMaskLoadWorker
 
 
 class ImageMixin:
@@ -209,27 +209,12 @@ class ImageMixin:
         if hasattr(self, "_update_image_sequence_controls"):
             self._update_image_sequence_controls()
 
-    def _companion_sky_mask_path(self, image_path: str | Path) -> Path | None:
-        """查找与真实图像同目录、同名且带 _Mask 后缀的唯一约定蒙版。"""
-
-        source_path = Path(image_path).expanduser().resolve()
-        file_name_prefix = f"{source_path.stem}_Mask."
-        try:
-            candidates = sorted(
-                path
-                for path in source_path.parent.iterdir()
-                if path.is_file() and path.name.startswith(file_name_prefix) and bool(path.suffix)
-            )
-        except OSError:
-            return None
-        return candidates[0] if candidates else None
-
     def _maybe_auto_import_sky_mask_for_image(self, image_path: str | Path) -> bool:
         """按“图像名_Mask.后缀”约定自动导入当前图像对应的蒙版。"""
 
         if self._mask_import_thread is not None:
             return False
-        mask_path = self._companion_sky_mask_path(image_path)
+        mask_path = companion_sky_mask_path(image_path)
         if mask_path is None:
             return False
         current_mask_path = self.current_sky_mask_path
@@ -242,6 +227,30 @@ class ImageMixin:
         self.ui.statusbar.showMessage(f"发现同名蒙版，正在自动导入: {mask_path}")
         self.start_sky_mask_import(mask_path)
         return True
+
+    def _image_paths_without_reserved_masks(
+        self,
+        file_paths: list[str] | tuple[str, ...],
+    ) -> tuple[str, ...]:
+        """排除通过“导入图像”选择的 _Mask 文件，无原图可导入时说明预留规则。"""
+
+        image_paths = tuple(path for path in file_paths if not is_reserved_mask_path(path))
+        mask_paths = tuple(path for path in file_paths if is_reserved_mask_path(path))
+        if not mask_paths or image_paths:
+            return image_paths
+
+        displayed_names = "\n".join(f"• {Path(path).name}" for path in mask_paths[:5])
+        if len(mask_paths) > 5:
+            displayed_names += f"\n• 其余 {len(mask_paths) - 5} 个文件"
+        QMessageBox.information(
+            self,
+            "请勿通过“导入图像”导入蒙版",
+            "以下文件的主文件名以“_Mask”结尾，已被识别为蒙版：\n"
+            f"{displayed_names}\n\n"
+            "不要把蒙版作为普通图像导入；“_Mask”是蒙版预留字段。"
+            "请导入对应原图，软件会自动关联蒙版。若需手动选择蒙版，请使用“导入蒙版”，该入口接受任意文件名。",
+        )
+        return image_paths
 
     def import_images(self) -> None:
         if self._image_import_thread is not None:
@@ -260,6 +269,9 @@ class ImageMixin:
         if not file_paths:
             return
         self._remember_import_path(file_paths)
+        file_paths = list(self._image_paths_without_reserved_masks(file_paths))
+        if not file_paths:
+            return
         normalized_paths = self._set_image_group_paths(file_paths)
         if not normalized_paths:
             return
@@ -352,7 +364,7 @@ class ImageMixin:
     def _set_json_import_controls_enabled(self, enabled: bool) -> None:
         self.ui.pushButtonImportReferenceJson.setEnabled(enabled)
         self.ui.pushButtonImportStarPairs.setEnabled(enabled)
-        self.ui.pushButtonExportStarPairs.setEnabled(enabled)
+        self._update_star_pair_export_control(controls_enabled=enabled)
         self.ui.pushButtonDeleteStarPairs.setEnabled(enabled)
         self.ui.pushButtonClearStarPairs.setEnabled(enabled)
         if hasattr(self.ui, "pushButtonOpenImageGroupAssistant"):

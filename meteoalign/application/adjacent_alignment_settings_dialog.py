@@ -1,4 +1,4 @@
-"""相邻图像粗略取景超参数设置窗口。"""
+"""参考图像粗略取景超参数设置窗口。"""
 
 from __future__ import annotations
 
@@ -74,7 +74,7 @@ _LANDSCAPE_SETTING_CONTROLS = {
 
 
 class AdjacentAlignmentSettingsDialog(QDialog):
-    """编辑当前相邻图像对齐模式对应的可持久化超参数。"""
+    """编辑当前参考图像对齐模式对应的可持久化超参数。"""
 
     def __init__(
         self,
@@ -85,7 +85,7 @@ class AdjacentAlignmentSettingsDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         if mode not in {ADJACENT_ALIGNMENT_MODE_STARS, ADJACENT_ALIGNMENT_MODE_LANDSCAPE}:
-            raise ValueError(f"不支持的相邻图像对齐模式：{mode}")
+            raise ValueError(f"不支持的参考图像对齐模式：{mode}")
         self._mode = mode
         self._preference_path = preference_path
         self.ui = Ui_AdjacentAlignmentSettingsDialog()

@@ -1,4 +1,4 @@
-"""相邻图像粗略取景参数窗口测试。"""
+"""参考图像粗略取景参数窗口测试。"""
 
 from __future__ import annotations
 

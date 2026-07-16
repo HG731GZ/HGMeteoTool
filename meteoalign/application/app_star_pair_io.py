@@ -68,6 +68,7 @@ class StarPairIOMixin(
     _refresh_reference_stars_from_current_map: object  # 方法
     _update_reference_alignment_transform: object  # 方法
     _update_reference_alignment_controls: object  # 方法
+    _update_star_pair_export_control: object  # 方法
     _set_json_import_controls_enabled: object  # 方法
     _row_auto_match_group_id: object  # 方法
     _auto_match_reference_star_ids: list

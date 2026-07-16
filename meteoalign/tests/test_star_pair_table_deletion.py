@@ -17,6 +17,7 @@ from meteoalign.application.app_constants import (
 )
 from meteoalign.application.app_auto_match import AutoMatchMixin
 from meteoalign.application.app_star_pair_table import StarPairTableMixin
+from meteoalign.application.star_pair_assistant_dialog import StarPairAssistantDialog
 from meteoalign.simulator import ReferenceStar
 from meteoalign.star_pair_model import StarPairRecord
 from meteoalign.star_pair_store import StarPairStore
@@ -325,6 +326,36 @@ def test_reset_match_list_confirmation_uses_reset_wording(monkeypatch) -> None:
         )
     ]
     assert harness.ui.statusbar.messages[-1] == "已重置匹配列表：清空 1 行参考星，并按当前参考星图重新添加 1 颗标注星。"
+
+
+def test_reset_confirmation_keeps_star_pair_assistant_visible(monkeypatch) -> None:
+    """确认重置后助手应保持可见，确认框也必须依附于助手而非主窗口。"""
+
+    app = _qapp()
+    assistant = StarPairAssistantDialog()
+    assistant.show()
+    app.processEvents()
+    harness = _StarPairTableHarness((_reference_star("manual-1", 1),))
+    harness._update_star_pair_table(harness.reference_stars)
+    harness.star_pair_assistant = assistant
+    message_parents: list[object] = []
+    reactivation_calls: list[str] = []
+    monkeypatch.setattr(assistant, "raise_", lambda: reactivation_calls.append("raise"))
+    monkeypatch.setattr(assistant, "activateWindow", lambda: reactivation_calls.append("activate"))
+
+    def confirm(parent, *_args):  # type: ignore[no-untyped-def]
+        message_parents.append(parent)
+        return QMessageBox.Yes
+
+    monkeypatch.setattr(QMessageBox, "question", confirm)
+
+    harness.delete_all_star_pair_rows()
+    app.processEvents()
+
+    assert message_parents == [assistant]
+    assert assistant.isVisible()
+    assert reactivation_calls == ["raise", "activate"]
+    assistant.close()
 
 
 def test_deleting_matched_manual_row_removes_it_instead_of_preserving_matched_star() -> None:

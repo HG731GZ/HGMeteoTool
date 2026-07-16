@@ -117,6 +117,9 @@
      </item>
      <item>
       <widget class="QPushButton" name="pushButtonExportStarPairs">
+       <property name="enabled">
+        <bool>false</bool>
+       </property>
        <property name="text">
         <string>导出匹配 JSON</string>
        </property>
@@ -188,7 +191,7 @@
         <item row="1" column="0">
          <widget class="QLabel" name="labelAutoMatchConstraintMode">
           <property name="text">
-           <string>新增约束</string>
+           <string>新增模式</string>
           </property>
          </widget>
         </item>

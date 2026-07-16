@@ -66,7 +66,7 @@ class StarMapUiConfig:
 
 @dataclass(frozen=True)
 class AdjacentStarAlignmentConfig:
-    """相邻图像星点对齐模式的检测、初配准与精配准参数。"""
+    """参考图像星点对齐模式的检测、初配准与精配准参数。"""
 
     background_bw_px: int = 128
     background_bh_px: int = 128
@@ -99,7 +99,7 @@ class AdjacentStarAlignmentConfig:
 
 @dataclass(frozen=True)
 class AdjacentLandscapeAlignmentConfig:
-    """相邻图像地景对齐模式的特征提取与 RANSAC 参数。"""
+    """参考图像地景对齐模式的特征提取与 RANSAC 参数。"""
 
     normalization_low_percentile: float = 1.0
     normalization_high_percentile: float = 99.8
@@ -120,7 +120,7 @@ class AdjacentLandscapeAlignmentConfig:
 
 @dataclass(frozen=True)
 class AdjacentAlignmentConfig:
-    """相邻图像粗略取景功能的完整超参数集合。"""
+    """参考图像粗略取景功能的完整超参数集合。"""
 
     max_correspondences: int = 160
     stars: AdjacentStarAlignmentConfig = field(default_factory=AdjacentStarAlignmentConfig)
@@ -358,7 +358,7 @@ def load_star_map_ui_config(path: Path | None = None) -> StarMapUiConfig:
 
 
 def load_adjacent_alignment_config(path: Path | None = None) -> AdjacentAlignmentConfig:
-    """从 preference.json 读取相邻图像两种配准模式的超参数，并限制到安全范围。"""
+    """从 preference.json 读取参考图像两种配准模式的超参数，并限制到安全范围。"""
 
     config_path = path or default_config_path()
     raw_config = ensure_preference_file(config_path)

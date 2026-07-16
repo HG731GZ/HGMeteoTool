@@ -13,6 +13,7 @@ STANDARD_IMAGE_SUFFIX_PRIORITY: tuple[tuple[str, ...], ...] = (
     (".png",),
     (".jpg", ".jpeg"),
 )
+_RESERVED_MASK_STEM_SUFFIX = "_mask"
 
 RAW_IMAGE_SUFFIXES: tuple[str, ...] = (
     ".3fr",
@@ -70,6 +71,12 @@ def image_file_stem(path_value: str | Path) -> str:
     return Path(path_value).stem
 
 
+def is_reserved_mask_path(path_value: str | Path) -> bool:
+    """判断文件主名是否以蒙版预留字段 _Mask 结尾，不区分大小写。"""
+
+    return image_file_stem(path_value).casefold().endswith(_RESERVED_MASK_STEM_SUFFIX)
+
+
 def _metadata_file_stem(metadata: Mapping[str, object]) -> str:
     """读取新 JSON 的 file_stem，并兼容只记录带后缀路径的旧 JSON。"""
 
@@ -116,6 +123,18 @@ def _same_stem_candidates(
         for suffix in suffix_group:
             ordered.extend(sorted(by_suffix.get(suffix, ()), key=lambda path: path.name.casefold()))
     return ordered
+
+
+def companion_sky_mask_path(image_path: str | Path) -> Path | None:
+    """返回与原图同目录且符合“原图名_Mask.扩展名”约定的首个蒙版。"""
+
+    source_path = Path(image_path).expanduser().resolve()
+    candidates = _same_stem_candidates(
+        source_path.parent,
+        f"{source_path.stem}_Mask",
+        STANDARD_IMAGE_SUFFIX_PRIORITY,
+    )
+    return candidates[0] if candidates else None
 
 
 def associated_image_candidates(
@@ -199,8 +218,10 @@ __all__ = [
     "RAW_IMAGE_SUFFIXES",
     "STANDARD_IMAGE_SUFFIX_PRIORITY",
     "associated_image_candidates",
+    "companion_sky_mask_path",
     "expected_image_size",
     "first_matching_image_path",
     "image_file_stem",
     "image_size_matches",
+    "is_reserved_mask_path",
 ]
