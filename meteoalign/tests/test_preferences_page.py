@@ -12,6 +12,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication, QGroupBox
 import pytest
 
+from meteoalign.application.app_image import ImageMixin
 from meteoalign.application.preferences_page import (
     DEFAULT_ONLY_PREFERENCE_KEYS,
     EDITABLE_PREFERENCE_KEYS,
@@ -167,6 +168,42 @@ def test_radiant_only_controls_switch_state_and_are_saved(tmp_path) -> None:  # 
     assert written["meteor_radiant_label_font_size_pt"] == 18
     page.close()
     app.processEvents()
+
+
+def test_exif_time_sync_option_defaults_on_applies_immediately_and_is_saved(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """EXIF 时间同步开关应默认启用，取消后立即生效并可持久化。"""
+
+    app = QApplication.instance() or QApplication([])
+    preference_path = tmp_path / "preference.json"
+    page = PreferencesPage(preference_path=preference_path)
+    applied = []
+    page.preferences_applied.connect(applied.append)
+
+    assert page.ui.checkBoxAutoSyncSimulatorTimeFromExif.isChecked()
+    assert page.ui.checkBoxAutoSyncSimulatorTimeFromExif.text() == "自动将星空模拟同步到EXIF拍摄时间"
+    page.ui.checkBoxAutoSyncSimulatorTimeFromExif.setChecked(False)
+    assert applied and not applied[-1].auto_sync_simulator_time_from_exif
+
+    page.save_preferences()
+    assert _read_jsonc(preference_path)["auto_sync_simulator_time_from_exif"] is False
+    page.close()
+    app.processEvents()
+
+
+def test_disabling_exif_time_sync_does_not_read_image_capture_time(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """关闭同步后，单图导入不得读取 EXIF，也不得改写星空模拟时间。"""
+
+    class ImageTimeSyncHarness(ImageMixin):
+        pass
+
+    host = ImageTimeSyncHarness()
+    host.ui_config = StarMapUiConfig(auto_sync_simulator_time_from_exif=False)
+    monkeypatch.setattr(
+        "meteoalign.application.app_image.read_image_capture_time",
+        lambda _path: (_ for _ in ()).throw(AssertionError("关闭同步后不应读取 EXIF")),
+    )
+
+    assert host._apply_single_image_exif_observation_time("image.jpg") == ""
 
 
 def test_preferences_dialog_is_non_modal_and_launcher_uses_text_button(tmp_path) -> None:  # type: ignore[no-untyped-def]

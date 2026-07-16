@@ -16,6 +16,7 @@ from ..adjacent_alignment import (
 from ..qt_tasks import create_progress_dialog, start_qt_worker_task
 from ..adjacent_framing_worker import AdjacentFramingWorker
 from ..image_preview import IMAGE_FILE_FILTER, load_image_preview
+from ..image_sequence import read_image_capture_time, sequence_item_time_delta_seconds
 from .adjacent_alignment_settings_dialog import AdjacentAlignmentSettingsDialog
 from .image_preview_dialog import ImagePreviewDialog
 
@@ -288,6 +289,12 @@ class AdjacentFramingMixin:
             QMessageBox.information(self, "参考图像无效", "参考图像不能与为当前图像。")
             self._update_adjacent_framing_controls()
             return
+        if mode == ADJACENT_ALIGNMENT_MODE_LANDSCAPE and not self._confirm_landscape_time_interval(
+            image_a_path,
+            current_path,
+        ):
+            self.ui.statusbar.showMessage("已取消粗略取景计算。")
+            return
         self._update_adjacent_framing_controls()
         self.ui.statusbar.showMessage(f"正在使用{adjacent_alignment_mode_display_name(mode)}计算粗略取景…")
         progress = create_progress_dialog(
@@ -314,6 +321,28 @@ class AdjacentFramingMixin:
         self._adjacent_framing_worker = task.worker
         self._adjacent_framing_progress = progress
         self._update_adjacent_framing_controls()
+
+    def _confirm_landscape_time_interval(self, reference_path: Path, current_path: Path) -> bool:
+        """两张图拍摄时间相差较大时，确认是否继续地景粗略取景。"""
+
+        try:
+            reference_item = read_image_capture_time(reference_path)
+            current_item = read_image_capture_time(current_path)
+        except Exception:  # noqa: BLE001 - 任一图缺少原始拍摄时间时直接沿用原流程。
+            return True
+
+        interval_seconds = abs(sequence_item_time_delta_seconds(current_item, reference_item))
+        if interval_seconds <= 60.0:
+            return True
+        minutes_text = f"{interval_seconds / 60.0:.1f}".rstrip("0").rstrip(".")
+        answer = QMessageBox.question(
+            self,
+            "拍摄时间间隔较长",
+            f"参考图像与当前图像的拍摄时间间隔约为{minutes_text}分钟，粗略取景偏差可能较大，是否继续？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return answer == QMessageBox.Yes
 
     def _handle_adjacent_framing_finished(self, result: object) -> None:
         """启用粗略 FrameAstrometricModel，使参考星图无需四颗手工星即可叠放。"""

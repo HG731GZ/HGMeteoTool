@@ -158,7 +158,8 @@ class SequenceImportMixin:
                 f"当前序列时间跨度约 {span_seconds / 3600.0:.2f} 小时。当前批处理假定单个序列不超过一天。",
             )
 
-        self._apply_sequence_observation_time(items[0], emit_signal=True)
+        if self._auto_sync_simulator_time_from_exif_enabled():
+            self._apply_sequence_observation_time(items[0], emit_signal=True)
         first_starpair_path = self._sequence_starpair_json_path(items[0].path)
         if first_starpair_path.exists():
             self._start_first_sequence_session_import(first_starpair_path, len(items))

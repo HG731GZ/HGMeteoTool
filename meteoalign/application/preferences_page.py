@@ -28,6 +28,7 @@ EDITABLE_PREFERENCE_KEYS = frozenset(
         "star_marker_size_multiplier",
         "star_color_mag_limit",
         "aligned_reference_scale_multiplier",
+        "auto_sync_simulator_time_from_exif",
         "constellation_line_width_px",
         "constellation_line_color_hex",
         "constellation_line_opacity",
@@ -148,6 +149,9 @@ class PreferencesPage(QWidget):
             ui.doubleSpinBoxStarMarkerSizeMultiplier.setValue(config.star_marker_size_multiplier)
             ui.doubleSpinBoxStarColorMagLimit.setValue(config.star_color_mag_limit)
             ui.doubleSpinBoxAlignedReferenceScale.setValue(config.aligned_reference_scale_multiplier)
+            ui.checkBoxAutoSyncSimulatorTimeFromExif.setChecked(
+                config.auto_sync_simulator_time_from_exif
+            )
             ui.doubleSpinBoxConstellationLineWidth.setValue(config.constellation_line_width_px)
             ui.lineEditConstellationLineColor.setText(config.constellation_line_color_hex)
             ui.doubleSpinBoxConstellationLineOpacity.setValue(config.constellation_line_opacity)
@@ -242,6 +246,7 @@ class PreferencesPage(QWidget):
         for control in (
             ui.checkBoxShowConstellationNames,
             ui.checkBoxShowConstellationLines,
+            ui.checkBoxAutoSyncSimulatorTimeFromExif,
             ui.checkBoxWheelZoomEnabled,
             ui.checkBoxTouchpadPinchZoomEnabled,
             ui.checkBoxDoubleClickFocusAutoPairEnabled,
@@ -381,6 +386,9 @@ class PreferencesPage(QWidget):
             "star_marker_size_multiplier": ui.doubleSpinBoxStarMarkerSizeMultiplier.value(),
             "star_color_mag_limit": ui.doubleSpinBoxStarColorMagLimit.value(),
             "aligned_reference_scale_multiplier": ui.doubleSpinBoxAlignedReferenceScale.value(),
+            "auto_sync_simulator_time_from_exif": (
+                ui.checkBoxAutoSyncSimulatorTimeFromExif.isChecked()
+            ),
             "constellation_line_width_px": ui.doubleSpinBoxConstellationLineWidth.value(),
             "constellation_line_color_hex": ui.lineEditConstellationLineColor.text().strip().upper(),
             "constellation_line_opacity": ui.doubleSpinBoxConstellationLineOpacity.value(),

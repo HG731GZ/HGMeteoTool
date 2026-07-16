@@ -108,6 +108,13 @@
             <property name="suffix"><string> mag</string></property><property name="decimals"><number>1</number></property><property name="minimum"><double>-10.000000000000000</double></property><property name="maximum"><double>30.000000000000000</double></property><property name="singleStep"><double>0.500000000000000</double></property>
            </widget>
           </item>
+          <item row="7" column="0" colspan="2">
+           <widget class="QCheckBox" name="checkBoxAutoSyncSimulatorTimeFromExif">
+            <property name="toolTip"><string>导入单张图像或图像组时，自动用原始拍摄时间更新“星空模拟”的拍摄时间；关闭后保留当前模拟时间。</string></property>
+            <property name="text"><string>自动将星空模拟同步到EXIF拍摄时间</string></property>
+            <property name="checked"><bool>true</bool></property>
+           </widget>
+          </item>
          </layout>
         </widget>
        </item>

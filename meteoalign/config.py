@@ -21,6 +21,7 @@ class StarMapUiConfig:
     star_marker_size_multiplier: float = 1.0
     star_color_mag_limit: float = 6.0
     aligned_reference_scale_multiplier: float = 1.6
+    auto_sync_simulator_time_from_exif: bool = True
     constellation_line_width_px: float = 1.2
     constellation_line_color_hex: str = "#E6E6E6"
     constellation_line_opacity: float = 0.9
@@ -237,6 +238,11 @@ def load_star_map_ui_config(path: Path | None = None) -> StarMapUiConfig:
             1.6,
             0.2,
             6.0,
+        ),
+        auto_sync_simulator_time_from_exif=_read_bool(
+            raw_config,
+            "auto_sync_simulator_time_from_exif",
+            True,
         ),
         constellation_line_width_px=_read_float(raw_config, "constellation_line_width_px", 1.2, 0.1, 20.0),
         constellation_line_color_hex=_read_color_hex(

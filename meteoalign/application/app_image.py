@@ -105,6 +105,8 @@ class ImageMixin:
     def _apply_single_image_exif_observation_time(self, image_path: str | Path) -> str:
         """读取单张图像 EXIF 时间，并同步到星空模拟页的拍摄时间。"""
 
+        if not self._auto_sync_simulator_time_from_exif_enabled():
+            return ""
         try:
             capture_item = read_image_capture_time(image_path)
             local_dt = sequence_item_local_datetime(capture_item, self.ui.doubleSpinBoxUtcOffset.value())
@@ -118,6 +120,12 @@ class ImageMixin:
         if hasattr(self, "schedule_render"):
             self.schedule_render(delay_ms=0)
         return f"  已应用 EXIF 拍摄时间: {capture_item.capture_datetime.isoformat()}。"
+
+    def _auto_sync_simulator_time_from_exif_enabled(self) -> bool:
+        """返回导入图像时是否允许 EXIF 时间覆盖当前星空模拟时间。"""
+
+        ui_config = getattr(self, "ui_config", None)
+        return bool(getattr(ui_config, "auto_sync_simulator_time_from_exif", True))
 
     def _show_imported_image_path_context_menu(self, position) -> None:  # type: ignore[no-untyped-def]
         """显示真实图像文件名右键菜单，用于复制完整路径。"""

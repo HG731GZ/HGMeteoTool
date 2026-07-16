@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QImage
-from PyQt5.QtWidgets import QApplication, QMainWindow
+from PyQt5.QtWidgets import QApplication, QMainWindow, QMessageBox
 
 from meteoalign.application import app_adjacent_framing
 from meteoalign.application.app_adjacent_framing import AdjacentFramingMixin
@@ -244,6 +245,107 @@ def test_current_image_cannot_be_used_as_adjacent_image(tmp_path: Path, monkeypa
     host._update_adjacent_framing_controls()
     assert host.ui.labelAdjacentImageModel.text() == image_path.name
     assert host.ui.pushButtonCalculateAdjacentFraming.isEnabled()
+    host.close()
+
+
+def test_landscape_time_warning_can_cancel_rough_framing(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """地景模式下两图拍摄时间超过一分钟时，选择“否”不得创建后台任务。"""
+
+    app = QApplication.instance() or QApplication([])
+    host = _AdjacentFramingHost()
+    reference_path = Path("reference.jpg").resolve()
+    current_path = Path("current.jpg").resolve()
+    host._adjacent_image_path = reference_path
+    host._adjacent_model_json_path = Path("reference_model.json").resolve()
+    host.current_image_preview = SimpleNamespace(path=current_path)
+    host.ui.comboBoxAdjacentAlignmentMode.setCurrentIndex(1)
+    capture_times = {
+        reference_path: datetime(2026, 8, 12, 22, 0, 0),
+        current_path: datetime(2026, 8, 12, 22, 5, 0),
+    }
+
+    def fake_read_capture_time(path: str | Path):
+        resolved_path = Path(path).resolve()
+        return SimpleNamespace(
+            capture_datetime=capture_times[resolved_path],
+            capture_datetime_utc=None,
+        )
+
+    questions: list[tuple[str, str]] = []
+
+    def answer_no(_parent, title: str, message: str, *_args):  # type: ignore[no-untyped-def]
+        questions.append((title, message))
+        return QMessageBox.No
+
+    monkeypatch.setattr(app_adjacent_framing, "read_image_capture_time", fake_read_capture_time)
+    monkeypatch.setattr(app_adjacent_framing.QMessageBox, "question", answer_no)
+    monkeypatch.setattr(
+        app_adjacent_framing,
+        "create_progress_dialog",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("不应创建后台任务")),
+    )
+
+    host.calculate_adjacent_rough_framing()
+
+    assert questions == [
+        (
+            "拍摄时间间隔较长",
+            "参考图像与当前图像的拍摄时间间隔约为5分钟，粗略取景偏差可能较大，是否继续？",
+        )
+    ]
+    assert host._adjacent_framing_thread is None
+    assert host.ui.statusbar.currentMessage() == "已取消粗略取景计算。"
+    host.close()
+
+
+def test_landscape_time_check_skips_prompt_when_exif_is_missing_or_within_one_minute(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    """任一图无拍摄时间或间隔不超过一分钟时，不应弹出确认框。"""
+
+    app = QApplication.instance() or QApplication([])
+    host = _AdjacentFramingHost()
+    reference_path = Path("reference.jpg").resolve()
+    current_path = Path("current.jpg").resolve()
+    close_times = iter(
+        (
+            SimpleNamespace(capture_datetime=datetime(2026, 8, 12, 22, 0, 0), capture_datetime_utc=None),
+            SimpleNamespace(capture_datetime=datetime(2026, 8, 12, 22, 1, 0), capture_datetime_utc=None),
+        )
+    )
+    monkeypatch.setattr(app_adjacent_framing, "read_image_capture_time", lambda _path: next(close_times))
+    monkeypatch.setattr(
+        app_adjacent_framing.QMessageBox,
+        "question",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("不应弹出确认框")),
+    )
+
+    assert host._confirm_landscape_time_interval(reference_path, current_path)
+
+    monkeypatch.setattr(
+        app_adjacent_framing,
+        "read_image_capture_time",
+        lambda _path: (_ for _ in ()).throw(ValueError("没有 EXIF 时间")),
+    )
+    assert host._confirm_landscape_time_interval(reference_path, current_path)
+    host.close()
+
+
+def test_landscape_time_warning_allows_calculation_after_confirmation(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """拍摄间隔较长时选择“是”，时间检查应允许调用方继续计算。"""
+
+    app = QApplication.instance() or QApplication([])
+    host = _AdjacentFramingHost()
+    capture_times = iter(
+        (
+            SimpleNamespace(capture_datetime=datetime(2026, 8, 12, 22, 0, 0), capture_datetime_utc=None),
+            SimpleNamespace(capture_datetime=datetime(2026, 8, 12, 22, 5, 0), capture_datetime_utc=None),
+        )
+    )
+    monkeypatch.setattr(app_adjacent_framing, "read_image_capture_time", lambda _path: next(capture_times))
+    monkeypatch.setattr(app_adjacent_framing.QMessageBox, "question", lambda *_args: QMessageBox.Yes)
+
+    assert host._confirm_landscape_time_interval(Path("reference.jpg"), Path("current.jpg"))
     host.close()
 
 
