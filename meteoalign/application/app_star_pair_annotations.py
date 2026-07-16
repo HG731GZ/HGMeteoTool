@@ -18,7 +18,6 @@ from .app_constants import (
     STAR_ANNOTATION_MAX_RADIUS_PX,
     STAR_ANNOTATION_MIN_RADIUS_PX,
     STAR_ANNOTATION_PSF_SIGMA_SCALE,
-    STAR_PAIR_FOCUS_MARKER_RADIUS_PX,
     STAR_PAIR_FOCUS_MIN_MATCHED_COUNT,
     STAR_PAIR_FOCUS_ZOOM_FIT_SCALE,
     STAR_PAIR_INDEX_COLUMN,
@@ -95,19 +94,22 @@ class StarPairAnnotationsMixin:
         """
         return max(MIN_PSF_RADIUS_PX, self._star_pick_circle_diameter_px // 2)
 
-    def _star_pick_psf_radius_px(self, viewport_pos: QPoint) -> int:
-        circle_radius = self._star_pick_circle_image_radius_px(viewport_pos)
-        psf_radius = circle_radius * self.ui_config.star_pick_psf_radius_scale
-        bounded_radius = min(psf_radius, float(self.ui_config.star_pick_psf_max_radius_px))
-        return max(MIN_PSF_RADIUS_PX, int(round(bounded_radius)))
+    def _star_pick_psf_radius_px(self, _viewport_pos: QPoint) -> int:
+        """返回与选星圈大小无关的自适应拟合半径上限。"""
+
+        return max(MIN_PSF_RADIUS_PX, int(self.ui_config.star_pick_psf_max_radius_px))
+
+    def _star_pick_search_radius_px(self, viewport_pos: QPoint) -> int:
+        """选星圈控制找星范围，PSF 拟合窗口由检测结果另行确定。"""
+
+        return self._star_pick_circle_image_radius_px(viewport_pos)
 
     def _show_star_pick_status_hint(self, row: int) -> None:
         self.ui.statusbar.showMessage(
             "正在点选 {label}；普通左键拖动预览，Ctrl+左键确认，右键取消，Ctrl+滚轮 / Ctrl+加减缩放选星圈。"
-            "当前选星圈直径：{diameter} 图像px，PSF半径比例：{scale:.2f}，上限：{max_radius} 图像px。".format(
+            "当前选星圈直径：{diameter} 图像px，自适应PSF拟合半径上限：{max_radius} 图像px。".format(
                 label=self._star_pair_label(row),
                 diameter=self._star_pick_circle_diameter_px,
-                scale=self.ui_config.star_pick_psf_radius_scale,
                 max_radius=self.ui_config.star_pick_psf_max_radius_px,
             )
         )
@@ -222,41 +224,79 @@ class StarPairAnnotationsMixin:
                 continue
             self._add_or_update_star_pair_annotation(row, fitted_position)
 
-    def _star_pair_annotation_radius_px(self, fitted_position: FittedStarPosition) -> float:
-        sigma_radius = max(abs(float(fitted_position.sigma_x)), abs(float(fitted_position.sigma_y)))
-        if sigma_radius > 0.0 and math.isfinite(sigma_radius):
-            radius = sigma_radius * STAR_ANNOTATION_PSF_SIGMA_SCALE
+    def _star_pair_annotation_geometry(
+        self,
+        fitted_position: FittedStarPosition,
+    ) -> tuple[float, float, float]:
+        """返回 FWHM 椭圆的长短半径和旋转角。"""
+
+        fwhm_x = abs(float(fitted_position.fwhm_x))
+        fwhm_y = abs(float(fitted_position.fwhm_y))
+        if fwhm_x > 0.0 and fwhm_y > 0.0 and math.isfinite(fwhm_x) and math.isfinite(fwhm_y):
+            radius_x = fwhm_x * 0.5
+            radius_y = fwhm_y * 0.5
         else:
-            radius = STAR_ANNOTATION_FALLBACK_RADIUS_PX
-        return min(
-            max(radius, STAR_ANNOTATION_MIN_RADIUS_PX),
-            STAR_ANNOTATION_MAX_RADIUS_PX,
-        )
+            radius_x = abs(float(fitted_position.sigma_x)) * STAR_ANNOTATION_PSF_SIGMA_SCALE
+            radius_y = abs(float(fitted_position.sigma_y)) * STAR_ANNOTATION_PSF_SIGMA_SCALE
+        if radius_x <= 0.0 or not math.isfinite(radius_x):
+            radius_x = STAR_ANNOTATION_FALLBACK_RADIUS_PX
+        if radius_y <= 0.0 or not math.isfinite(radius_y):
+            radius_y = STAR_ANNOTATION_FALLBACK_RADIUS_PX
+        radius_x = min(max(radius_x, STAR_ANNOTATION_MIN_RADIUS_PX), STAR_ANNOTATION_MAX_RADIUS_PX)
+        radius_y = min(max(radius_y, STAR_ANNOTATION_MIN_RADIUS_PX), STAR_ANNOTATION_MAX_RADIUS_PX)
+        return radius_x, radius_y, math.degrees(float(fitted_position.theta_rad))
 
     def _add_or_update_star_pair_annotation(
         self,
         row: int,
         fitted_position: FittedStarPosition,
+        *,
+        preserve_focus_annotation: bool = False,
     ) -> None:
         star_id = self._star_pair_star_id(row)
         if not star_id:
             return
 
         # 真实星点位置一旦确认，就用黄色配对标注替代临时的蓝色聚焦提示。
-        self._clear_focused_star_annotations()
+        if not preserve_focus_annotation:
+            self._clear_focused_star_annotations()
         self._remove_star_pair_annotation(star_id)
-        radius = self._star_pair_annotation_radius_px(fitted_position)
+        radius_x, radius_y, theta_deg = self._star_pair_annotation_geometry(fitted_position)
         ellipse_item = QGraphicsEllipseItem(
-            fitted_position.x - radius,
-            fitted_position.y - radius,
-            radius * 2.0,
-            radius * 2.0,
+            -radius_x,
+            -radius_y,
+            radius_x * 2.0,
+            radius_y * 2.0,
         )
+        ellipse_item.setPos(fitted_position.x, fitted_position.y)
+        ellipse_item.setRotation(theta_deg)
         marker_pen = QPen(QColor(255, 220, 80), 2)
         marker_pen.setCosmetic(True)
         ellipse_item.setPen(marker_pen)
         ellipse_item.setBrush(QBrush(Qt.NoBrush))
         ellipse_item.setZValue(20.0)
+        outer_multiplier = max(1.05, float(self.ui_config.star_pair_psf_outer_diameter_multiplier))
+        outer_ellipse_item = QGraphicsEllipseItem(
+            -radius_x * outer_multiplier,
+            -radius_y * outer_multiplier,
+            radius_x * 2.0 * outer_multiplier,
+            radius_y * 2.0 * outer_multiplier,
+            ellipse_item,
+        )
+        outer_pen = QPen(QColor(80, 230, 120), 2)
+        outer_pen.setCosmetic(True)
+        outer_ellipse_item.setPen(outer_pen)
+        outer_ellipse_item.setBrush(QBrush(Qt.NoBrush))
+        outer_ellipse_item.setZValue(-1.0)
+        psf_state = "饱和兼容" if fitted_position.saturated else "未饱和"
+        tooltip = "FWHM {fwhm_x:.2f} × {fwhm_y:.2f} px；质量 {quality:.2f}；{state}".format(
+                fwhm_x=fitted_position.fwhm_x,
+                fwhm_y=fitted_position.fwhm_y,
+                quality=fitted_position.quality_score,
+                state=psf_state,
+            )
+        ellipse_item.setToolTip(tooltip)
+        outer_ellipse_item.setToolTip(tooltip)
 
         label_item = QGraphicsSimpleTextItem(self._star_pair_label(row))
         label_font = QFont(self.font())
@@ -264,7 +304,8 @@ class StarPairAnnotationsMixin:
         label_item.setFont(label_font)
         label_item.setBrush(QBrush(QColor(255, 220, 80)))
         label_item.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
-        label_item.setPos(fitted_position.x + radius, fitted_position.y - radius)
+        label_radius = max(radius_x, radius_y)
+        label_item.setPos(fitted_position.x + label_radius, fitted_position.y - label_radius)
         label_item.setZValue(21.0)
 
         self.real_image_scene.addItem(ellipse_item)
@@ -278,8 +319,9 @@ class StarPairAnnotationsMixin:
         self,
         scene: QGraphicsScene,
         point: QPointF,
+        diameter_px: float,
     ) -> None:
-        radius = STAR_PAIR_FOCUS_MARKER_RADIUS_PX
+        radius = max(1.0, float(diameter_px) * 0.5)
         ellipse_item = QGraphicsEllipseItem(
             point.x() - radius,
             point.y() - radius,
@@ -307,6 +349,12 @@ class StarPairAnnotationsMixin:
         for item in (shadow_item, ellipse_item):
             scene.addItem(item)
             self._focused_star_annotations.append(item)
+
+    @staticmethod
+    def _focus_marker_diameter_px(auto_pair_search_radius_px: float) -> float:
+        """蓝圈半径为自动配对搜索半径的两倍，因此直径为其四倍。"""
+
+        return max(2.0, float(auto_pair_search_radius_px) * 4.0)
 
     def _set_graphics_view_scale_centered(
         self,
@@ -346,7 +394,13 @@ class StarPairAnnotationsMixin:
         if self.ui.checkBoxSyncReferenceAndRealView.isEnabled() and not self.ui.checkBoxSyncReferenceAndRealView.isChecked():
             self.ui.checkBoxSyncReferenceAndRealView.setChecked(True)
 
-    def _focus_star_pair_image_point(self, row: int, image_x: float, image_y: float) -> None:
+    def _focus_star_pair_image_point(
+        self,
+        row: int,
+        image_x: float,
+        image_y: float,
+        auto_pair_search_radius_px: float,
+    ) -> None:
         if self._active_star_pair_row is not None:
             self._leave_star_pick_mode()
         self._clear_focused_star_annotations()
@@ -356,8 +410,9 @@ class StarPairAnnotationsMixin:
         self._set_reference_real_sync_checked()
         self._update_reference_alignment_display()
         self._focus_reference_real_views_on_point(focus_point)
-        self._create_focus_annotation_items(self.reference_scene, focus_point)
-        self._create_focus_annotation_items(self.real_image_scene, focus_point)
+        marker_diameter_px = self._focus_marker_diameter_px(auto_pair_search_radius_px)
+        self._create_focus_annotation_items(self.reference_scene, focus_point, marker_diameter_px)
+        self._create_focus_annotation_items(self.real_image_scene, focus_point, marker_diameter_px)
         self.ui.tableWidgetStarPairs.selectRow(row)
 
     def _focus_star_pair_theoretical_position(self, row: int) -> None:
@@ -395,7 +450,15 @@ class StarPairAnnotationsMixin:
             self.ui.statusbar.showMessage(f"{self._star_pair_label(row)} 的理论位置在真实图像外。")
             return
 
-        self._focus_star_pair_image_point(row, predicted_x, predicted_y)
+        search_radius_px = self._auto_pair_search_radius_px(transform)
+        self._focus_star_pair_image_point(row, predicted_x, predicted_y, search_radius_px)
         self.ui.statusbar.showMessage(
-            f"已聚焦理论位置: x={predicted_x:.2f}, y={predicted_y:.2f}。切换标注选项可重置蓝圈。"
+            "已聚焦理论位置: x={x:.2f}, y={y:.2f}；蓝圈半径 {blue_radius} px，"
+            "为自动配对搜索半径 {search_radius} px 的两倍。"
+            "切换标注选项可重置蓝圈。".format(
+                x=predicted_x,
+                y=predicted_y,
+                blue_radius=search_radius_px * 2,
+                search_radius=search_radius_px,
+            )
         )

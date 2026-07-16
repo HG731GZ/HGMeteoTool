@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt5.QtCore import pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import QDialog, QWidget
 
 from ..ui.ui_preferences_dialog import Ui_PreferencesDialog
@@ -15,6 +15,10 @@ class PreferencesDialog(QDialog):
 
     def __init__(self, parent: QWidget | None = None, *, preference_path: Path | None = None) -> None:
         super().__init__(parent)
+        # QDialog 即使没有父窗口，在 Ubuntu/GNOME 下也可能被窗口管理器保持在主窗口上方。
+        # 改为普通顶层窗口类型后，激活主窗口即可按正常层级遮住选项窗口。
+        window_flags = (self.windowFlags() & ~Qt.WindowType_Mask) | Qt.Window
+        self.setWindowFlags(window_flags)
         self.ui = Ui_PreferencesDialog()
         self.ui.setupUi(self)
         self.setModal(False)

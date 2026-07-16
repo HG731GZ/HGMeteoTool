@@ -160,10 +160,17 @@
           <item row="1" column="1"><widget class="QSpinBox" name="spinBoxStarPickMinDiameter"><property name="suffix"><string> px</string></property><property name="minimum"><number>4</number></property><property name="maximum"><number>1000</number></property></widget></item>
           <item row="2" column="0"><widget class="QLabel" name="labelStarPickMaxDiameter"><property name="text"><string>最大圆圈直径</string></property></widget></item>
           <item row="2" column="1"><widget class="QSpinBox" name="spinBoxStarPickMaxDiameter"><property name="suffix"><string> px</string></property><property name="minimum"><number>4</number></property><property name="maximum"><number>2000</number></property></widget></item>
-          <item row="3" column="0"><widget class="QLabel" name="labelStarPickPsfScale"><property name="text"><string>PSF 半径比例</string></property></widget></item>
-          <item row="3" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxStarPickPsfRadiusScale"><property name="decimals"><number>2</number></property><property name="minimum"><double>0.100000000000000</double></property><property name="maximum"><double>1.000000000000000</double></property><property name="singleStep"><double>0.050000000000000</double></property></widget></item>
-          <item row="4" column="0"><widget class="QLabel" name="labelStarPickPsfMaxRadius"><property name="text"><string>PSF 最大半径</string></property></widget></item>
-          <item row="4" column="1"><widget class="QSpinBox" name="spinBoxStarPickPsfMaxRadius"><property name="suffix"><string> px</string></property><property name="minimum"><number>8</number></property><property name="maximum"><number>200</number></property></widget></item>
+          <item row="3" column="0"><widget class="QLabel" name="labelStarPickPsfMaxRadius"><property name="text"><string>自适应拟合半径上限</string></property></widget></item>
+          <item row="3" column="1"><widget class="QSpinBox" name="spinBoxStarPickPsfMaxRadius"><property name="toolTip"><string>与选星圈大小无关。饱和亮星会屏蔽平顶核心并利用外围星翼拟合；此值应能覆盖最大的亮星外围。</string></property><property name="suffix"><string> px</string></property><property name="minimum"><number>8</number></property><property name="maximum"><number>200</number></property></widget></item>
+          <item row="4" column="0"><widget class="QLabel" name="labelStarPairPsfOuterDiameterMultiplier"><property name="text"><string>PSF 外圈直径倍率</string></property></widget></item>
+          <item row="4" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxStarPairPsfOuterDiameterMultiplier"><property name="toolTip"><string>真实图像中绿色外圈相对于黄色 FWHM 圈的直径倍率，调整后立即更新现有标注。</string></property><property name="suffix"><string> ×</string></property><property name="decimals"><number>2</number></property><property name="minimum"><double>1.050000000000000</double></property><property name="maximum"><double>10.000000000000000</double></property><property name="singleStep"><double>0.050000000000000</double></property><property name="value"><double>1.500000000000000</double></property></widget></item>
+          <item row="5" column="0"><widget class="QLabel" name="labelAutoPairSearchRmsMultiplier"><property name="text"><string>自动配对 RMS 倍率</string></property></widget></item>
+          <item row="5" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxAutoPairSearchRmsMultiplier"><property name="toolTip"><string>参考星列表右键“自动配对”的搜索半径 = 配准 RMS × 此倍率 + 基础半径。</string></property><property name="suffix"><string> ×</string></property><property name="decimals"><number>2</number></property><property name="minimum"><double>0.000000000000000</double></property><property name="maximum"><double>20.000000000000000</double></property><property name="singleStep"><double>0.250000000000000</double></property><property name="value"><double>3.000000000000000</double></property></widget></item>
+          <item row="6" column="0"><widget class="QLabel" name="labelAutoPairSearchBaseRadius"><property name="text"><string>自动配对基础半径</string></property></widget></item>
+          <item row="6" column="1"><widget class="QSpinBox" name="spinBoxAutoPairSearchBaseRadius"><property name="toolTip"><string>加入配准 RMS 自适应结果的基础搜索半径。</string></property><property name="suffix"><string> px</string></property><property name="minimum"><number>0</number></property><property name="maximum"><number>500</number></property><property name="value"><number>6</number></property></widget></item>
+          <item row="7" column="0"><widget class="QLabel" name="labelAutoPairSearchMaxRadius"><property name="text"><string>自动配对半径上限</string></property></widget></item>
+          <item row="7" column="1"><widget class="QSpinBox" name="spinBoxAutoPairSearchMaxRadius"><property name="toolTip"><string>参考星列表右键“自动配对”允许使用的最大搜索半径。</string></property><property name="suffix"><string> px</string></property><property name="minimum"><number>4</number></property><property name="maximum"><number>2000</number></property><property name="value"><number>120</number></property></widget></item>
+          <item row="8" column="0" colspan="2"><widget class="QCheckBox" name="checkBoxDoubleClickFocusAutoPairEnabled"><property name="toolTip"><string>启用后，双击尚未配对的参考星行会先显示自动配对搜索蓝圈，再静默执行自动配对；失败原因只显示在状态栏。</string></property><property name="text"><string>双击聚焦联动自动配对</string></property></widget></item>
          </layout>
         </widget>
        </item>
@@ -198,8 +205,8 @@
           </item>
           <item row="2" column="0"><widget class="QLabel" name="labelAutoMatchSoftWeight"><property name="text"><string>默认软约束权重</string></property></widget></item>
           <item row="2" column="1"><widget class="QDoubleSpinBox" name="doubleSpinBoxAutoMatchDefaultSoftWeight"><property name="decimals"><number>2</number></property><property name="minimum"><double>0.010000000000000</double></property><property name="maximum"><double>1.000000000000000</double></property><property name="singleStep"><double>0.050000000000000</double></property></widget></item>
-          <item row="3" column="0"><widget class="QLabel" name="labelAutoMatchDefaultSearchRadius"><property name="text"><string>默认搜索半径</string></property></widget></item>
-          <item row="3" column="1"><widget class="QSpinBox" name="spinBoxAutoMatchDefaultSearchRadius"><property name="suffix"><string> px</string></property><property name="minimum"><number>4</number></property><property name="maximum"><number>300</number></property><property name="value"><number>30</number></property></widget></item>
+          <item row="3" column="0"><widget class="QLabel" name="labelAutoMatchDefaultSearchRadius"><property name="text"><string>默认匹配搜索半径</string></property></widget></item>
+          <item row="3" column="1"><widget class="QSpinBox" name="spinBoxAutoMatchDefaultSearchRadius"><property name="toolTip"><string>只限制星表预测位置到检测星源的允许距离，不再作为 PSF 拟合窗口。</string></property><property name="suffix"><string> px</string></property><property name="minimum"><number>4</number></property><property name="maximum"><number>300</number></property><property name="value"><number>30</number></property></widget></item>
          </layout>
         </widget>
        </item>
@@ -219,7 +226,7 @@
          <property name="toolTip"><string>只设置图像序列解析页下次启动时使用的默认值，不覆盖当前页面已输入的值。</string></property>
          <layout class="QFormLayout" name="formLayoutSequenceProcessingDefaults">
           <property name="fieldGrowthPolicy"><enum>QFormLayout::AllNonFixedFieldsGrow</enum></property>
-          <item row="0" column="0"><widget class="QLabel" name="labelSequencePsfSearchRadiusDefault"><property name="text"><string>默认 PSF 搜索半径</string></property></widget></item>
+          <item row="0" column="0"><widget class="QLabel" name="labelSequencePsfSearchRadiusDefault"><property name="text"><string>默认匹配搜索半径</string></property></widget></item>
           <item row="0" column="1"><widget class="QSpinBox" name="spinBoxSequencePsfSearchRadiusDefault"><property name="suffix"><string> px</string></property><property name="minimum"><number>4</number></property><property name="maximum"><number>200</number></property><property name="value"><number>30</number></property></widget></item>
          </layout>
         </widget>

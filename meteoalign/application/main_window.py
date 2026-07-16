@@ -165,6 +165,7 @@ class MainWindow(
     def _apply_preferences(self, ui_config: StarMapUiConfig) -> None:
         """热更新可立即生效的参数，同时保留当前任务中的用户输入。"""
 
+        previous_config = getattr(self, "ui_config", None)
         self.ui_config = ui_config
         self.renderer.ui_config = ui_config
         self._apply_ui_font_config(ui_config)
@@ -185,6 +186,13 @@ class MainWindow(
             label_font = label_item.font()
             label_font.setPointSize(ui_config.star_name_font_size_pt)
             label_item.setFont(label_font)
+        if (
+            previous_config is not None
+            and previous_config.star_pair_psf_outer_diameter_multiplier
+            != ui_config.star_pair_psf_outer_diameter_multiplier
+            and hasattr(self, "_restore_star_pair_annotations_from_table")
+        ):
+            self._restore_star_pair_annotations_from_table()
 
         if hasattr(self, "_mosaic_min_render_interval_ms"):
             self._mosaic_min_render_interval_ms = max(
@@ -230,7 +238,8 @@ class MainWindow(
         self.constellation_catalog = load_constellation_catalog()
         self.milky_way_catalog: MilkyWayCatalog = load_milky_way()
         self.renderer = StarMapRenderer(self.ui_config)
-        self.preferences_dialog = PreferencesDialog(self)
+        # 选项窗口不设置主窗口父级，避免操作系统把它作为始终压在主窗口上方的 transient 窗口。
+        self.preferences_dialog = PreferencesDialog()
         self.preferences_page = self.preferences_dialog.preferences_page
         self.preferences_page.preferences_applied.connect(self._apply_preferences)
         self.preferences_page.preferences_saved.connect(self._notify_preferences_saved)
@@ -557,6 +566,7 @@ class MainWindow(
             return
         ViewControlsMixin.closeEvent(self, event)
         if event.isAccepted():
+            self.preferences_dialog.close()
             self._shutdown_meteor_detection_worker()
 
     def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]

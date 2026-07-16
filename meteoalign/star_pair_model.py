@@ -27,6 +27,13 @@ def _payload_text(payload: dict[str, object], key: str, default: str = "") -> st
     return str(payload.get(key, default) or default).strip()
 
 
+def _payload_bool(payload: dict[str, object], key: str, default: bool = False) -> bool:
+    value = payload.get(key, default)
+    if isinstance(value, str):
+        return value.strip().casefold() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
 @dataclass(frozen=True)
 class PsfFit:
     """星点 PSF 拟合结果。"""
@@ -37,6 +44,15 @@ class PsfFit:
     background: float = 0.0
     sigma_x: float = 0.0
     sigma_y: float = 0.0
+    theta_rad: float = 0.0
+    fwhm_x: float = 0.0
+    fwhm_y: float = 0.0
+    snr: float = 0.0
+    fit_error: float = 0.0
+    saturated: bool = False
+    saturation_fraction: float = 0.0
+    blended: bool = False
+    quality_score: float = 0.0
 
     @classmethod
     def from_fitted_position(cls, fitted: FittedStarPosition) -> "PsfFit":
@@ -47,6 +63,15 @@ class PsfFit:
             background=float(fitted.background),
             sigma_x=float(fitted.sigma_x),
             sigma_y=float(fitted.sigma_y),
+            theta_rad=float(fitted.theta_rad),
+            fwhm_x=float(fitted.fwhm_x),
+            fwhm_y=float(fitted.fwhm_y),
+            snr=float(fitted.snr),
+            fit_error=float(fitted.fit_error),
+            saturated=bool(fitted.saturated),
+            saturation_fraction=float(fitted.saturation_fraction),
+            blended=bool(fitted.blended),
+            quality_score=float(fitted.quality_score),
         )
 
     @classmethod
@@ -58,7 +83,19 @@ class PsfFit:
         fallback_y: float,
     ) -> "PsfFit | None":
         values: dict[str, float] = {}
-        for key in ("amplitude", "background", "sigma_x", "sigma_y"):
+        for key in (
+            "amplitude",
+            "background",
+            "sigma_x",
+            "sigma_y",
+            "theta_rad",
+            "fwhm_x",
+            "fwhm_y",
+            "snr",
+            "fit_error",
+            "saturation_fraction",
+            "quality_score",
+        ):
             value = _payload_float(payload, key)
             if math.isfinite(value):
                 values[key] = value
@@ -73,6 +110,15 @@ class PsfFit:
             background=float(values.get("background", 0.0)),
             sigma_x=float(values.get("sigma_x", 0.0)),
             sigma_y=float(values.get("sigma_y", 0.0)),
+            theta_rad=float(values.get("theta_rad", 0.0)),
+            fwhm_x=float(values.get("fwhm_x", 0.0)),
+            fwhm_y=float(values.get("fwhm_y", 0.0)),
+            snr=float(values.get("snr", 0.0)),
+            fit_error=float(values.get("fit_error", 0.0)),
+            saturated=_payload_bool(payload, "saturated"),
+            saturation_fraction=float(values.get("saturation_fraction", 0.0)),
+            blended=_payload_bool(payload, "blended"),
+            quality_score=float(values.get("quality_score", 0.0)),
         )
 
     def to_fitted_position(self) -> FittedStarPosition:
@@ -83,9 +129,18 @@ class PsfFit:
             background=float(self.background),
             sigma_x=float(self.sigma_x),
             sigma_y=float(self.sigma_y),
+            theta_rad=float(self.theta_rad),
+            fwhm_x=float(self.fwhm_x),
+            fwhm_y=float(self.fwhm_y),
+            snr=float(self.snr),
+            fit_error=float(self.fit_error),
+            saturated=bool(self.saturated),
+            saturation_fraction=float(self.saturation_fraction),
+            blended=bool(self.blended),
+            quality_score=float(self.quality_score),
         )
 
-    def to_table_payload(self) -> dict[str, float]:
+    def to_table_payload(self) -> dict[str, float | bool]:
         return {
             "x": float(self.x),
             "y": float(self.y),
@@ -93,14 +148,32 @@ class PsfFit:
             "background": float(self.background),
             "sigma_x": float(self.sigma_x),
             "sigma_y": float(self.sigma_y),
+            "theta_rad": float(self.theta_rad),
+            "fwhm_x": float(self.fwhm_x),
+            "fwhm_y": float(self.fwhm_y),
+            "snr": float(self.snr),
+            "fit_error": float(self.fit_error),
+            "saturated": bool(self.saturated),
+            "saturation_fraction": float(self.saturation_fraction),
+            "blended": bool(self.blended),
+            "quality_score": float(self.quality_score),
         }
 
-    def to_json_payload(self) -> dict[str, float]:
+    def to_json_payload(self) -> dict[str, float | bool]:
         return {
             "amplitude": float(self.amplitude),
             "background": float(self.background),
             "sigma_x": float(self.sigma_x),
             "sigma_y": float(self.sigma_y),
+            "theta_rad": float(self.theta_rad),
+            "fwhm_x": float(self.fwhm_x),
+            "fwhm_y": float(self.fwhm_y),
+            "snr": float(self.snr),
+            "fit_error": float(self.fit_error),
+            "saturated": bool(self.saturated),
+            "saturation_fraction": float(self.saturation_fraction),
+            "blended": bool(self.blended),
+            "quality_score": float(self.quality_score),
         }
 
 
@@ -307,6 +380,15 @@ def star_pair_record_from_payload(
         "background",
         "sigma_x",
         "sigma_y",
+        "theta_rad",
+        "fwhm_x",
+        "fwhm_y",
+        "snr",
+        "fit_error",
+        "saturated",
+        "saturation_fraction",
+        "blended",
+        "quality_score",
         "x",
         "y",
         "residual_dx_px",

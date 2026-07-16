@@ -33,7 +33,7 @@ class _StatusBar:
 class _Ui:
     def __init__(self) -> None:
         self.tableWidgetStarPairs = QTableWidget()
-        self.tableWidgetStarPairs.setColumnCount(4)
+        self.tableWidgetStarPairs.setColumnCount(5)
         self.statusbar = _StatusBar()
 
 

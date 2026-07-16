@@ -33,7 +33,23 @@ def _star() -> ReferenceStar:
 
 
 def test_star_pair_record_round_trips_json_payload() -> None:
-    fitted = FittedStarPosition(x=123.4, y=234.5, amplitude=50.0, background=3.0, sigma_x=1.2, sigma_y=1.4)
+    fitted = FittedStarPosition(
+        x=123.4,
+        y=234.5,
+        amplitude=50.0,
+        background=3.0,
+        sigma_x=1.2,
+        sigma_y=1.4,
+        theta_rad=0.25,
+        fwhm_x=3.3,
+        fwhm_y=2.8,
+        snr=18.0,
+        fit_error=0.12,
+        saturated=True,
+        saturation_fraction=0.2,
+        blended=True,
+        quality_score=0.88,
+    )
     record = StarPairRecord(
         reference_star=_star(),
         image_x_px=fitted.x,
@@ -58,6 +74,11 @@ def test_star_pair_record_round_trips_json_payload() -> None:
     assert restored.position == record.position
     assert restored.psf is not None
     assert restored.psf.to_table_payload()["x"] == fitted.x
+    assert restored.psf.theta_rad == fitted.theta_rad
+    assert restored.psf.saturated
+    assert restored.psf.blended
+    assert restored.psf.quality_score == fitted.quality_score
+    assert "quality_score" not in restored.extra_fields
     assert restored.fit_constraint_mode == "soft"
     assert restored.fit_weight == 0.35
     assert restored.group_id == "B"

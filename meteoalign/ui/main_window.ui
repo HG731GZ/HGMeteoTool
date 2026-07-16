@@ -1192,14 +1192,14 @@
                  <item row="0" column="0">
                   <widget class="QLabel" name="labelSequencePsfSearchRadius">
                    <property name="text">
-                    <string>PSF 搜索半径</string>
+                    <string>匹配搜索半径</string>
                    </property>
                   </widget>
                  </item>
                  <item row="0" column="1">
                   <widget class="QSpinBox" name="spinBoxSequencePsfSearchRadius">
                    <property name="toolTip">
-                    <string>图像序列解析专用参数，与星点匹配页的搜索半径相互独立。</string>
+                    <string>图像序列解析专用的一对一星源匹配距离；PSF 拟合窗口会根据检测星点尺寸自动确定。</string>
                    </property>
                    <property name="suffix">
                     <string> px</string>
@@ -1812,7 +1812,7 @@
                  <number>0</number>
                 </property>
                 <property name="columnCount">
-                 <number>4</number>
+                 <number>5</number>
                 </property>
                 <attribute name="horizontalHeaderCascadingSectionResizes">
                  <bool>false</bool>
@@ -1842,6 +1842,11 @@
                 <column>
                  <property name="text">
                   <string>模式</string>
+                 </property>
+                </column>
+                <column>
+                 <property name="text">
+                  <string>PSF质量</string>
                  </property>
                 </column>
                 <column>
@@ -2010,12 +2015,15 @@
                 <item row="4" column="0">
                  <widget class="QLabel" name="labelAutoMatchRadius">
                   <property name="text">
-                   <string>搜索半径</string>
+                   <string>匹配搜索半径</string>
                   </property>
                  </widget>
                 </item>
                 <item row="4" column="1">
                  <widget class="QSpinBox" name="spinBoxAutoMatchRadius">
+                  <property name="toolTip">
+                   <string>星表预测位置到检测星源的最大允许距离；PSF 拟合窗口与此参数相互独立。</string>
+                  </property>
                   <property name="minimum">
                    <number>4</number>
                   </property>

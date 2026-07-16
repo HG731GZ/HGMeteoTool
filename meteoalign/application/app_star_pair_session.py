@@ -472,8 +472,10 @@ class StarPairSessionMixin:
             record = self._star_pair_store.get(star_id)
             if record is None:
                 position_item.setText("")
+                self._refresh_star_pair_quality_cell(row)
                 continue
             position_item.setText(self._star_pair_mode_display_text(row))
+            self._refresh_star_pair_quality_cell(row)
             restored_count += 1
         table.blockSignals(signals_were_blocked)
 

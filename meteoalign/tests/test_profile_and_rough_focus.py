@@ -52,6 +52,8 @@ class _StatusBar:
 class _RoughTransform:
     """提供固定理论位置的粗略取景变换替身。"""
 
+    rms_px = 3.0
+
     def transform_radec(self, _ra_deg: float, _dec_deg: float) -> tuple[float, float]:
         return 120.0, 80.0
 
@@ -64,7 +66,7 @@ class _RoughFocusHarness(StarPairAnnotationsMixin):
         self._rough_alignment_transform = object()
         self._sky_alignment_transform = _RoughTransform()
         self.current_image_preview = SimpleNamespace(image=SimpleNamespace(width=lambda: 400, height=lambda: 300))
-        self.focused_position: tuple[int, float, float] | None = None
+        self.focused_position: tuple[int, float, float, float] | None = None
 
     def _star_pair_position_count(self) -> int:
         return 0
@@ -72,8 +74,17 @@ class _RoughFocusHarness(StarPairAnnotationsMixin):
     def _reference_star_for_row(self, _row: int):  # type: ignore[no-untyped-def]
         return SimpleNamespace(ra_deg=10.0, dec_deg=20.0)
 
-    def _focus_star_pair_image_point(self, row: int, image_x: float, image_y: float) -> None:
-        self.focused_position = (row, image_x, image_y)
+    def _auto_pair_search_radius_px(self, _transform) -> int:  # type: ignore[no-untyped-def]
+        return 37
+
+    def _focus_star_pair_image_point(
+        self,
+        row: int,
+        image_x: float,
+        image_y: float,
+        auto_pair_search_radius_px: float,
+    ) -> None:
+        self.focused_position = (row, image_x, image_y, auto_pair_search_radius_px)
 
     def _star_pair_label(self, _row: int) -> str:
         return "测试星"
@@ -98,7 +109,7 @@ def test_rough_framing_allows_double_click_focus_before_two_matches() -> None:
 
     harness._focus_star_pair_theoretical_position(2)
 
-    assert harness.focused_position == (2, 120.0, 80.0)
+    assert harness.focused_position == (2, 120.0, 80.0, 37)
     assert "已聚焦理论位置" in harness.ui.statusbar.messages[-1]
 
 
@@ -109,7 +120,7 @@ def test_two_manual_pairs_allow_double_click_focus() -> None:
 
     harness._focus_star_pair_theoretical_position(2)
 
-    assert harness.focused_position == (2, 120.0, 80.0)
+    assert harness.focused_position == (2, 120.0, 80.0, 37)
 
 
 def test_one_manual_pair_does_not_allow_double_click_focus() -> None:

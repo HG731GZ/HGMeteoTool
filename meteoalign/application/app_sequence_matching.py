@@ -49,7 +49,8 @@ from ..simulator import (
     local_vectors_from_altaz,
     project_horizontal_catalog,
 )
-from ..star_fitting import fit_star_position
+from ..psf.matching import assign_predicted_sources, merge_source_candidates
+from ..star_fitting import detect_star_candidates, fit_star_position
 
 class SequenceMatchingMixin:
     """序列批处理中的星点模板、候选匹配和固定相机求解。"""
@@ -384,6 +385,47 @@ class SequenceMatchingMixin:
         matched: list[_SequenceMatchedPair] = []
         if target_count <= 0:
             return matched
+        static_offset_x, static_offset_y = self._sequence_adaptive_search_offset(accepted_offsets)
+        search_by_id: dict[str, tuple[float, float]] = {}
+        detected_sources = []
+        for plan in plans:
+            candidate = plan.candidate
+            star_id = candidate.reference_star.star_id.strip()
+            if not star_id or star_id in used_star_ids or star_id in attempted_star_ids:
+                continue
+            search_x = candidate.predicted_x_px + static_offset_x
+            search_y = candidate.predicted_y_px + static_offset_y
+            if (
+                not math.isfinite(search_x)
+                or not math.isfinite(search_y)
+                or search_x < 0.0
+                or search_y < 0.0
+                or search_x >= image.width()
+                or search_y >= image.height()
+                or not self._sky_mask_allows_point(search_x, search_y)
+            ):
+                continue
+            search_by_id[star_id] = (search_x, search_y)
+            try:
+                nearby_sources = detect_star_candidates(
+                    image,
+                    click_x=search_x,
+                    click_y=search_y,
+                    radius_px=search_radius_px,
+                )
+            except Exception:
+                continue
+            detected_sources.extend(
+                source for source in nearby_sources if self._sky_mask_allows_point(source.x, source.y)
+            )
+
+        assignment = assign_predicted_sources(
+            search_by_id,
+            merge_source_candidates(detected_sources),
+            search_radius_px=float(search_radius_px),
+        )
+        stats.setdefault("skipped_ambiguous", 0)
+        stats["skipped_ambiguous"] += len(assignment.ambiguous_star_ids)
         for plan in plans:
             if len(matched) >= target_count:
                 break
@@ -392,7 +434,7 @@ class SequenceMatchingMixin:
             if not star_id or star_id in used_star_ids or star_id in attempted_star_ids:
                 continue
             attempted_star_ids.add(star_id)
-            offset_x, offset_y = self._sequence_adaptive_search_offset(accepted_offsets)
+            offset_x, offset_y = static_offset_x, static_offset_y
             search_x = candidate.predicted_x_px + offset_x
             search_y = candidate.predicted_y_px + offset_y
             if (
@@ -408,12 +450,26 @@ class SequenceMatchingMixin:
             if not self._sky_mask_allows_point(search_x, search_y):
                 stats["skipped_mask"] += 1
                 continue
+            assigned_source = assignment.assignments.get(star_id)
+            if assigned_source is None:
+                if star_id not in assignment.ambiguous_star_ids:
+                    stats["failed_psf"] += 1
+                continue
             try:
+                source_fit_search_radius = max(
+                    4,
+                    min(
+                        self.ui_config.star_pick_psf_max_radius_px,
+                        int(math.ceil(assigned_source.major_axis * 2.8)),
+                    ),
+                )
                 fitted_position = fit_star_position(
                     image,
-                    click_x=search_x,
-                    click_y=search_y,
-                    radius_px=search_radius_px,
+                    click_x=assigned_source.x,
+                    click_y=assigned_source.y,
+                    radius_px=source_fit_search_radius,
+                    max_fit_radius_px=self.ui_config.star_pick_psf_max_radius_px,
+                    selection_mode="manual",
                 )
             except Exception:
                 stats["failed_psf"] += 1

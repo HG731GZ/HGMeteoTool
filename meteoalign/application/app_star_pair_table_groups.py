@@ -16,6 +16,8 @@ from .app_constants import (
     STAR_PAIR_MANUAL_GROUP_LABEL,
     STAR_PAIR_NAME_COLUMN,
     STAR_PAIR_POSITION_COLUMN,
+    STAR_PAIR_QUALITY_COLUMN,
+    STAR_PAIR_QUALITY_WIDTH_SAMPLE,
     STAR_PAIR_RESIDUAL_COLUMN,
     STAR_PAIR_RESIDUAL_WIDTH_SAMPLE,
     STAR_PAIR_ROW_TYPE_AUTO_GROUP,
@@ -25,6 +27,7 @@ from .app_constants import (
     STAR_PAIR_ROW_TYPE_ROLE,
     STAR_PAIR_SORTABLE_COLUMNS,
     STAR_PAIR_SORT_KEY_INDEX,
+    STAR_PAIR_SORT_KEY_QUALITY,
     STAR_PAIR_SORT_KEY_RESIDUAL,
 )
 from ..simulator import ReferenceStar
@@ -41,7 +44,19 @@ class StarPairTableGroupsMixin:
         header_width = table.horizontalHeader().fontMetrics().horizontalAdvance(header_text)
         return max(digit_width + 18, header_width + 18, 56)
 
+    def _star_pair_quality_column_width(self) -> int:
+        table = self.ui.tableWidgetStarPairs
+        digit_width = table.fontMetrics().horizontalAdvance(STAR_PAIR_QUALITY_WIDTH_SAMPLE)
+        header_item = table.horizontalHeaderItem(STAR_PAIR_QUALITY_COLUMN)
+        header_text = header_item.text() if header_item is not None else "PSF质量"
+        header_width = table.horizontalHeader().fontMetrics().horizontalAdvance(header_text)
+        return max(digit_width + 18, header_width + 18, 64)
+
     def _apply_star_pair_table_column_widths(self) -> None:
+        self.ui.tableWidgetStarPairs.setColumnWidth(
+            STAR_PAIR_QUALITY_COLUMN,
+            self._star_pair_quality_column_width(),
+        )
         self.ui.tableWidgetStarPairs.setColumnWidth(
             STAR_PAIR_RESIDUAL_COLUMN,
             self._star_pair_residual_column_width(),
@@ -55,6 +70,7 @@ class StarPairTableGroupsMixin:
         header.setSectionResizeMode(STAR_PAIR_INDEX_COLUMN, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(STAR_PAIR_NAME_COLUMN, QHeaderView.Stretch)
         header.setSectionResizeMode(STAR_PAIR_POSITION_COLUMN, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(STAR_PAIR_QUALITY_COLUMN, QHeaderView.Fixed)
         header.setSectionResizeMode(STAR_PAIR_RESIDUAL_COLUMN, QHeaderView.Fixed)
         self._apply_star_pair_table_column_widths()
         self._update_star_pair_sort_indicator()
@@ -63,6 +79,7 @@ class StarPairTableGroupsMixin:
         header = self.ui.tableWidgetStarPairs.horizontalHeader()
         column_by_sort_key = {
             STAR_PAIR_SORT_KEY_INDEX: STAR_PAIR_INDEX_COLUMN,
+            STAR_PAIR_SORT_KEY_QUALITY: STAR_PAIR_QUALITY_COLUMN,
             STAR_PAIR_SORT_KEY_RESIDUAL: STAR_PAIR_RESIDUAL_COLUMN,
         }
         column = column_by_sort_key.get(self._star_pair_sort_key or "")
@@ -270,6 +287,32 @@ class StarPairTableGroupsMixin:
             table.setItem(row, STAR_PAIR_POSITION_COLUMN, position_item)
         position_item.setText(self._star_pair_mode_display_text(row))
 
+    def _star_pair_quality_score(self, row: int) -> float | None:
+        record = self._star_pair_record_for_row(row)
+        if record is None or record.psf is None:
+            return None
+        quality_score = float(record.psf.quality_score)
+        return quality_score if math.isfinite(quality_score) else None
+
+    def _refresh_star_pair_quality_cell(self, row: int) -> None:
+        """用当前 PSF 记录刷新质量单元格；未拟合时保持空白。"""
+
+        if row < 0 or row >= self.ui.tableWidgetStarPairs.rowCount():
+            return
+        if self._is_star_pair_group_row(row):
+            return
+        table = self.ui.tableWidgetStarPairs
+        quality_item = table.item(row, STAR_PAIR_QUALITY_COLUMN)
+        if quality_item is None:
+            quality_item = self._make_star_pair_table_item(
+                "",
+                self._star_pair_row_type(row),
+                self._star_pair_star_id(row),
+            )
+            table.setItem(row, STAR_PAIR_QUALITY_COLUMN, quality_item)
+        quality_score = self._star_pair_quality_score(row)
+        quality_item.setText("" if quality_score is None else f"{quality_score:.2f}")
+
     def _set_star_pair_constraint(self, row: int, mode: str, fit_weight: float | None = None) -> None:
         if row < 0 or row >= self.ui.tableWidgetStarPairs.rowCount() or self._is_star_pair_group_row(row):
             return
@@ -322,23 +365,40 @@ class StarPairTableGroupsMixin:
 
     # ---- 拟合有效载荷 ----
 
-    def _star_pair_fit_payload(self, row: int) -> dict[str, float] | None:
+    def _star_pair_fit_payload(self, row: int) -> dict[str, float | bool] | None:
         record = self._star_pair_record_for_row(row)
         if record is None or record.psf is None:
             return None
         payload = record.psf.to_table_payload()
 
-        fit_payload: dict[str, float] = {}
-        for key in ("x", "y", "amplitude", "background", "sigma_x", "sigma_y"):
+        fit_payload: dict[str, float | bool] = {}
+        for key in (
+            "x",
+            "y",
+            "amplitude",
+            "background",
+            "sigma_x",
+            "sigma_y",
+            "theta_rad",
+            "fwhm_x",
+            "fwhm_y",
+            "snr",
+            "fit_error",
+            "saturation_fraction",
+            "quality_score",
+        ):
             try:
                 value = float(payload[key])
             except (KeyError, TypeError, ValueError):
                 continue
             if math.isfinite(value):
                 fit_payload[key] = value
+        for key in ("saturated", "blended"):
+            if key in payload:
+                fit_payload[key] = bool(payload[key])
         return fit_payload or None
 
-    def _fit_payload_from_position(self, fitted_position: FittedStarPosition) -> dict[str, float]:
+    def _fit_payload_from_position(self, fitted_position: FittedStarPosition) -> dict[str, float | bool]:
         return {
             "x": float(fitted_position.x),
             "y": float(fitted_position.y),
@@ -346,6 +406,15 @@ class StarPairTableGroupsMixin:
             "background": float(fitted_position.background),
             "sigma_x": float(fitted_position.sigma_x),
             "sigma_y": float(fitted_position.sigma_y),
+            "theta_rad": float(fitted_position.theta_rad),
+            "fwhm_x": float(fitted_position.fwhm_x),
+            "fwhm_y": float(fitted_position.fwhm_y),
+            "snr": float(fitted_position.snr),
+            "fit_error": float(fitted_position.fit_error),
+            "saturated": bool(fitted_position.saturated),
+            "saturation_fraction": float(fitted_position.saturation_fraction),
+            "blended": bool(fitted_position.blended),
+            "quality_score": float(fitted_position.quality_score),
         }
 
     def _fitted_position_for_row(self, row: int) -> FittedStarPosition | None:
@@ -425,6 +494,7 @@ class StarPairTableGroupsMixin:
             STAR_PAIR_INDEX_COLUMN: arrow_text,
             STAR_PAIR_NAME_COLUMN: STAR_PAIR_MANUAL_GROUP_LABEL,
             STAR_PAIR_POSITION_COLUMN: mode_text,
+            STAR_PAIR_QUALITY_COLUMN: "",
             STAR_PAIR_RESIDUAL_COLUMN: "",
         }
         signals_were_blocked = table.blockSignals(True)
@@ -472,6 +542,7 @@ class StarPairTableGroupsMixin:
             STAR_PAIR_INDEX_COLUMN: arrow_text,
             STAR_PAIR_NAME_COLUMN: self._auto_match_group_label(group_id),
             STAR_PAIR_POSITION_COLUMN: mode_text,
+            STAR_PAIR_QUALITY_COLUMN: "",
             STAR_PAIR_RESIDUAL_COLUMN: "",
         }
         signals_were_blocked = table.blockSignals(True)
@@ -526,6 +597,12 @@ class StarPairTableGroupsMixin:
     def _handle_star_pair_cell_double_clicked(self, row: int, _column: int) -> None:
         if self._is_star_pair_group_row(row):
             return
+        if (
+            self.ui_config.double_click_focus_auto_pair_enabled
+            and not self._star_pair_position_text(row)
+        ):
+            self._auto_pair_star(row, silent_failure=True)
+            return
         self._focus_star_pair_theoretical_position(row)
 
     def _make_star_pair_table_item(
@@ -564,6 +641,7 @@ class StarPairTableGroupsMixin:
         index_item = self._make_star_pair_table_item(index_text, row_type, star_id)
         name_item = self._make_star_pair_table_item(star_name, row_type, star_id)
         position_item = self._make_star_pair_table_item("", row_type, star_id)
+        quality_item = self._make_star_pair_table_item("", row_type, star_id)
         residual_item = self._make_star_pair_table_item("", row_type, star_id)
         if saved_state:
             mode, fit_weight = self._normalized_auto_match_constraint(
@@ -579,16 +657,25 @@ class StarPairTableGroupsMixin:
             if mode == AUTO_MATCH_CONSTRAINT_SOFT
             else "投影拟合：硬锚点。"
         )
-        for item in (index_item, name_item, position_item, residual_item):
+        for item in (index_item, name_item, position_item, quality_item, residual_item):
             if group_id:
                 item.setData(STAR_PAIR_AUTO_GROUP_ROLE, group_id)
             item.setToolTip(constraint_tip)
         if position is not None:
             position_item.setText(f"软约束({fit_weight:.2f})" if mode == AUTO_MATCH_CONSTRAINT_SOFT else "锚点")
+        fit_payload = saved_state.get("fit_payload")
+        if isinstance(fit_payload, dict):
+            try:
+                quality_score = float(fit_payload["quality_score"])
+            except (KeyError, TypeError, ValueError):
+                quality_score = float("nan")
+            if math.isfinite(quality_score):
+                quality_item.setText(f"{quality_score:.2f}")
 
         table.setItem(row, STAR_PAIR_INDEX_COLUMN, index_item)
         table.setItem(row, STAR_PAIR_NAME_COLUMN, name_item)
         table.setItem(row, STAR_PAIR_POSITION_COLUMN, position_item)
+        table.setItem(row, STAR_PAIR_QUALITY_COLUMN, quality_item)
         table.setItem(row, STAR_PAIR_RESIDUAL_COLUMN, residual_item)
 
     def _set_auto_match_group_table_row(self, row: int, group_id: str) -> None:
@@ -597,6 +684,7 @@ class StarPairTableGroupsMixin:
             (STAR_PAIR_INDEX_COLUMN, "▶"),
             (STAR_PAIR_NAME_COLUMN, self._auto_match_group_label(group_id)),
             (STAR_PAIR_POSITION_COLUMN, ""),
+            (STAR_PAIR_QUALITY_COLUMN, ""),
             (STAR_PAIR_RESIDUAL_COLUMN, ""),
         ):
             item = self._make_star_pair_table_item(text, STAR_PAIR_ROW_TYPE_AUTO_GROUP)
@@ -612,6 +700,7 @@ class StarPairTableGroupsMixin:
             (STAR_PAIR_INDEX_COLUMN, "▶"),
             (STAR_PAIR_NAME_COLUMN, STAR_PAIR_MANUAL_GROUP_LABEL),
             (STAR_PAIR_POSITION_COLUMN, ""),
+            (STAR_PAIR_QUALITY_COLUMN, ""),
             (STAR_PAIR_RESIDUAL_COLUMN, ""),
         ):
             item = self._make_star_pair_table_item(text, STAR_PAIR_ROW_TYPE_MANUAL_GROUP)
@@ -654,7 +743,11 @@ class StarPairTableGroupsMixin:
         entries: list[tuple[int, ReferenceStar, str, str, str]],
         saved_states: dict[str, dict[str, object]],
     ) -> list[tuple[int, ReferenceStar, str, str, str]]:
-        if self._star_pair_sort_key not in {STAR_PAIR_SORT_KEY_INDEX, STAR_PAIR_SORT_KEY_RESIDUAL}:
+        if self._star_pair_sort_key not in {
+            STAR_PAIR_SORT_KEY_INDEX,
+            STAR_PAIR_SORT_KEY_QUALITY,
+            STAR_PAIR_SORT_KEY_RESIDUAL,
+        }:
             return entries
 
         if self._star_pair_sort_key == STAR_PAIR_SORT_KEY_INDEX:
@@ -662,6 +755,23 @@ class StarPairTableGroupsMixin:
                 entries,
                 key=lambda entry: -entry[0] if self._star_pair_sort_descending else entry[0],
             )
+
+        if self._star_pair_sort_key == STAR_PAIR_SORT_KEY_QUALITY:
+            def quality_sort_key(entry: tuple[int, ReferenceStar, str, str, str]) -> tuple[int, float, int]:
+                sequence_number, star, _index_text, _row_type, _group_id = entry
+                fit_payload = saved_states.get(star.star_id.strip(), {}).get("fit_payload")
+                if not isinstance(fit_payload, dict):
+                    return 1, 0.0, sequence_number
+                try:
+                    quality_score = float(fit_payload["quality_score"])
+                except (KeyError, TypeError, ValueError):
+                    return 1, 0.0, sequence_number
+                if not math.isfinite(quality_score):
+                    return 1, 0.0, sequence_number
+                sort_value = -quality_score if self._star_pair_sort_descending else quality_score
+                return 0, sort_value, sequence_number
+
+            return sorted(entries, key=quality_sort_key)
 
         def residual_sort_key(entry: tuple[int, ReferenceStar, str, str, str]) -> tuple[int, float, int]:
             sequence_number, star, _index_text, _row_type, _group_id = entry

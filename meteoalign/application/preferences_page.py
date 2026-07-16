@@ -34,8 +34,12 @@ EDITABLE_PREFERENCE_KEYS = frozenset(
         "star_pick_circle_default_diameter_px",
         "star_pick_circle_min_diameter_px",
         "star_pick_circle_max_diameter_px",
-        "star_pick_psf_radius_scale",
         "star_pick_psf_max_radius_px",
+        "star_pair_psf_outer_diameter_multiplier",
+        "auto_pair_search_rms_multiplier",
+        "auto_pair_search_base_radius_px",
+        "auto_pair_search_max_radius_px",
+        "double_click_focus_auto_pair_enabled",
         "default_latitude_deg",
         "default_longitude_deg",
         "default_elevation_m",
@@ -150,8 +154,16 @@ class PreferencesPage(QWidget):
             ui.spinBoxStarPickDefaultDiameter.setValue(config.star_pick_circle_default_diameter_px)
             ui.spinBoxStarPickMinDiameter.setValue(config.star_pick_circle_min_diameter_px)
             ui.spinBoxStarPickMaxDiameter.setValue(config.star_pick_circle_max_diameter_px)
-            ui.doubleSpinBoxStarPickPsfRadiusScale.setValue(config.star_pick_psf_radius_scale)
             ui.spinBoxStarPickPsfMaxRadius.setValue(config.star_pick_psf_max_radius_px)
+            ui.doubleSpinBoxStarPairPsfOuterDiameterMultiplier.setValue(
+                config.star_pair_psf_outer_diameter_multiplier
+            )
+            ui.doubleSpinBoxAutoPairSearchRmsMultiplier.setValue(config.auto_pair_search_rms_multiplier)
+            ui.spinBoxAutoPairSearchBaseRadius.setValue(config.auto_pair_search_base_radius_px)
+            ui.spinBoxAutoPairSearchMaxRadius.setValue(config.auto_pair_search_max_radius_px)
+            ui.checkBoxDoubleClickFocusAutoPairEnabled.setChecked(
+                config.double_click_focus_auto_pair_enabled
+            )
             ui.doubleSpinBoxDefaultLatitude.setValue(config.default_latitude_deg)
             ui.doubleSpinBoxDefaultLongitude.setValue(config.default_longitude_deg)
             ui.doubleSpinBoxDefaultElevation.setValue(config.default_elevation_m)
@@ -205,8 +217,11 @@ class PreferencesPage(QWidget):
             ui.doubleSpinBoxConstellationLineOpacity,
             ui.spinBoxStarPickMinDiameter,
             ui.spinBoxStarPickMaxDiameter,
-            ui.doubleSpinBoxStarPickPsfRadiusScale,
             ui.spinBoxStarPickPsfMaxRadius,
+            ui.doubleSpinBoxStarPairPsfOuterDiameterMultiplier,
+            ui.doubleSpinBoxAutoPairSearchRmsMultiplier,
+            ui.spinBoxAutoPairSearchBaseRadius,
+            ui.spinBoxAutoPairSearchMaxRadius,
             ui.doubleSpinBoxMosaicTextureScalePercent,
             ui.spinBoxMosaicTextureMaxLongSide,
             ui.spinBoxMosaicRenderFpsLimit,
@@ -229,6 +244,7 @@ class PreferencesPage(QWidget):
             ui.checkBoxShowConstellationLines,
             ui.checkBoxWheelZoomEnabled,
             ui.checkBoxTouchpadPinchZoomEnabled,
+            ui.checkBoxDoubleClickFocusAutoPairEnabled,
             ui.checkBoxMosaicTiffLzwCompression,
             ui.checkBoxShowMeteorShowers,
             ui.checkBoxMeteorRadiantOnly,
@@ -371,8 +387,16 @@ class PreferencesPage(QWidget):
             "star_pick_circle_default_diameter_px": ui.spinBoxStarPickDefaultDiameter.value(),
             "star_pick_circle_min_diameter_px": ui.spinBoxStarPickMinDiameter.value(),
             "star_pick_circle_max_diameter_px": ui.spinBoxStarPickMaxDiameter.value(),
-            "star_pick_psf_radius_scale": ui.doubleSpinBoxStarPickPsfRadiusScale.value(),
             "star_pick_psf_max_radius_px": ui.spinBoxStarPickPsfMaxRadius.value(),
+            "star_pair_psf_outer_diameter_multiplier": (
+                ui.doubleSpinBoxStarPairPsfOuterDiameterMultiplier.value()
+            ),
+            "auto_pair_search_rms_multiplier": ui.doubleSpinBoxAutoPairSearchRmsMultiplier.value(),
+            "auto_pair_search_base_radius_px": ui.spinBoxAutoPairSearchBaseRadius.value(),
+            "auto_pair_search_max_radius_px": ui.spinBoxAutoPairSearchMaxRadius.value(),
+            "double_click_focus_auto_pair_enabled": (
+                ui.checkBoxDoubleClickFocusAutoPairEnabled.isChecked()
+            ),
             "default_latitude_deg": ui.doubleSpinBoxDefaultLatitude.value(),
             "default_longitude_deg": ui.doubleSpinBoxDefaultLongitude.value(),
             "default_elevation_m": ui.doubleSpinBoxDefaultElevation.value(),

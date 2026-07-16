@@ -280,6 +280,7 @@ class StarPairActionsMixin:
         signals_were_blocked = table.blockSignals(True)
         position_item.setText(self._star_pair_mode_display_text(row))
         table.blockSignals(signals_were_blocked)
+        self._refresh_star_pair_quality_cell(row)
         table.selectRow(row)
         self._refresh_star_pair_row_style(row)
         self._update_auto_match_group_row_text()
@@ -303,6 +304,7 @@ class StarPairActionsMixin:
             signals_were_blocked = table.blockSignals(True)
             position_item.setText("")
             table.blockSignals(signals_were_blocked)
+        self._refresh_star_pair_quality_cell(row)
         if star_id:
             self._remove_star_pair_annotation(star_id)
         return star_id
@@ -311,22 +313,22 @@ class StarPairActionsMixin:
         cleared_count = self._star_pair_position_count()
         if self._active_star_pair_row is not None:
             self._leave_star_pick_mode()
+        store = getattr(self, "_star_pair_store", None)
+        if store is not None:
+            store.clear()
         table = self.ui.tableWidgetStarPairs
         table.blockSignals(True)
         for row in range(table.rowCount()):
             position_item = table.item(row, STAR_PAIR_POSITION_COLUMN)
             if position_item is not None:
                 position_item.setText("")
+            self._refresh_star_pair_quality_cell(row)
             if self._is_auto_match_row(row):
                 star_id = self._star_pair_star_id(row)
                 group_id = self._row_auto_match_group_id(row) or self._auto_match_group_id_for_star_id(star_id) or "A"
                 if star_id:
                     self._auto_match_group_by_star_id[star_id] = group_id
         table.blockSignals(False)
-
-        store = getattr(self, "_star_pair_store", None)
-        if store is not None:
-            store.clear()
 
         self._clear_star_pair_annotations()
         self._refresh_star_pair_table_styles()

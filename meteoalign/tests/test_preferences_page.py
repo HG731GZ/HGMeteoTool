@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication, QGroupBox
 import pytest
 
@@ -176,6 +177,9 @@ def test_preferences_dialog_is_non_modal_and_launcher_uses_text_button(tmp_path)
     launcher = PreferencesLauncher()
 
     assert not dialog.isModal()
+    assert dialog.parentWidget() is None
+    assert dialog.windowFlags() & Qt.WindowType_Mask == Qt.Window
+    assert not bool(dialog.windowFlags() & Qt.WindowStaysOnTopHint)
     assert dialog.windowTitle() == "软件选项"
     assert dialog.width() == 860
     assert dialog.height() == 700

@@ -16,13 +16,12 @@ from ..matching_constants import (
     AUTO_MATCH_MIN_ALTITUDE_DEG,
     AUTO_MATCH_MIN_AMPLITUDE,
     AUTO_MATCH_SEARCH_MAG_LIMIT,
-    AUTO_PAIR_MAX_SEARCH_RADIUS_PX,
-    AUTO_PAIR_RMS_RADIUS_SCALE,
     MIN_PSF_RADIUS_PX,
     REFERENCE_STAR_PICK_SCREEN_RADIUS_PX,
 )
 from ..simulator import ProjectedStarMap, ReferenceStar
-from ..star_fitting import FittedStarPosition, fit_star_position
+from ..psf.matching import assign_predicted_sources, merge_source_candidates
+from ..star_fitting import FittedStarPosition, detect_star_candidates, fit_star_position
 
 
 class AutoMatchMixin:
@@ -177,18 +176,31 @@ class AutoMatchMixin:
         if not (0.0 <= image_x < image.width() and 0.0 <= image_y < image.height()):
             self.ui.statusbar.showMessage("点击位置不在真实图像范围内，请重新点选。")
             return
+        if not self._sky_mask_allows_point(image_x, image_y):
+            message = "点击位置位于天空蒙版外，已拒绝把地景纹理作为星点。"
+            self.ui.statusbar.showMessage(message)
+            QMessageBox.warning(self, "星点已被蒙版拒绝", message)
+            return
 
-        image_radius_px = self._star_pick_psf_radius_px(viewport_pos)
+        search_radius_px = self._star_pick_search_radius_px(viewport_pos)
+        max_fit_radius_px = self._star_pick_psf_radius_px(viewport_pos)
         try:
             fitted_position = fit_star_position(
                 image,
                 click_x=image_x,
                 click_y=image_y,
-                radius_px=image_radius_px,
+                radius_px=search_radius_px,
+                max_fit_radius_px=max_fit_radius_px,
+                selection_mode="manual",
             )
         except Exception as exc:  # noqa: BLE001 - 交互式点选需要把拟合失败原因直接反馈给用户。
             self.ui.statusbar.showMessage(f"PSF 拟合失败: {exc}")
             QMessageBox.warning(self, "PSF 拟合失败", str(exc))
+            return
+        if not self._sky_mask_allows_point(fitted_position.x, fitted_position.y):
+            message = "检测到的 PSF 中心位于天空蒙版外，结果已拒绝。"
+            self.ui.statusbar.showMessage(message)
+            QMessageBox.warning(self, "PSF 已被蒙版拒绝", message)
             return
 
         row = self._active_star_pair_row
@@ -197,14 +209,17 @@ class AutoMatchMixin:
         self._add_or_update_star_pair_annotation(row, fitted_position)
         self._leave_star_pick_mode()
         self.ui.statusbar.showMessage(
-            "已记录 {name} 的图像坐标: x={x:.2f}, y={y:.2f}；拟合窗口半径 {radius} px，"
-            "PSF sigma=({sigma_x:.2f}, {sigma_y:.2f}) px。右键配对表行可继续点选。".format(
+            "已记录 {name} 的图像坐标: x={x:.2f}, y={y:.2f}；搜索半径 {search_radius} px，"
+            "PSF FWHM=({fwhm_x:.2f}, {fwhm_y:.2f}) px，质量={quality:.2f}{saturated}。"
+            "右键配对表行可继续点选。".format(
                 name=star_name,
                 x=fitted_position.x,
                 y=fitted_position.y,
-                radius=image_radius_px,
-                sigma_x=fitted_position.sigma_x,
-                sigma_y=fitted_position.sigma_y,
+                search_radius=search_radius_px,
+                fwhm_x=fitted_position.fwhm_x,
+                fwhm_y=fitted_position.fwhm_y,
+                quality=fitted_position.quality_score,
+                saturated="，饱和兼容拟合" if fitted_position.saturated else "",
             )
         )
 
@@ -215,34 +230,66 @@ class AutoMatchMixin:
         min_dimension = min(image.width(), image.height())
         radius = max(
             MIN_PSF_RADIUS_PX,
-            self.ui_config.star_pick_psf_max_radius_px,
-            int(round(transform.rms_px * AUTO_PAIR_RMS_RADIUS_SCALE + 6.0)),
+            int(
+                round(
+                    transform.rms_px * self.ui_config.auto_pair_search_rms_multiplier
+                    + self.ui_config.auto_pair_search_base_radius_px
+                )
+            ),
         )
-        return min(radius, AUTO_PAIR_MAX_SEARCH_RADIUS_PX, max(MIN_PSF_RADIUS_PX, min_dimension // 4))
+        return min(
+            radius,
+            self.ui_config.auto_pair_search_max_radius_px,
+            max(MIN_PSF_RADIUS_PX, min_dimension // 4),
+        )
 
-    def _auto_pair_star(self, row: int) -> None:
+    def _report_auto_pair_failure(
+        self,
+        message: str,
+        *,
+        silent_failure: bool,
+        dialog_title: str = "自动配对失败",
+        warning: bool = False,
+    ) -> bool:
+        """统一报告单星自动配对失败；双击联动模式只写状态栏。"""
+
+        self.ui.statusbar.showMessage(f"自动配对失败：{message}")
+        if not silent_failure:
+            if warning:
+                QMessageBox.warning(self, dialog_title, message)
+            else:
+                QMessageBox.information(self, dialog_title, message)
+        return False
+
+    def _auto_pair_star(self, row: int, *, silent_failure: bool = False) -> bool:
         if self.current_image_preview is None:
-            QMessageBox.information(self, "尚未导入图像", "请先导入真实图像，再自动配对星点。")
-            return
+            return self._report_auto_pair_failure(
+                "请先导入真实图像，再自动配对星点。",
+                silent_failure=silent_failure,
+                dialog_title="尚未导入图像",
+            )
 
         transform = self._sky_alignment_transform
         if transform is None:
             self._update_reference_alignment_transform()
             transform = self._sky_alignment_transform
         if transform is None:
-            QMessageBox.information(
-                self,
-                "无法自动配对",
+            return self._report_auto_pair_failure(
                 self._sky_alignment_error_message
                 or self._reference_alignment_error_message
                 or f"至少需要 {MIN_PRELIMINARY_ALIGNMENT_PAIRS} 对已配准参考星。",
+                silent_failure=silent_failure,
+                dialog_title="无法自动配对",
             )
-            return
 
         reference_star = self._reference_star_for_row(row)
         if reference_star is None:
-            QMessageBox.warning(self, "无法自动配对", "当前行没有对应的参考星。")
-            return
+            return self._report_auto_pair_failure(
+                "当前行没有对应的参考星。",
+                silent_failure=silent_failure,
+                dialog_title="无法自动配对",
+                warning=True,
+            )
 
         predicted_x, predicted_y = transform.transform_radec(reference_star.ra_deg, reference_star.dec_deg)
         image = self.current_image_preview.image
@@ -250,30 +297,39 @@ class AutoMatchMixin:
             self.ui.statusbar.showMessage(
                 f"{self._star_pair_label(row)} 的预测位置在真实图像外，无法自动配对。"
             )
-            return
+            return False
 
-        self._focus_star_pair_image_point(row, predicted_x, predicted_y)
+        search_radius_px = self._auto_pair_search_radius_px(transform)
+        self._focus_star_pair_image_point(row, predicted_x, predicted_y, search_radius_px)
         self.ui.statusbar.showMessage(
             f"已跳转到 {self._star_pair_label(row)} 的自动配对预测位置，正在搜索真实星点..."
         )
         QApplication.processEvents()
 
-        search_radius_px = self._auto_pair_search_radius_px(transform)
         try:
             fitted_position = fit_star_position(
                 image,
                 click_x=predicted_x,
                 click_y=predicted_y,
                 radius_px=search_radius_px,
+                max_fit_radius_px=self.ui_config.star_pick_psf_max_radius_px,
+                reject_ambiguous=True,
+                selection_mode="predicted",
             )
         except Exception as exc:  # noqa: BLE001 - 自动配对要把失败原因反馈给用户。
-            self.ui.statusbar.showMessage(f"自动配对失败: {exc}")
-            QMessageBox.warning(self, "自动配对失败", str(exc))
-            return
+            return self._report_auto_pair_failure(
+                str(exc),
+                silent_failure=silent_failure,
+                warning=True,
+            )
 
         distance_px = ((fitted_position.x - predicted_x) ** 2 + (fitted_position.y - predicted_y) ** 2) ** 0.5
         self._set_star_pair_position(row, fitted_position)
-        self._add_or_update_star_pair_annotation(row, fitted_position)
+        self._add_or_update_star_pair_annotation(
+            row,
+            fitted_position,
+            preserve_focus_annotation=True,
+        )
         self.ui.tableWidgetStarPairs.selectRow(row)
         self.ui.statusbar.showMessage(
             "{label} 自动配对完成: x={x:.2f}, y={y:.2f}；预测偏差 {distance:.2f} px，搜索半径 {radius} px。".format(
@@ -284,6 +340,7 @@ class AutoMatchMixin:
                 radius=search_radius_px,
             )
         )
+        return True
 
     def _auto_match_required_mag_limit(self) -> float:
         return max(
@@ -550,9 +607,14 @@ class AutoMatchMixin:
     def _existing_matched_positions(self) -> list[tuple[float, float]]:
         return [record.position for record in self._star_pair_store.snapshot()]
 
-    def _position_is_duplicate(self, position: tuple[float, float], accepted_positions: list[tuple[float, float]]) -> bool:
+    def _position_is_duplicate(
+        self,
+        position: tuple[float, float],
+        accepted_positions: list[tuple[float, float]],
+        minimum_distance_px: float = AUTO_MATCH_DUPLICATE_MIN_DISTANCE_PX,
+    ) -> bool:
         for accepted_x, accepted_y in accepted_positions:
-            if float(np.hypot(position[0] - accepted_x, position[1] - accepted_y)) < AUTO_MATCH_DUPLICATE_MIN_DISTANCE_PX:
+            if float(np.hypot(position[0] - accepted_x, position[1] - accepted_y)) < float(minimum_distance_px):
                 return True
         return False
 
@@ -607,17 +669,62 @@ class AutoMatchMixin:
         skipped_existing = 0
         skipped_mask = 0
         skipped_duplicate = 0
+        skipped_ambiguous = 0
         failed_count = 0
         canceled = False
         progress = QProgressDialog(self)
         progress.setWindowTitle("正在自动扩展匹配")
-        progress.setLabelText(f"正在对 {len(candidates)} 颗新增星做 PSF 拟合...")
-        progress.setRange(0, len(candidates))
+        progress.setLabelText(f"正在检测 {len(candidates)} 颗新增星附近的图像星源...")
+        progress.setRange(0, len(candidates) * 2)
         progress.setWindowModality(Qt.WindowModal)
         progress.setMinimumDuration(0)
         progress.setAutoClose(False)
         progress.setAutoReset(False)
         progress.show()
+        QApplication.processEvents()
+
+        detected_sources = []
+        for candidate_index, reference_star in enumerate(candidates, start=1):
+            if progress.wasCanceled():
+                canceled = True
+                break
+            if candidate_index == 1 or candidate_index % 10 == 0:
+                progress.setValue(candidate_index - 1)
+                QApplication.processEvents()
+            star_id = reference_star.star_id.strip()
+            predicted_position = predicted_by_id.get(star_id)
+            if predicted_position is None:
+                continue
+            predicted_x, predicted_y = predicted_position
+            if not self._sky_mask_allows_point(predicted_x, predicted_y):
+                self._mask_excluded_reference_star_ids.add(star_id)
+                skipped_mask += 1
+                continue
+            try:
+                nearby_sources = detect_star_candidates(
+                    image,
+                    click_x=predicted_x,
+                    click_y=predicted_y,
+                    radius_px=search_radius_px,
+                )
+            except Exception:
+                continue
+            detected_sources.extend(
+                source for source in nearby_sources if self._sky_mask_allows_point(source.x, source.y)
+            )
+
+        unique_sources = merge_source_candidates(detected_sources)
+        assignment = assign_predicted_sources(
+            {
+                star_id: position
+                for star_id, position in predicted_by_id.items()
+                if self._sky_mask_allows_point(position[0], position[1])
+            },
+            unique_sources,
+            search_radius_px=float(search_radius_px),
+        )
+        skipped_ambiguous = len(assignment.ambiguous_star_ids)
+        progress.setLabelText(f"正在对 {len(assignment.assignments)} 个一对一星源做 PSF 拟合...")
         QApplication.processEvents()
 
         table = self.ui.tableWidgetStarPairs
@@ -628,7 +735,7 @@ class AutoMatchMixin:
                     canceled = True
                     break
                 if candidate_index == 1 or candidate_index % 10 == 0:
-                    progress.setValue(candidate_index - 1)
+                    progress.setValue(len(candidates) + candidate_index - 1)
                     QApplication.processEvents()
 
                 star_id = reference_star.star_id.strip()
@@ -641,8 +748,10 @@ class AutoMatchMixin:
                     continue
 
                 predicted_position = predicted_by_id.get(star_id)
-                if predicted_position is None:
-                    failed_count += 1
+                assigned_source = assignment.assignments.get(star_id)
+                if predicted_position is None or assigned_source is None:
+                    if star_id not in assignment.ambiguous_star_ids and star_id not in self._mask_excluded_reference_star_ids:
+                        failed_count += 1
                     continue
                 predicted_x, predicted_y = predicted_position
                 if not self._sky_mask_allows_point(predicted_x, predicted_y):
@@ -651,11 +760,20 @@ class AutoMatchMixin:
                     continue
 
                 try:
+                    source_fit_search_radius = max(
+                        MIN_PSF_RADIUS_PX,
+                        min(
+                            self.ui_config.star_pick_psf_max_radius_px,
+                            int(math.ceil(assigned_source.major_axis * 2.8)),
+                        ),
+                    )
                     fitted_position = fit_star_position(
                         image,
-                        click_x=predicted_x,
-                        click_y=predicted_y,
-                        radius_px=search_radius_px,
+                        click_x=assigned_source.x,
+                        click_y=assigned_source.y,
+                        radius_px=source_fit_search_radius,
+                        max_fit_radius_px=self.ui_config.star_pick_psf_max_radius_px,
+                        selection_mode="manual",
                     )
                 except Exception:
                     failed_count += 1
@@ -670,7 +788,11 @@ class AutoMatchMixin:
                     skipped_mask += 1
                     continue
                 fitted_xy = (float(fitted_position.x), float(fitted_position.y))
-                if self._position_is_duplicate(fitted_xy, accepted_positions):
+                duplicate_radius = max(
+                    AUTO_MATCH_DUPLICATE_MIN_DISTANCE_PX,
+                    min(24.0, max(fitted_position.fwhm_x, fitted_position.fwhm_y) * 0.65),
+                )
+                if self._position_is_duplicate(fitted_xy, accepted_positions, duplicate_radius):
                     skipped_duplicate += 1
                     continue
 
@@ -681,7 +803,7 @@ class AutoMatchMixin:
                 matched_count += 1
         finally:
             table.blockSignals(signals_were_blocked)
-            progress.setValue(len(candidates))
+            progress.setValue(len(candidates) * 2)
             progress.close()
 
         self._remove_unmatched_auto_match_candidates(candidate_star_ids)
@@ -694,13 +816,14 @@ class AutoMatchMixin:
             mask_status = f"蒙版预筛 {mask_prefiltered_count} 个视场星点，拟合后落入蒙版 {skipped_mask}"
         self.ui.statusbar.showMessage(
             "{status_prefix}：{group_name} 本次新增 {candidate_count}，配对成功 {matched_count}，已有 {skipped_existing}，"
-            "{mask_status}，重复跳过 {skipped_duplicate}，失败 {failed_count}。".format(
+            "{mask_status}，歧义跳过 {skipped_ambiguous}，重复跳过 {skipped_duplicate}，失败 {failed_count}。".format(
                 status_prefix=status_prefix,
                 group_name=self._auto_match_group_label(auto_group_id),
                 candidate_count=len(candidates),
                 matched_count=matched_count,
                 skipped_existing=skipped_existing,
                 mask_status=mask_status,
+                skipped_ambiguous=skipped_ambiguous,
                 skipped_duplicate=skipped_duplicate,
                 failed_count=failed_count,
             )

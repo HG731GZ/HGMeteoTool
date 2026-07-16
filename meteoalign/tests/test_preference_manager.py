@@ -108,6 +108,32 @@ def test_mosaic_display_scales_and_search_radii_have_independent_defaults(tmp_pa
     assert config.sequence_psf_search_radius_px == 30
 
 
+def test_psf_interaction_preferences_are_loaded_and_bounded(tmp_path: Path) -> None:
+    """单星自动配对搜索公式和 PSF 外圈倍率都应从配置读取并限制安全范围。"""
+
+    preference_path = tmp_path / "preference.json"
+    preference_path.write_text(
+        """
+        {
+          "star_pair_psf_outer_diameter_multiplier": 20.0,
+          "auto_pair_search_rms_multiplier": -1.0,
+          "auto_pair_search_base_radius_px": 23,
+          "auto_pair_search_max_radius_px": 9999,
+          "double_click_focus_auto_pair_enabled": true
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    config = load_star_map_ui_config(preference_path)
+
+    assert config.star_pair_psf_outer_diameter_multiplier == 10.0
+    assert config.auto_pair_search_rms_multiplier == 0.0
+    assert config.auto_pair_search_base_radius_px == 23
+    assert config.auto_pair_search_max_radius_px == 2000
+    assert config.double_click_focus_auto_pair_enabled is True
+
+
 def test_adjacent_alignment_hyperparameters_are_loaded_and_bounded(tmp_path: Path) -> None:
     """相邻图像两种配准模式都应从 preference.json 获取超参数并限制有效范围。"""
 

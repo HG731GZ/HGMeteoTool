@@ -66,6 +66,7 @@ class StarPairTableMixin(
     _update_star_pair_table: object  # 方法
     _auto_pair_star: object  # 方法
     _refresh_star_pair_mode_cell: object  # 方法
+    _refresh_star_pair_quality_cell: object  # 方法
     _make_star_pair_table_item: object  # 方法
     _sync_star_pair_annotations_to_table: object  # 方法
     _refresh_star_pair_table_styles: object  # 方法
