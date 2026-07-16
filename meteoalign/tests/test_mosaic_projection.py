@@ -8,7 +8,12 @@ import numpy as np
 
 from meteoalign.alignment.constants import SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT
 from meteoalign.application.app_reference_json_io import ReferenceJsonIOMixin
-from meteoalign.application.app_mosaic import MosaicProjectionMixin, MosaicSourceItem
+from meteoalign.application.app_mosaic import (
+    MOSAIC_PREVIEW_MAG_LIMIT,
+    MOSAIC_PREVIEW_SHOW_GRID,
+    MosaicProjectionMixin,
+    MosaicSourceItem,
+)
 from meteoalign.mosaic.render_coordinator import MosaicRenderCoordinator
 from meteoalign.mosaic_framing import MOSAIC_FRAMING_SCHEMA
 from meteoalign.mosaic_common import (
@@ -162,11 +167,10 @@ def test_mosaic_model_defaults_keep_projection_for_free_anchor_models() -> None:
     assert window.ui.comboBoxMosaicProjection.currentIndex() == 0
 
 
-def test_mosaic_sky_preview_uses_independent_font_and_star_scales() -> None:
-    """全景构图必须把独立字号和星点比例传给天空渲染服务。"""
+def test_mosaic_sky_preview_uses_fixed_grid_and_mag_limit() -> None:
+    """全景构图应固定显示网格并使用 6.5 等星等上限。"""
 
     window = SimpleNamespace(
-        ui=SimpleNamespace(checkBoxMosaicShowGrid=_CheckBox(True)),
         ui_config=SimpleNamespace(
             mosaic_font_size_multiplier=0.45,
             mosaic_star_marker_size_multiplier=0.6,
@@ -179,6 +183,8 @@ def test_mosaic_sky_preview_uses_independent_font_and_star_scales() -> None:
     assert style.star_radius_scale == 0.6
     assert style.draw_grid
     assert style.draw_direction_labels
+    assert MOSAIC_PREVIEW_SHOW_GRID is True
+    assert MOSAIC_PREVIEW_MAG_LIMIT == 6.5
 
 
 def test_mosaic_texture_long_side_uses_lower_limit_and_interaction_half() -> None:

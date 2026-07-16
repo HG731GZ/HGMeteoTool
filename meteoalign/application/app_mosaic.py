@@ -102,6 +102,10 @@ MOSAIC_SOURCE_FILE_COLUMN = 1
 MOSAIC_SOURCE_PROJECTION_COLUMN = 2
 MOSAIC_SOURCE_METEOR_COLUMN = 3
 
+# 全景构图预览使用固定星等范围并始终显示天球网格。
+MOSAIC_PREVIEW_MAG_LIMIT = 6.5
+MOSAIC_PREVIEW_SHOW_GRID = True
+
 
 # 保留旧名称，方便现有调用方和插件在状态迁移期间继续使用。
 MosaicSourceItem = MosaicSourceState
@@ -324,7 +328,6 @@ class MosaicProjectionMixin:
             self.ui.doubleSpinBoxMosaicAlt.setValue(self._mosaic_center_alt_deg)
         if hasattr(self.ui, "doubleSpinBoxMosaicRoll"):
             self.ui.doubleSpinBoxMosaicRoll.setValue(self._mosaic_roll_deg)
-        self.ui.doubleSpinBoxMosaicMagLimit.setValue(6.5)
         if hasattr(self.ui, "comboBoxMosaicOverlayMode"):
             self.ui.comboBoxMosaicOverlayMode.setCurrentIndex(0)
         if hasattr(self.ui, "checkBoxMosaicSkyOnly"):
@@ -408,8 +411,6 @@ class MosaicProjectionMixin:
             self.ui.doubleSpinBoxMosaicAlt.valueChanged.connect(self._handle_mosaic_view_controls_changed)
         if hasattr(self.ui, "doubleSpinBoxMosaicRoll"):
             self.ui.doubleSpinBoxMosaicRoll.valueChanged.connect(self._handle_mosaic_view_controls_changed)
-        self.ui.doubleSpinBoxMosaicMagLimit.valueChanged.connect(self.schedule_mosaic_render)
-        self.ui.checkBoxMosaicShowGrid.toggled.connect(self.schedule_mosaic_render)
         if hasattr(self.ui, "checkBoxMosaicShowCoverage"):
             self.ui.checkBoxMosaicShowCoverage.toggled.connect(self.schedule_mosaic_render)
         if hasattr(self.ui, "comboBoxMosaicOverlayMode"):
@@ -2135,7 +2136,6 @@ class MosaicProjectionMixin:
     def _mosaic_sky_preview_style(self) -> SkyPreviewStyle:
         """构建全景构图专用的文字与星点缩放样式。"""
 
-        show_grid = self.ui.checkBoxMosaicShowGrid.isChecked()
         font_scale = float(getattr(self.ui_config, "mosaic_font_size_multiplier", 0.5))
         star_scale = float(getattr(self.ui_config, "mosaic_star_marker_size_multiplier", 0.5))
         return SkyPreviewStyle(
@@ -2143,9 +2143,9 @@ class MosaicProjectionMixin:
             number_reference_stars=False,
             draw_background=True,
             draw_horizon_shadow=True,
-            draw_grid=show_grid,
+            draw_grid=MOSAIC_PREVIEW_SHOW_GRID,
             draw_solar_system_labels=True,
-            draw_direction_labels=show_grid,
+            draw_direction_labels=MOSAIC_PREVIEW_SHOW_GRID,
             font_scale=max(0.1, min(2.0, font_scale)),
             star_radius_scale=max(0.1, min(2.0, star_scale)),
         )
@@ -2164,7 +2164,7 @@ class MosaicProjectionMixin:
         try:
             camera = self._mosaic_camera_for_render(width, height)
             view = self._mosaic_view_settings(camera)
-            mag_limit = float(self.ui.doubleSpinBoxMosaicMagLimit.value())
+            mag_limit = MOSAIC_PREVIEW_MAG_LIMIT
             scene = None
             if observer is not None:
                 horizontal_catalog = self._get_horizontal_catalog(observer, mag_limit)

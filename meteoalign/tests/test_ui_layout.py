@@ -161,6 +161,55 @@ def test_star_matching_side_panel_has_no_horizontal_scroll_range() -> None:
     window.close()
 
 
+def test_adjacent_framing_controls_are_compact_aligned_and_not_clipped() -> None:
+    """参考图像控件应保持同行对齐，且窄侧栏中的长文本按钮不得被裁切。"""
+
+    app = QApplication.instance() or QApplication([])
+    window = QMainWindow()
+    ui = Ui_MainWindow()
+    ui.setupUi(window)
+    ui.scrollAreaReferencePickControls.setMaximumWidth(350)
+    window.resize(1280, 820)
+    ui.tabWidgetMain.setCurrentWidget(ui.tabReferenceImage)
+    window.show()
+    app.processEvents()
+
+    assert ui.horizontalLayoutReferenceImage.spacing() == 6
+    assert ui.verticalLayoutReferencePickSidePanel.spacing() == 6
+    assert ui.verticalLayoutImportedImage.spacing() == 6
+    assert ui.verticalLayoutAdjacentImageFraming.spacing() == 6
+    assert ui.formLayoutAdjacentImageFraming.horizontalSpacing() == 6
+    assert ui.formLayoutAdjacentImageFraming.verticalSpacing() == 6
+    assert ui.formLayoutAdjacentImageFraming.rowWrapPolicy() == QFormLayout.DontWrapRows
+    assert ui.horizontalLayoutAdjacentImageInfo.spacing() == 6
+    assert ui.gridLayoutAdjacentImageFramingButtons.horizontalSpacing() == 6
+    assert ui.gridLayoutAdjacentImageFramingButtons.verticalSpacing() == 6
+    assert ui.groupBoxImportedImage.height() >= ui.groupBoxImportedImage.minimumSizeHint().height()
+
+    aligned_controls = (
+        ui.labelAdjacentImageModelTitle,
+        ui.labelAdjacentImageModel,
+        ui.pushButtonPreviewAdjacentImage,
+    )
+    control_centers = [
+        control.mapTo(ui.groupBoxAdjacentImageFraming, control.rect().center()).y()
+        for control in aligned_controls
+    ]
+    assert max(control_centers) - min(control_centers) <= 1
+    assert ui.labelAdjacentImageModel.width() >= ui.labelAdjacentImageModel.sizeHint().width()
+    assert ui.pushButtonPreviewAdjacentImage.width() >= ui.pushButtonPreviewAdjacentImage.sizeHint().width()
+    assert ui.pushButtonPreviewAdjacentImage.height() >= ui.pushButtonPreviewAdjacentImage.sizeHint().height()
+
+    for button in (
+        ui.pushButtonImportAdjacentImage,
+        ui.pushButtonCalculateAdjacentFraming,
+    ):
+        assert button.width() >= button.sizeHint().width()
+        assert button.fontMetrics().horizontalAdvance(button.text()) < button.contentsRect().width()
+
+    window.close()
+
+
 def test_star_pair_assistant_owns_moved_controls_and_uses_normal_window_layer() -> None:
     """匹配控件应位于窄幅普通顶层窗口，并可绑定给主窗口业务层使用。"""
 
@@ -213,6 +262,22 @@ def test_horizontal_import_export_buttons_use_consistent_order() -> None:
 
     assert ui.horizontalLayoutMosaicFramingIo.itemAt(0).widget() is ui.pushButtonImportMosaicFraming
     assert ui.horizontalLayoutMosaicFramingIo.itemAt(1).widget() is ui.pushButtonExportMosaicFraming
+
+    window.close()
+
+
+def test_mosaic_projection_omits_fixed_preview_controls() -> None:
+    """全景构图不应再显示已固定的极限星等和网格开关。"""
+
+    app = QApplication.instance() or QApplication([])
+    window = QMainWindow()
+    ui = Ui_MainWindow()
+    ui.setupUi(window)
+
+    assert not hasattr(ui, "labelMosaicMagLimit")
+    assert not hasattr(ui, "doubleSpinBoxMosaicMagLimit")
+    assert not hasattr(ui, "checkBoxMosaicShowGrid")
+    assert ui.formLayoutMosaicProjection.itemAt(5, QFormLayout.LabelRole).widget() is ui.labelMosaicGridPrecision
 
     window.close()
 

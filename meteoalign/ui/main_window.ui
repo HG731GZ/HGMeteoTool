@@ -1384,6 +1384,21 @@
         <string>星点匹配</string>
        </attribute>
        <layout class="QHBoxLayout" name="horizontalLayoutReferenceImage">
+        <property name="spacing">
+         <number>6</number>
+        </property>
+        <property name="leftMargin">
+         <number>9</number>
+        </property>
+        <property name="topMargin">
+         <number>9</number>
+        </property>
+        <property name="rightMargin">
+         <number>9</number>
+        </property>
+        <property name="bottomMargin">
+         <number>9</number>
+        </property>
         <item>
          <widget class="QScrollArea" name="scrollAreaReferencePickControls">
           <property name="minimumSize">
@@ -1420,25 +1435,58 @@
             </sizepolicy>
            </property>
           <layout class="QVBoxLayout" name="verticalLayoutReferencePickSidePanel">
+           <property name="spacing">
+            <number>6</number>
+           </property>
+           <property name="leftMargin">
+            <number>9</number>
+           </property>
+           <property name="topMargin">
+            <number>9</number>
+           </property>
+           <property name="rightMargin">
+            <number>9</number>
+           </property>
+           <property name="bottomMargin">
+            <number>9</number>
+           </property>
            <item>
             <widget class="QGroupBox" name="groupBoxImportedImage">
              <property name="title">
               <string>图像导入</string>
              </property>
-             <property name="maximumSize">
-              <size>
-               <width>16777215</width>
-               <height>480</height>
-              </size>
-             </property>
              <layout class="QVBoxLayout" name="verticalLayoutImportedImage">
+              <property name="spacing">
+               <number>6</number>
+              </property>
+              <property name="leftMargin">
+               <number>9</number>
+              </property>
+              <property name="topMargin">
+               <number>9</number>
+              </property>
+              <property name="rightMargin">
+               <number>9</number>
+              </property>
+              <property name="bottomMargin">
+               <number>9</number>
+              </property>
               <item>
                <layout class="QFormLayout" name="formLayoutImportedImage">
                 <property name="fieldGrowthPolicy">
                  <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
                 </property>
+                <property name="rowWrapPolicy">
+                 <enum>QFormLayout::DontWrapRows</enum>
+                </property>
                 <property name="labelAlignment">
                  <set>Qt::AlignLeft|Qt::AlignVCenter</set>
+                </property>
+                <property name="horizontalSpacing">
+                 <number>6</number>
+                </property>
+                <property name="verticalSpacing">
+                 <number>6</number>
                 </property>
                 <item row="0" column="0">
                  <widget class="QLabel" name="labelImportedImagePathTitle">
@@ -1568,6 +1616,9 @@
               </item>
               <item>
                <layout class="QHBoxLayout" name="horizontalLayoutImageImportButtons">
+                <property name="spacing">
+                 <number>6</number>
+                </property>
                 <item>
                  <widget class="QPushButton" name="pushButtonImportImages">
                   <property name="text">
@@ -1586,6 +1637,9 @@
               </item>
               <item>
                <layout class="QHBoxLayout" name="horizontalLayoutSkyMaskButtons">
+                <property name="spacing">
+                 <number>6</number>
+                </property>
                 <item>
                  <widget class="QPushButton" name="pushButtonImportSkyMask">
                   <property name="text">
@@ -1607,8 +1661,17 @@
                 <property name="fieldGrowthPolicy">
                  <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
                 </property>
+                <property name="rowWrapPolicy">
+                 <enum>QFormLayout::DontWrapRows</enum>
+                </property>
                 <property name="labelAlignment">
                  <set>Qt::AlignLeft|Qt::AlignVCenter</set>
+                </property>
+                <property name="horizontalSpacing">
+                 <number>6</number>
+                </property>
+                <property name="verticalSpacing">
+                 <number>6</number>
                 </property>
                 <item row="0" column="0">
                  <widget class="QLabel" name="labelProfileSolveMode">
@@ -1644,23 +1707,53 @@
                  <string>参考图像粗略取景</string>
                 </property>
                 <layout class="QVBoxLayout" name="verticalLayoutAdjacentImageFraming">
+                 <property name="spacing">
+                  <number>6</number>
+                 </property>
+                 <property name="leftMargin">
+                  <number>9</number>
+                 </property>
+                 <property name="topMargin">
+                  <number>9</number>
+                 </property>
+                 <property name="rightMargin">
+                  <number>9</number>
+                 </property>
+                 <property name="bottomMargin">
+                  <number>9</number>
+                 </property>
                  <item>
                   <layout class="QFormLayout" name="formLayoutAdjacentImageFraming">
                    <property name="fieldGrowthPolicy">
                     <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
                    </property>
+                   <property name="rowWrapPolicy">
+                    <enum>QFormLayout::DontWrapRows</enum>
+                   </property>
                    <property name="labelAlignment">
                     <set>Qt::AlignLeft|Qt::AlignVCenter</set>
+                   </property>
+                   <property name="horizontalSpacing">
+                    <number>6</number>
+                   </property>
+                   <property name="verticalSpacing">
+                    <number>6</number>
                    </property>
                    <item row="0" column="0">
                     <widget class="QLabel" name="labelAdjacentImageModelTitle">
                      <property name="text">
                       <string>参考图像</string>
                      </property>
+                     <property name="alignment">
+                      <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
+                     </property>
                     </widget>
                    </item>
                    <item row="0" column="1">
                     <layout class="QHBoxLayout" name="horizontalLayoutAdjacentImageInfo">
+                     <property name="spacing">
+                      <number>6</number>
+                     </property>
                      <item>
                       <widget class="QLabel" name="labelAdjacentImageModel">
                        <property name="sizePolicy">
@@ -1675,15 +1768,21 @@
                        <property name="wordWrap">
                         <bool>false</bool>
                        </property>
+                       <property name="alignment">
+                        <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
+                       </property>
                       </widget>
                      </item>
-                     <item>
-                      <widget class="QPushButton" name="pushButtonPreviewAdjacentImage">
+                     <item alignment="Qt::AlignVCenter">
+                      <widget class="QToolButton" name="pushButtonPreviewAdjacentImage">
                        <property name="enabled">
                         <bool>false</bool>
                        </property>
                        <property name="text">
                         <string>预览</string>
+                       </property>
+                       <property name="toolButtonStyle">
+                        <enum>Qt::ToolButtonTextOnly</enum>
                        </property>
                       </widget>
                      </item>
@@ -1693,6 +1792,9 @@
                     <widget class="QLabel" name="labelAdjacentAlignmentMode">
                      <property name="text">
                       <string>工作模式</string>
+                     </property>
+                     <property name="alignment">
+                      <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
                      </property>
                     </widget>
                    </item>
@@ -1715,6 +1817,9 @@
                      <property name="text">
                       <string>粗略取景</string>
                      </property>
+                     <property name="alignment">
+                      <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
+                     </property>
                     </widget>
                    </item>
                    <item row="2" column="1">
@@ -1731,20 +1836,29 @@
                      <property name="wordWrap">
                       <bool>false</bool>
                      </property>
+                     <property name="alignment">
+                      <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
+                     </property>
                     </widget>
                    </item>
                   </layout>
                  </item>
                  <item>
-                  <layout class="QHBoxLayout" name="horizontalLayoutAdjacentImageFramingButtons">
-                   <item>
+                  <layout class="QGridLayout" name="gridLayoutAdjacentImageFramingButtons">
+                   <property name="horizontalSpacing">
+                    <number>6</number>
+                   </property>
+                   <property name="verticalSpacing">
+                    <number>6</number>
+                   </property>
+                   <item row="0" column="0">
                     <widget class="QPushButton" name="pushButtonImportAdjacentImage">
                      <property name="text">
                       <string>导入参考图像</string>
                      </property>
                     </widget>
                    </item>
-                   <item>
+                   <item row="0" column="1">
                     <widget class="QPushButton" name="pushButtonSelectAdjacentImageFromGroup">
                      <property name="enabled">
                       <bool>false</bool>
@@ -1754,7 +1868,7 @@
                      </property>
                     </widget>
                    </item>
-                   <item>
+                   <item row="1" column="0">
                     <widget class="QPushButton" name="pushButtonCalculateAdjacentFraming">
                      <property name="enabled">
                       <bool>false</bool>
@@ -1764,25 +1878,13 @@
                      </property>
                     </widget>
                    </item>
-                   <item>
+                   <item row="1" column="1">
                     <widget class="QPushButton" name="toolButtonAdjacentAlignmentSettings">
                      <property name="toolTip">
                       <string>调整当前工作模式的粗略取景参数</string>
                      </property>
                      <property name="accessibleName">
                       <string>粗略取景参数设置</string>
-                     </property>
-                     <property name="minimumSize">
-                      <size>
-                       <width>56</width>
-                       <height>0</height>
-                      </size>
-                     </property>
-                     <property name="maximumSize">
-                      <size>
-                       <width>56</width>
-                       <height>16777215</height>
-                      </size>
                      </property>
                      <property name="text">
                       <string>设定</string>
@@ -1799,6 +1901,9 @@
            </item>
            <item>
             <layout class="QHBoxLayout" name="horizontalLayoutMatchingAssistants">
+             <property name="spacing">
+              <number>6</number>
+             </property>
              <item>
               <widget class="QPushButton" name="pushButtonOpenImageGroupAssistant">
                <property name="enabled">
@@ -2674,39 +2779,13 @@
                   </widget>
                  </item>
                  <item row="5" column="0">
-                  <widget class="QLabel" name="labelMosaicMagLimit">
-                   <property name="text">
-                    <string>极限星等</string>
-                   </property>
-                  </widget>
-                 </item>
-                 <item row="5" column="1">
-                  <widget class="QDoubleSpinBox" name="doubleSpinBoxMosaicMagLimit">
-                   <property name="decimals">
-                    <number>1</number>
-                   </property>
-                   <property name="minimum">
-                    <double>-2.000000000000000</double>
-                   </property>
-                   <property name="maximum">
-                    <double>9.000000000000000</double>
-                   </property>
-                   <property name="singleStep">
-                    <double>0.500000000000000</double>
-                   </property>
-                   <property name="value">
-                    <double>6.500000000000000</double>
-                   </property>
-                  </widget>
-                 </item>
-                 <item row="6" column="0">
                   <widget class="QLabel" name="labelMosaicGridPrecision">
                    <property name="text">
                     <string>贴图网格</string>
                    </property>
                   </widget>
                  </item>
-                 <item row="6" column="1">
+                 <item row="5" column="1">
                   <layout class="QHBoxLayout" name="horizontalLayoutMosaicGridPrecision">
                    <item>
                     <widget class="QSpinBox" name="spinBoxMosaicGridPrecision">
@@ -2732,20 +2811,6 @@
                     </widget>
                    </item>
                   </layout>
-                 </item>
-                </layout>
-               </item>
-               <item>
-                <layout class="QHBoxLayout" name="horizontalLayoutMosaicToggles">
-                 <item>
-                  <widget class="QCheckBox" name="checkBoxMosaicShowGrid">
-                   <property name="text">
-                    <string>网格</string>
-                   </property>
-                   <property name="checked">
-                    <bool>true</bool>
-                   </property>
-                  </widget>
                  </item>
                 </layout>
                </item>

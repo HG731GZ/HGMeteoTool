@@ -80,12 +80,22 @@ def test_adjacent_image_controls_have_required_text_and_order() -> None:
     assert ui.horizontalLayoutAdjacentImageInfo.itemAt(1).widget() is ui.pushButtonPreviewAdjacentImage
     assert ui.pushButtonPreviewAdjacentImage.text() == "预览"
     assert not ui.pushButtonPreviewAdjacentImage.isEnabled()
-    assert ui.horizontalLayoutAdjacentImageFramingButtons.itemAt(0).widget() is ui.pushButtonImportAdjacentImage
     assert (
-        ui.horizontalLayoutAdjacentImageFramingButtons.itemAt(1).widget()
+        ui.gridLayoutAdjacentImageFramingButtons.itemAtPosition(0, 0).widget()
+        is ui.pushButtonImportAdjacentImage
+    )
+    assert (
+        ui.gridLayoutAdjacentImageFramingButtons.itemAtPosition(0, 1).widget()
         is ui.pushButtonSelectAdjacentImageFromGroup
     )
-    assert ui.horizontalLayoutAdjacentImageFramingButtons.itemAt(2).widget() is ui.pushButtonCalculateAdjacentFraming
+    assert (
+        ui.gridLayoutAdjacentImageFramingButtons.itemAtPosition(1, 0).widget()
+        is ui.pushButtonCalculateAdjacentFraming
+    )
+    assert (
+        ui.gridLayoutAdjacentImageFramingButtons.itemAtPosition(1, 1).widget()
+        is ui.toolButtonAdjacentAlignmentSettings
+    )
     assert ui.pushButtonImportAdjacentImage.text() == "导入参考图像"
     assert ui.pushButtonSelectAdjacentImageFromGroup.text() == "从组中选取"
     assert not ui.pushButtonSelectAdjacentImageFromGroup.isEnabled()
