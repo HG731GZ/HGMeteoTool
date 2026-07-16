@@ -6,17 +6,20 @@ from pathlib import Path
 
 from PyQt5.QtCore import QRectF, QTimer, Qt
 from PyQt5.QtGui import QPixmap
-from PyQt5.QtWidgets import QDialog, QGraphicsScene, QWidget
+from PyQt5.QtWidgets import QDialog, QGraphicsScene
 
 from ..image_preview import ImagePreview
 from ..ui.ui_image_preview_dialog import Ui_ImagePreviewDialog
 
 
 class ImagePreviewDialog(QDialog):
-    """在非模态窗口中显示并刷新任意图像预览。"""
+    """在应用级独立窗口中显示并刷新任意图像预览。"""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
+    def __init__(self) -> None:
+        super().__init__(None)
+        # 使用正常顶层窗口类型，确保预览不从属于呼出它的对话框并可显示在任务栏。
+        window_flags = (self.windowFlags() & ~Qt.WindowType_Mask) | Qt.Window
+        self.setWindowFlags(window_flags)
         self.ui = Ui_ImagePreviewDialog()
         self.ui.setupUi(self)
         self.setModal(False)

@@ -8,6 +8,15 @@ from PyQt5.QtWidgets import QMessageBox
 class ImageGroupMixin:
     """多图导入后的图像组列表、切换确认与状态同步。"""
 
+    def _image_group_dialogs(self) -> tuple[object, ...]:
+        """返回需要同步图像路径与文件状态的图像组窗口。"""
+
+        dialogs = [self.image_group_assistant]
+        reference_dialog = getattr(self, "image_group_reference_dialog", None)
+        if reference_dialog is not None:
+            dialogs.append(reference_dialog)
+        return tuple(dialogs)
+
     def _show_image_group_assistant(self) -> None:
         """显示单实例非模态图像组助手，并将已有窗口提到前台。"""
 
@@ -40,19 +49,18 @@ class ImageGroupMixin:
 
         normalized = self._normalized_image_group_paths(image_paths)
         self._image_group_paths = normalized if len(normalized) > 1 else ()
-        self.image_group_assistant.set_image_paths(self._image_group_paths)
+        for dialog in self._image_group_dialogs():
+            dialog.set_image_paths(self._image_group_paths)
         if not self._image_group_paths:
-            self.image_group_assistant.close()
+            for dialog in self._image_group_dialogs():
+                dialog.close()
         self._update_image_group_controls()
         return normalized
 
     def _reset_image_group_status(self) -> None:
         """清除图像组，使星点匹配页恢复单图模式。"""
 
-        self._image_group_paths = ()
-        self.image_group_assistant.set_image_paths(())
-        self.image_group_assistant.close()
-        self._update_image_group_controls()
+        self._set_image_group_paths(())
 
     def _image_group_mode_active(self) -> bool:
         sequence_mode = bool(hasattr(self, "_sequence_mode_active") and self._sequence_mode_active())
@@ -82,7 +90,8 @@ class ImageGroupMixin:
         self.image_group_assistant.set_current_image(image_path)
 
     def _refresh_image_group_assistant_status(self) -> None:
-        self.image_group_assistant.refresh_file_statuses()
+        for dialog in self._image_group_dialogs():
+            dialog.refresh_file_statuses()
         self._sync_image_group_current_image()
 
     def _current_image_group_output_paths(self) -> tuple[Path, Path] | None:

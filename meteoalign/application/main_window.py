@@ -118,7 +118,8 @@ from .app_utils import (
     _image_with_binary_mask,
 )
 from .preferences_dialog import PreferencesDialog, PreferencesLauncher
-from .image_group_assistant_dialog import ImageGroupAssistantDialog
+from .image_group_assistant_dialog import ImageGroupAssistantDialog, ImageGroupReferenceDialog
+from .image_preview_dialog import ImagePreviewDialog
 from .star_pair_assistant_dialog import StarPairAssistantDialog
 
 # ---------------------------------------------------------------------------
@@ -246,7 +247,9 @@ class MainWindow(
         # 匹配控件实际位于独立窗口；同名接口仍挂在主 UI 上，供各业务模块共享。
         self.star_pair_assistant = StarPairAssistantDialog()
         self.star_pair_assistant.bind_controls_to(self.ui)
-        self.image_group_assistant = ImageGroupAssistantDialog()
+        self.image_preview_dialog = ImagePreviewDialog()
+        self.image_group_assistant = ImageGroupAssistantDialog(self.image_preview_dialog)
+        self.image_group_reference_dialog = ImageGroupReferenceDialog(self.image_preview_dialog)
         self.ui_config = load_star_map_ui_config()
         self._apply_ui_font_config(self.ui_config)
 
@@ -337,7 +340,6 @@ class MainWindow(
         self._adjacent_framing_progress: QProgressDialog | None = None
         self._adjacent_image_path: Path | None = None
         self._adjacent_model_json_path: Path | None = None
-        self._adjacent_image_preview_dialog: object | None = None
         self._adjacent_framing_result = None
         self._rough_alignment_transform = None
         self._rough_source_astrometric_model = None
@@ -494,6 +496,10 @@ class MainWindow(
         self.ui.pushButtonImportImages.clicked.connect(self.import_images)
         if hasattr(self.ui, "pushButtonImportAdjacentImage"):
             self.ui.pushButtonImportAdjacentImage.clicked.connect(self.import_adjacent_image)
+        if hasattr(self.ui, "pushButtonSelectAdjacentImageFromGroup"):
+            self.ui.pushButtonSelectAdjacentImageFromGroup.clicked.connect(
+                self.show_adjacent_reference_from_group
+            )
         if hasattr(self.ui, "pushButtonPreviewAdjacentImage"):
             self.ui.pushButtonPreviewAdjacentImage.clicked.connect(self.show_adjacent_image_preview)
         if hasattr(self.ui, "pushButtonCalculateAdjacentFraming"):
@@ -520,6 +526,9 @@ class MainWindow(
         self.ui.pushButtonClearStarPairs.clicked.connect(self.clear_all_star_pair_positions)
         self.ui.pushButtonOpenImageGroupAssistant.clicked.connect(self._show_image_group_assistant)
         self.image_group_assistant.image_activated.connect(self._handle_image_group_image_activated)
+        self.image_group_reference_dialog.image_activated.connect(
+            self._handle_adjacent_reference_from_group_activated
+        )
         self.ui.pushButtonOpenStarPairAssistant.clicked.connect(self._show_star_pair_assistant)
         self.ui.pushButtonImportSkyMask.clicked.connect(self.import_sky_mask)
         self.ui.pushButtonClearSkyMask.clicked.connect(self.clear_sky_mask)
@@ -595,9 +604,8 @@ class MainWindow(
             self.preferences_dialog.close()
             self.star_pair_assistant.close()
             self.image_group_assistant.close()
-            adjacent_preview = getattr(self, "_adjacent_image_preview_dialog", None)
-            if adjacent_preview is not None:
-                adjacent_preview.close()
+            self.image_group_reference_dialog.close()
+            self.image_preview_dialog.close()
             self._shutdown_meteor_detection_worker()
 
     def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]

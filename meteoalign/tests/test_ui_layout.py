@@ -10,6 +10,7 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import QEvent, Qt
+from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import QApplication, QFormLayout, QHeaderView, QMainWindow, QSizePolicy, QTableWidget
 
 from meteoalign.application.app_sequence_table_preview import SequenceTablePreviewMixin
@@ -115,6 +116,47 @@ def test_dynamic_information_labels_are_not_collapsed_by_layout() -> None:
     value_label = ui.formLayoutImportedImage.itemAt(0, QFormLayout.FieldRole).widget()
     assert title_label.x() < value_label.x()
     assert value_label.width() > title_label.width()
+
+    window.close()
+
+
+def test_star_matching_side_panel_has_no_horizontal_scroll_range() -> None:
+    """星点匹配左栏在较宽字体下也必须适配原宽度，并且只能纵向滚动。"""
+
+    app = QApplication.instance() or QApplication([])
+    window = QMainWindow()
+    ui = Ui_MainWindow()
+    ui.setupUi(window)
+    enlarged_font = QFont(ui.widgetReferencePickSidePanel.font())
+    enlarged_font.setPointSize(15)
+    ui.widgetReferencePickSidePanel.setFont(enlarged_font)
+    window.resize(1280, 820)
+    ui.tabWidgetMain.setCurrentWidget(ui.tabReferenceImage)
+    window.show()
+    app.processEvents()
+
+    scroll_area = ui.scrollAreaReferencePickControls
+    side_panel = ui.widgetReferencePickSidePanel
+    horizontal_bar = scroll_area.horizontalScrollBar()
+    assert scroll_area.minimumWidth() == 350
+    assert scroll_area.maximumWidth() == 390
+    assert scroll_area.width() <= 390
+    assert scroll_area.horizontalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
+    assert side_panel.sizePolicy().horizontalPolicy() == QSizePolicy.Ignored
+    assert side_panel.width() == scroll_area.viewport().width()
+    assert horizontal_bar.minimum() == 0
+    assert horizontal_bar.maximum() == 0
+    horizontal_bar.setValue(100)
+    assert horizontal_bar.value() == 0
+
+    right_edge_controls = (
+        ui.toolButtonAdjacentAlignmentSettings,
+        ui.pushButtonOpenStarPairAssistant,
+        ui.comboBoxSkyAlignmentModel,
+        ui.pushButtonExportSourceModel,
+    )
+    for control in right_edge_controls:
+        assert control.geometry().right() <= control.parentWidget().contentsRect().right()
 
     window.close()
 

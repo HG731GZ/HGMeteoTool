@@ -21,8 +21,12 @@ from meteoalign.application.image_group_assistant_dialog import (
     IMAGE_GROUP_PREVIEW_HORIZONTAL_PADDING,
     IMAGE_GROUP_PREVIEW_TEXT,
     IMAGE_GROUP_READY_COLOR,
+    IMAGE_GROUP_REFERENCE_COLOR,
+    IMAGE_GROUP_REFERENCE_TEXT_COLOR,
     ImageGroupAssistantDialog,
+    ImageGroupReferenceDialog,
 )
+from meteoalign.application.image_preview_dialog import ImagePreviewDialog
 from meteoalign.application.main_window import MainWindow
 from meteoalign.ui.ui_main_window import Ui_MainWindow
 
@@ -70,6 +74,18 @@ def _write_test_image(path: Path) -> None:
     assert image.save(str(path))
 
 
+def _new_image_group_assistant() -> ImageGroupAssistantDialog:
+    """创建带独立预览窗口的图像组助手测试实例。"""
+
+    return ImageGroupAssistantDialog(ImagePreviewDialog())
+
+
+def _new_image_group_reference_dialog() -> ImageGroupReferenceDialog:
+    """创建带独立预览窗口的参考选择测试实例。"""
+
+    return ImageGroupReferenceDialog(ImagePreviewDialog())
+
+
 def test_main_ui_places_image_group_assistant_left_of_star_pair_assistant() -> None:
     """主界面应提供多图导入入口和顺序正确的两个助手按钮。"""
 
@@ -97,7 +113,7 @@ def test_image_group_dialog_marks_existing_outputs_green(tmp_path: Path) -> None
     (tmp_path / "first_Mask.png").touch()
     (tmp_path / "second_model.json").write_text("{}", encoding="utf-8")
 
-    dialog = ImageGroupAssistantDialog()
+    dialog = _new_image_group_assistant()
     dialog.set_image_paths((first_image, second_image))
     # 主窗口启动后助手会先隐藏一段时间；隐藏状态不得用无效布局放大窗口。
     app.processEvents()
@@ -152,7 +168,7 @@ def test_long_file_name_is_elided_from_the_left(tmp_path: Path) -> None:
     file_name = "very_long_image_name_for_meteor_shower_123456789.TIF"
     image_path = tmp_path / file_name
     image_path.touch()
-    dialog = ImageGroupAssistantDialog()
+    dialog = _new_image_group_assistant()
     dialog.set_image_paths((image_path,))
 
     item = dialog.ui.tableWidgetImageGroup.item(0, 0)
@@ -162,11 +178,87 @@ def test_long_file_name_is_elided_from_the_left(tmp_path: Path) -> None:
     dialog.close()
 
 
+def test_reference_dialog_marks_only_current_reference_red(tmp_path: Path) -> None:
+    """只有当前参考应为红色，重新选择后旧行必须恢复原始文件状态。"""
+
+    app = QApplication.instance() or QApplication([])
+    first_image = tmp_path / "first.tif"
+    second_image = tmp_path / "second.tif"
+    first_image.touch()
+    second_image.touch()
+    first_model_path = tmp_path / "first_model.json"
+    second_model_path = tmp_path / "second_model.json"
+    first_model_path.write_text("{}", encoding="utf-8")
+    second_model_path.write_text("{}", encoding="utf-8")
+    (tmp_path / "first_starpairs.json").write_text("{}", encoding="utf-8")
+
+    dialog = _new_image_group_reference_dialog()
+    dialog.set_image_paths((first_image, second_image))
+    table = dialog.ui.tableWidgetImageGroup
+
+    assert dialog.windowTitle() == "从图像组中选取参考"
+    assert dialog.ui.labelImageGroupHint.text() == "双击某一行以选取参考图像。"
+    assert table.item(0, 1).text() == "已有"
+    assert table.item(0, 2).text() == "已有"
+    assert table.item(1, 1).text() == ""
+    assert table.item(1, 2).text() == "已有"
+
+    dialog.set_reference_image(first_image)
+    for column in (1, 2):
+        item = table.item(0, column)
+        assert item.text() == "参考"
+        assert item.background().color() == IMAGE_GROUP_REFERENCE_COLOR
+        assert item.foreground().color() == IMAGE_GROUP_REFERENCE_TEXT_COLOR
+        assert str(first_model_path.resolve()) in item.toolTip()
+
+    dialog.set_reference_image(second_image)
+    assert table.item(0, 1).text() == "已有"
+    assert table.item(0, 1).background().color() == IMAGE_GROUP_READY_COLOR
+    assert table.item(0, 2).text() == "已有"
+    assert table.item(0, 2).background().color() == IMAGE_GROUP_READY_COLOR
+    for column in (1, 2):
+        item = table.item(1, column)
+        assert item.text() == "参考"
+        assert item.background().color() == IMAGE_GROUP_REFERENCE_COLOR
+        assert item.foreground().color() == IMAGE_GROUP_REFERENCE_TEXT_COLOR
+        assert str(second_model_path.resolve()) in item.toolTip()
+    dialog.close()
+
+
+def test_image_group_paths_are_shared_with_reference_dialog(tmp_path: Path) -> None:
+    """图像组建立和清除时，助手与参考选择窗口应保持同一行集合。"""
+
+    app = QApplication.instance() or QApplication([])
+    image_preview_dialog = ImagePreviewDialog()
+    assistant = ImageGroupAssistantDialog(image_preview_dialog)
+    reference_dialog = ImageGroupReferenceDialog(image_preview_dialog)
+    host = _ImageGroupHost(assistant)
+    host.image_group_reference_dialog = reference_dialog
+    first_image = tmp_path / "first.tif"
+    second_image = tmp_path / "second.tif"
+    first_image.touch()
+    second_image.touch()
+
+    host._set_image_group_paths((str(first_image), str(second_image)))
+    assert assistant.ui.tableWidgetImageGroup.rowCount() == 2
+    assert reference_dialog.ui.tableWidgetImageGroup.rowCount() == 2
+
+    reference_dialog.show()
+    app.processEvents()
+    host._reset_image_group_status()
+    app.processEvents()
+    assert assistant.ui.tableWidgetImageGroup.rowCount() == 0
+    assert reference_dialog.ui.tableWidgetImageGroup.rowCount() == 0
+    assert not reference_dialog.isVisible()
+    assistant.close()
+    reference_dialog.close()
+
+
 def test_image_group_mode_controls_button_and_double_click_loading(tmp_path: Path) -> None:
     """只有多图且非序列模式可打开助手，双击时应保留图像组。"""
 
     app = QApplication.instance() or QApplication([])
-    dialog = ImageGroupAssistantDialog()
+    dialog = _new_image_group_assistant()
     host = _ImageGroupHost(dialog)
     first_image = tmp_path / "first.tif"
     second_image = tmp_path / "second.tif"
@@ -202,7 +294,7 @@ def test_image_group_dialog_emits_path_for_any_double_clicked_column(tmp_path: P
     app = QApplication.instance() or QApplication([])
     image_path = tmp_path / "frame.fit"
     image_path.touch()
-    dialog = ImageGroupAssistantDialog()
+    dialog = _new_image_group_assistant()
     dialog.set_image_paths((image_path,))
     emitted: list[Path] = []
     dialog.image_activated.connect(emitted.append)
@@ -215,49 +307,59 @@ def test_image_group_dialog_emits_path_for_any_double_clicked_column(tmp_path: P
     dialog.close()
 
 
-def test_preview_button_reuses_image_preview_dialog(tmp_path: Path) -> None:
-    """各行预览按钮应刷新并复用同一个通用图像预览窗口。"""
+def test_preview_buttons_share_one_independent_window_across_dialogs(tmp_path: Path) -> None:
+    """两个图像组窗口的预览按钮应刷新同一个任务栏顶层窗口。"""
 
     app = QApplication.instance() or QApplication([])
     first_image = tmp_path / "first.png"
     second_image = tmp_path / "second.png"
     _write_test_image(first_image)
     _write_test_image(second_image)
-    dialog = ImageGroupAssistantDialog()
-    dialog.set_image_paths((first_image, second_image))
+    preview_dialog = ImagePreviewDialog()
+    assistant = ImageGroupAssistantDialog(preview_dialog)
+    reference_dialog = ImageGroupReferenceDialog(preview_dialog)
+    assistant.set_image_paths((first_image, second_image))
+    reference_dialog.set_image_paths((first_image, second_image))
     activated: list[Path] = []
-    dialog.image_activated.connect(activated.append)
-    table = dialog.ui.tableWidgetImageGroup
+    assistant.image_activated.connect(activated.append)
+    reference_dialog.image_activated.connect(activated.append)
 
-    first_button = table.cellWidget(0, IMAGE_GROUP_PREVIEW_COLUMN)
-    second_button = table.cellWidget(1, IMAGE_GROUP_PREVIEW_COLUMN)
+    first_button = assistant.ui.tableWidgetImageGroup.cellWidget(0, IMAGE_GROUP_PREVIEW_COLUMN)
+    second_button = reference_dialog.ui.tableWidgetImageGroup.cellWidget(
+        1,
+        IMAGE_GROUP_PREVIEW_COLUMN,
+    )
     assert isinstance(first_button, QPushButton)
     assert isinstance(second_button, QPushButton)
     assert first_button.text() == "预览"
 
     first_button.click()
     app.processEvents()
-    preview_dialog = dialog._image_preview_dialog
-    assert preview_dialog is not None
     assert preview_dialog.image_path == first_image.resolve()
+    assert assistant.image_preview_dialog is preview_dialog
+    assert reference_dialog.image_preview_dialog is preview_dialog
+    assert preview_dialog.parentWidget() is None
+    assert preview_dialog.windowFlags() & Qt.WindowType_Mask == Qt.Window
+    assert not preview_dialog.isModal()
 
     second_button.click()
     app.processEvents()
-    assert dialog._image_preview_dialog is preview_dialog
     assert preview_dialog.image_path == second_image.resolve()
     assert preview_dialog.ui.labelImageName.text() == second_image.name
     assert activated == []
 
-    dialog.close()
+    assistant.close()
+    reference_dialog.close()
     app.processEvents()
-    assert not preview_dialog.isVisible()
+    assert preview_dialog.isVisible()
+    preview_dialog.close()
 
 
 def test_unsaved_switch_prompt_has_three_required_actions(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """有匹配但缺少输出时，切图确认框应提供指定的三个操作。"""
 
     app = QApplication.instance() or QApplication([])
-    dialog = ImageGroupAssistantDialog()
+    dialog = _new_image_group_assistant()
     host = _ImageGroupHost(dialog)
     current_image = tmp_path / "current.tif"
     target_image = tmp_path / "target.tif"
@@ -316,6 +418,8 @@ def test_main_window_close_also_closes_image_group_assistant(monkeypatch) -> Non
         preferences_dialog=SimpleNamespace(close=lambda: closed.append("preferences")),
         star_pair_assistant=SimpleNamespace(close=lambda: closed.append("star_pair")),
         image_group_assistant=SimpleNamespace(close=lambda: closed.append("image_group")),
+        image_group_reference_dialog=SimpleNamespace(close=lambda: closed.append("image_group_reference")),
+        image_preview_dialog=SimpleNamespace(close=lambda: closed.append("image_preview")),
         _shutdown_meteor_detection_worker=lambda: closed.append("worker"),
     )
     event = SimpleNamespace(isAccepted=lambda: True)
@@ -325,4 +429,11 @@ def test_main_window_close_also_closes_image_group_assistant(monkeypatch) -> Non
     )
 
     MainWindow.closeEvent(host, event)  # type: ignore[arg-type]
-    assert closed == ["preferences", "star_pair", "image_group", "worker"]
+    assert closed == [
+        "preferences",
+        "star_pair",
+        "image_group",
+        "image_group_reference",
+        "image_preview",
+        "worker",
+    ]

@@ -9,11 +9,14 @@ from PyQt5.QtWidgets import QDialog, QHeaderView, QMessageBox, QPushButton, QTab
 from ..image_path_resolution import companion_sky_mask_path
 from ..image_preview import load_image_preview
 from ..ui.ui_image_group_assistant_dialog import Ui_ImageGroupAssistantDialog
+from ..ui.ui_image_group_reference_dialog import Ui_ImageGroupReferenceDialog
 from .image_preview_dialog import ImagePreviewDialog
 
 
 IMAGE_GROUP_READY_COLOR = QColor("#c8e6c9")
 IMAGE_GROUP_READY_TEXT_COLOR = QColor("#1b5e20")
+IMAGE_GROUP_REFERENCE_COLOR = QColor("#ffcdd2")
+IMAGE_GROUP_REFERENCE_TEXT_COLOR = QColor("#b71c1c")
 IMAGE_GROUP_FILE_NAME_CHAR_COUNT = 25
 IMAGE_GROUP_FILE_NAME_WIDTH_SAMPLE = "abcdefghijklmnopqrstuvwxyz"
 IMAGE_GROUP_CELL_HORIZONTAL_PADDING = 12
@@ -23,21 +26,30 @@ IMAGE_GROUP_PREVIEW_TEXT = "预览"
 IMAGE_GROUP_PREVIEW_HORIZONTAL_PADDING = 12
 
 
-class ImageGroupAssistantDialog(QDialog):
-    """显示多图像的匹配与映射文件状态。"""
+class _ImageGroupTableDialog(QDialog):
+    """提供图像组状态、预览与双击操作的共用表格实现。"""
 
     image_activated = pyqtSignal(object)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        ui: Ui_ImageGroupAssistantDialog | Ui_ImageGroupReferenceDialog,
+        image_preview_dialog: ImagePreviewDialog,
+        *,
+        reference_selection: bool,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         # 使用普通顶层窗口，主窗口激活后可以按正常窗口层级覆盖本窗口。
         window_flags = (self.windowFlags() & ~Qt.WindowType_Mask) | Qt.Window
         self.setWindowFlags(window_flags)
-        self.ui = Ui_ImageGroupAssistantDialog()
+        self.ui = ui
         self.ui.setupUi(self)
         self.setModal(False)
+        self._reference_selection = reference_selection
+        self._reference_image_path: Path | None = None
         self._image_paths: tuple[Path, ...] = ()
-        self._image_preview_dialog: ImagePreviewDialog | None = None
+        self.image_preview_dialog = image_preview_dialog
 
         table = self.ui.tableWidgetImageGroup
         header = table.horizontalHeader()
@@ -120,9 +132,7 @@ class ImageGroupAssistantDialog(QDialog):
             QMessageBox.warning(self, "图像预览失败", str(exc))
             return
 
-        if self._image_preview_dialog is None:
-            self._image_preview_dialog = ImagePreviewDialog(self)
-        self._image_preview_dialog.show_preview(preview)
+        self.image_preview_dialog.show_preview(preview)
 
     def _display_file_name(self, file_name: str) -> str:
         """超出文件名列宽时省略开头，尽量保留扩展名和末尾编号。"""
@@ -147,23 +157,77 @@ class ImageGroupAssistantDialog(QDialog):
 
         table = self.ui.tableWidgetImageGroup
         for row, image_path in enumerate(self._image_paths):
-            self._set_status_cell(row, 1, self._star_pair_path(image_path).is_file())
-            self._set_status_cell(row, 2, self._model_path(image_path).is_file())
+            model_path = self._model_path(image_path)
+            model_ready = model_path.is_file()
+            if (
+                self._reference_selection
+                and image_path == self._reference_image_path
+                and model_ready
+            ):
+                reference_tooltip = f"当前参考图像，模型：{model_path}"
+                self._set_reference_cell(row, 1, reference_tooltip)
+                self._set_reference_cell(row, 2, reference_tooltip)
+            else:
+                self._set_status_cell(row, 1, self._star_pair_path(image_path).is_file())
+                self._set_status_cell(row, 2, model_ready)
             mask_path = companion_sky_mask_path(image_path)
             self._set_status_cell(row, IMAGE_GROUP_MASK_COLUMN, mask_path is not None)
             mask_item = table.item(row, IMAGE_GROUP_MASK_COLUMN)
             if mask_item is not None:
                 mask_item.setToolTip(str(mask_path) if mask_path is not None else "")
 
+    def set_reference_image(self, image_path: str | Path | None) -> None:
+        """设置当前参考图像，并恢复其他行原本的文件状态。"""
+
+        self._reference_image_path = (
+            Path(image_path).expanduser().resolve() if image_path is not None else None
+        )
+        self.refresh_file_statuses()
+        # 清除双击留下的选中底色，确保红色参考状态立即可见。
+        self.ui.tableWidgetImageGroup.clearSelection()
+
     def _set_status_cell(self, row: int, column: int, ready: bool) -> None:
+        self._set_colored_cell(
+            row,
+            column,
+            text="已有" if ready else "",
+            background=IMAGE_GROUP_READY_COLOR if ready else None,
+            foreground=IMAGE_GROUP_READY_TEXT_COLOR if ready else None,
+        )
+
+    def _set_reference_cell(self, row: int, column: int, tooltip: str) -> None:
+        """把当前选中的参考图像标成醒目的红色状态。"""
+
+        self._set_colored_cell(
+            row,
+            column,
+            text="参考",
+            background=IMAGE_GROUP_REFERENCE_COLOR,
+            foreground=IMAGE_GROUP_REFERENCE_TEXT_COLOR,
+            tooltip=tooltip,
+        )
+
+    def _set_colored_cell(
+        self,
+        row: int,
+        column: int,
+        *,
+        text: str,
+        background: QColor | None,
+        foreground: QColor | None,
+        tooltip: str = "",
+    ) -> None:
+        """统一设置状态单元格的文字、颜色和提示，避免刷新后残留旧样式。"""
+
         item = self.ui.tableWidgetImageGroup.item(row, column)
         if item is None:
             item = QTableWidgetItem()
             self.ui.tableWidgetImageGroup.setItem(row, column, item)
-        item.setText("已有" if ready else "")
+        item.setText(text)
         item.setTextAlignment(Qt.AlignCenter)
-        item.setBackground(QBrush(IMAGE_GROUP_READY_COLOR) if ready else QBrush())
-        item.setForeground(QBrush(IMAGE_GROUP_READY_TEXT_COLOR) if ready else QBrush())
+        item.setBackground(QBrush(background) if background is not None else QBrush())
+        item.setForeground(QBrush(foreground) if foreground is not None else QBrush())
+        item.setToolTip(tooltip)
 
     def set_current_image(self, image_path: str | Path | None) -> None:
         """选中当前正在主窗口中匹配的图像。"""
@@ -184,12 +248,36 @@ class ImageGroupAssistantDialog(QDialog):
         if 0 <= row < len(self._image_paths):
             self.image_activated.emit(self._image_paths[row])
 
-    def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
-        """关闭助手时一并关闭它创建的预览窗口。"""
+class ImageGroupAssistantDialog(_ImageGroupTableDialog):
+    """显示多图像的匹配与映射文件状态。"""
 
-        if self._image_preview_dialog is not None:
-            self._image_preview_dialog.close()
-        QDialog.closeEvent(self, event)
+    def __init__(
+        self,
+        image_preview_dialog: ImagePreviewDialog,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(
+            Ui_ImageGroupAssistantDialog(),
+            image_preview_dialog,
+            reference_selection=False,
+            parent=parent,
+        )
 
 
-__all__ = ["ImageGroupAssistantDialog"]
+class ImageGroupReferenceDialog(_ImageGroupTableDialog):
+    """从图像组中选取粗略取景参考图像。"""
+
+    def __init__(
+        self,
+        image_preview_dialog: ImagePreviewDialog,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(
+            Ui_ImageGroupReferenceDialog(),
+            image_preview_dialog,
+            reference_selection=True,
+            parent=parent,
+        )
+
+
+__all__ = ["ImageGroupAssistantDialog", "ImageGroupReferenceDialog"]
