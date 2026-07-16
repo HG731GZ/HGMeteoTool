@@ -516,10 +516,26 @@ class StarPairActionsMixin:
             rows = [table.currentRow()]
         if not rows:
             return False
-        rows_with_position = [row for row in rows if self._star_pair_position_text(row)]
-        rows_without_position = [row for row in rows if not self._star_pair_position_text(row)]
-        cleared_count = self._clear_star_pair_positions_for_rows(rows_with_position)
-        deleted_count = self._delete_star_pair_rows(rows_without_position)
-        if cleared_count > 0 or deleted_count > 0:
-            self.ui.statusbar.showMessage(f"已清除 {cleared_count} 个匹配，删除 {deleted_count} 行参考星。")
+
+        # 分组行代表其全部子行，判断本次按键意图前先展开；只要其中存在一个匹配，
+        # 整个选区就进入“清除匹配”模式，未匹配行必须保持不动。
+        action_rows = [
+            row
+            for row in self._rows_expanded_from_groups(rows)
+            if 0 <= row < table.rowCount() and not self._is_star_pair_group_row(row)
+        ]
+        rows_with_position = [
+            row for row in action_rows if self._parse_star_pair_position_text(row) is not None
+        ]
+        if rows_with_position:
+            cleared_count = self._clear_star_pair_positions_for_rows(rows_with_position)
+            if cleared_count > 0:
+                unchanged_count = len(action_rows) - len(rows_with_position)
+                unchanged_text = f"；{unchanged_count} 个未配对行保持不变" if unchanged_count > 0 else ""
+                self.ui.statusbar.showMessage(f"已清除 {cleared_count} 个匹配{unchanged_text}。")
+            return True
+
+        deleted_count = self._delete_star_pair_rows(rows)
+        if deleted_count > 0:
+            self.ui.statusbar.showMessage(f"已删除 {deleted_count} 行参考星，后续序号已重新排列。")
         return True

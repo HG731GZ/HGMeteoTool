@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import replace
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -10,10 +11,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt5.QtWidgets import QApplication
 
 from meteoalign.config import StarMapUiConfig
+from meteoalign.application.app_rendering import RenderingMixin
+from meteoalign.catalog import ConstellationDefinition, ConstellationLine
 from meteoalign.renderer import StarMapRenderer
 from meteoalign.simulator import (
     CameraSettings,
     CYLINDRICAL_EQUIDISTANT_LENS_MODEL,
+    FISHEYE_EQUISOLID,
     HorizontalConstellation,
     HorizontalConstellationCatalog,
     HorizontalConstellationLine,
@@ -208,3 +212,67 @@ def test_constellation_renderer_can_hide_names_and_lines_independently() -> None
 
     assert hidden.pixelColor(50, 20).alpha() == 0
     assert line_only.pixelColor(50, 20).alpha() > 0
+
+
+class _AlignedConstellationTransform:
+    """按 RA 编号返回固定投影点的鱼眼变换替身。"""
+
+    lens_model = FISHEYE_EQUISOLID
+    center_x_px = 50.0
+    center_y_px = 50.0
+
+    _points_by_ra = {
+        1: (-20.0, 50.0),
+        2: (120.0, 50.0),
+        3: (30.0, 50.0),
+        4: (70.0, 50.0),
+    }
+
+    def transform_radec_points(self, ra_dec_points: np.ndarray) -> np.ndarray:
+        return np.asarray(
+            [self._points_by_ra[int(round(ra_deg))] for ra_deg in ra_dec_points[:, 0]],
+            dtype=np.float64,
+        )
+
+    def raw_project_radec_points(self, ra_dec_points: np.ndarray) -> np.ndarray:
+        return self.transform_radec_points(ra_dec_points)
+
+
+def test_aligned_fisheye_constellations_drop_nodes_outside_image_circle() -> None:
+    """匹配页不得把鱼眼有效像圈外的星座节点连接成跨画面伪线。"""
+
+    bad_line = ConstellationLine(
+        hip_ids=(1, 2),
+        ra_deg=np.asarray([1.0, 2.0]),
+        dec_deg=np.asarray([0.0, 0.0]),
+        mag_v=np.asarray([2.0, 2.0]),
+    )
+    good_line = ConstellationLine(
+        hip_ids=(3, 4),
+        ra_deg=np.asarray([3.0, 4.0]),
+        dec_deg=np.asarray([0.0, 0.0]),
+        mag_v=np.asarray([2.0, 2.0]),
+    )
+    harness = RenderingMixin()
+    harness.constellation_catalog = SimpleNamespace(
+        constellations=(
+            ConstellationDefinition(
+                constellation_id="测试座 Test",
+                abbreviation="Test",
+                chinese_name="测试座",
+                lines=(bad_line, good_line),
+            ),
+        )
+    )
+
+    constellations = harness._aligned_constellations(
+        _AlignedConstellationTransform(),
+        target_size=(100, 100),
+        visible_mag_limit=6.5,
+        bright_mag=0.0,
+    )
+
+    assert len(constellations) == 1
+    assert len(constellations[0].segments) == 1
+    assert constellations[0].segments[0].start == (30.0, 50.0)
+    assert constellations[0].segments[0].end == (70.0, 50.0)

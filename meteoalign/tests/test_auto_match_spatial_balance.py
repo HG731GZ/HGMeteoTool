@@ -34,6 +34,16 @@ class _ValueControl:
         return self._value
 
 
+class _StatusBar:
+    """记录自动扩展状态文案。"""
+
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def showMessage(self, message: str) -> None:  # noqa: N802 - 保持 Qt 接口名称。
+        self.messages.append(message)
+
+
 class _FakeStarMap:
     def __init__(self) -> None:
         self.ra_deg = np.asarray([10.0, 20.0, 30.0])
@@ -56,6 +66,7 @@ class _CandidateHarness(AutoMatchMixin):
             image=SimpleNamespace(width=lambda: 1000, height=lambda: 800),
         )
         self.current_sky_mask = None
+        self._mask_excluded_reference_star_ids: set[str] = set()
         self._fake_star_map = _FakeStarMap()
 
     def _auto_match_reference_star_map(self, _transform: object, _mag_limit: float) -> _FakeStarMap:
@@ -97,6 +108,24 @@ class _BatchThresholdHarness(AutoMatchMixin):
 
     def _star_pair_position_count(self) -> int:
         return self._matched_count
+
+
+class _NoCandidateMaskHarness(_CandidateHarness):
+    """验证候选全被蒙版预筛时仍更新底部状态栏。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.current_sky_mask = np.ones((800, 1000), dtype=bool)
+        self.ui.statusbar = _StatusBar()
+        self._sky_alignment_transform = _Transform()
+        self._sky_alignment_error_message = ""
+        self._reference_alignment_error_message = ""
+
+    def _star_pair_position_count(self) -> int:
+        return 4
+
+    def _sky_mask_allows_point(self, _x_px: float, _y_px: float) -> bool:
+        return False
 
 
 def test_auto_match_candidates_prefer_sparse_cells_over_brightness() -> None:
@@ -141,10 +170,45 @@ def test_auto_match_field_stars_stays_locked_before_four_pairs(monkeypatch) -> N
 def test_auto_match_candidate_limit_is_applied_after_grid_balancing() -> None:
     harness = _CandidateHarness()
 
-    candidates, predicted_by_id = harness._auto_match_candidate_stars(_Transform())
+    candidates, predicted_by_id, mask_prefiltered_count = harness._auto_match_candidate_stars(_Transform())
 
     assert [candidate.star_id for candidate in candidates] == ["faint-empty", "mid-empty"]
     assert set(predicted_by_id) == {"faint-empty", "mid-empty"}
+    assert mask_prefiltered_count == 0
+
+
+def test_auto_match_candidate_count_includes_mask_prefilter() -> None:
+    """状态栏统计应包含进入 PSF 循环前被蒙版排除的视场星点。"""
+
+    harness = _CandidateHarness()
+    harness.current_sky_mask = np.ones((800, 1000), dtype=bool)
+    harness._sky_mask_allows_point = lambda x_px, _y_px: x_px < 500.0  # type: ignore[method-assign]
+
+    candidates, predicted_by_id, mask_prefiltered_count = harness._auto_match_candidate_stars(_Transform())
+
+    assert [candidate.star_id for candidate in candidates] == ["faint-empty"]
+    assert set(predicted_by_id) == {"faint-empty"}
+    assert mask_prefiltered_count == 2
+
+
+def test_no_candidate_status_reports_mask_prefilter(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """蒙版筛完全部候选时，不应继续显示误导性的“蒙版跳过 0”。"""
+
+    messages: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "information",
+        lambda _parent, title, message: messages.append((title, message)),
+    )
+    harness = _NoCandidateMaskHarness()
+
+    harness.auto_match_field_stars()
+
+    assert harness.ui.statusbar.messages[-1] == "自动扩展匹配：没有可新增星；蒙版预筛 3 个视场星点。"
+    assert messages[-1] == (
+        "没有可新增星",
+        "当前视场、数量设置和蒙版下没有新的可匹配参考星。\n蒙版预筛 3 个视场星点。",
+    )
 
 
 def test_auto_match_candidates_prefer_brighter_star_inside_same_cell() -> None:

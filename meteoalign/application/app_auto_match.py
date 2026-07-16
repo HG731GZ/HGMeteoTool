@@ -319,14 +319,14 @@ class AutoMatchMixin:
     def _auto_match_candidate_stars(
         self,
         transform: SkyAlignmentTransform,
-    ) -> tuple[list[ReferenceStar], dict[str, tuple[float, float]]]:
+    ) -> tuple[list[ReferenceStar], dict[str, tuple[float, float]], int]:
         if self.current_image_preview is None:
-            return [], {}
+            return [], {}, 0
 
         mag_limit = self._auto_match_required_mag_limit()
         star_map = self._auto_match_reference_star_map(transform, mag_limit)
         if star_map is None or len(star_map) <= 0:
-            return [], {}
+            return [], {}, 0
 
         image = self.current_image_preview.image
         ra_dec_points = np.column_stack((star_map.ra_deg, star_map.dec_deg))
@@ -341,6 +341,7 @@ class AutoMatchMixin:
             & (star_map.alt_deg >= AUTO_MATCH_MIN_ALTITUDE_DEG)
         )
 
+        mask_prefiltered_star_ids: set[str] = set()
         if self.current_sky_mask is not None:
             mask_allowed = np.zeros(len(star_map), dtype=bool)
             for index in np.where(inside)[0]:
@@ -349,12 +350,13 @@ class AutoMatchMixin:
                 if not point_allowed:
                     star_id = str(star_map.star_ids[index]).strip()
                     if star_id:
+                        mask_prefiltered_star_ids.add(star_id)
                         self._mask_excluded_reference_star_ids.add(star_id)
             inside &= mask_allowed
 
         candidate_indices = np.where(inside)[0]
         if candidate_indices.size <= 0:
-            return [], {}
+            return [], {}, len(mask_prefiltered_star_ids)
 
         order = np.argsort(star_map.mag_v[candidate_indices], kind="stable")
         candidate_indices = candidate_indices[order]
@@ -383,7 +385,7 @@ class AutoMatchMixin:
             reference_star.star_id.strip(): predicted_by_id[reference_star.star_id.strip()]
             for reference_star in candidates
         }
-        return candidates, selected_predictions
+        return candidates, selected_predictions, len(mask_prefiltered_star_ids)
 
     def _auto_match_spatial_cell_index(
         self,
@@ -581,9 +583,18 @@ class AutoMatchMixin:
             )
             return
 
-        candidates, predicted_by_id = self._auto_match_candidate_stars(transform)
+        candidates, predicted_by_id, mask_prefiltered_count = self._auto_match_candidate_stars(transform)
         if not candidates:
-            QMessageBox.information(self, "没有可新增星", "当前视场、数量设置和蒙版下没有新的可匹配参考星。")
+            if self.current_sky_mask is None:
+                mask_status = "蒙版未启用"
+            else:
+                mask_status = f"蒙版预筛 {mask_prefiltered_count} 个视场星点"
+            self.ui.statusbar.showMessage(f"自动扩展匹配：没有可新增星；{mask_status}。")
+            QMessageBox.information(
+                self,
+                "没有可新增星",
+                f"当前视场、数量设置和蒙版下没有新的可匹配参考星。\n{mask_status}。",
+            )
             return
 
         auto_group_id = self._create_auto_match_group()
@@ -677,15 +688,19 @@ class AutoMatchMixin:
         self._refresh_star_pair_table_styles()
         self._update_reference_alignment_transform()
         status_prefix = "自动扩展匹配已取消" if canceled else "自动扩展匹配完成"
+        if self.current_sky_mask is None:
+            mask_status = "蒙版未启用"
+        else:
+            mask_status = f"蒙版预筛 {mask_prefiltered_count} 个视场星点，拟合后落入蒙版 {skipped_mask}"
         self.ui.statusbar.showMessage(
             "{status_prefix}：{group_name} 本次新增 {candidate_count}，配对成功 {matched_count}，已有 {skipped_existing}，"
-            "蒙版跳过 {skipped_mask}，重复跳过 {skipped_duplicate}，失败 {failed_count}。".format(
+            "{mask_status}，重复跳过 {skipped_duplicate}，失败 {failed_count}。".format(
                 status_prefix=status_prefix,
                 group_name=self._auto_match_group_label(auto_group_id),
                 candidate_count=len(candidates),
                 matched_count=matched_count,
                 skipped_existing=skipped_existing,
-                skipped_mask=skipped_mask,
+                mask_status=mask_status,
                 skipped_duplicate=skipped_duplicate,
                 failed_count=failed_count,
             )

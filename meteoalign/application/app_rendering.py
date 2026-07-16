@@ -20,6 +20,7 @@ from ..simulator import (
     CameraSettings,
     FISHEYE_EQUIDISTANT,
     FISHEYE_EQUISOLID,
+    FISHEYE_LENS_MODELS,
     HorizontalConstellationCatalog,
     HorizontalMilkyWayCatalog,
     HorizontalSolarSystemCatalog,
@@ -605,8 +606,25 @@ class RenderingMixin:
             segments: list[ProjectedConstellationSegment] = []
             label_points: list[tuple[float, float]] = []
             for line in constellation.lines:
-                points = transform.transform_radec_points(np.column_stack((line.ra_deg, line.dec_deg)))
+                ra_dec_points = np.column_stack((line.ra_deg, line.dec_deg))
+                points = transform.transform_radec_points(ra_dec_points)
                 valid = np.all(np.isfinite(points), axis=1)
+                lens_model = str(getattr(transform, "lens_model", ""))
+                raw_project = getattr(transform, "raw_project_radec_points", None)
+                if lens_model in FISHEYE_LENS_MODELS and callable(raw_project):
+                    # 已知鱼眼投影在背向点附近仍会返回有限坐标，但这些点已位于真实像圈外。
+                    # 若继续连接像圈外节点，短天球弧会被画成跨越整幅图像的投影接缝伪线。
+                    raw_points = np.asarray(raw_project(ra_dec_points), dtype=np.float64)
+                    center_x = float(getattr(transform, "center_x_px", width_px * 0.5))
+                    center_y = float(getattr(transform, "center_y_px", height_px * 0.5))
+                    radius_limit = max(min(float(width_px), float(height_px)) * 0.5 - 0.5, 0.5)
+                    radius_margin = radius_limit * 0.1
+                    raw_radius = np.hypot(raw_points[:, 0] - center_x, raw_points[:, 1] - center_y)
+                    valid &= (
+                        np.all(np.isfinite(raw_points), axis=1)
+                        & np.isfinite(raw_radius)
+                        & (raw_radius <= radius_limit + radius_margin)
+                    )
                 radii = _constellation_node_radii(line.mag_v, visible_mag_limit, bright_mag)
                 for index in range(len(line.hip_ids) - 1):
                     if not (valid[index] and valid[index + 1]):

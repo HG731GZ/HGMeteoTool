@@ -6,7 +6,7 @@ from dataclasses import replace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QApplication, QTableWidget
+from PyQt5.QtWidgets import QApplication, QTableWidget, QTableWidgetSelectionRange
 
 from meteoalign.application.app_constants import (
     AUTO_MATCH_CONSTRAINT_ANCHOR,
@@ -55,6 +55,17 @@ class _Ui:
     def __init__(self) -> None:
         self.tableWidgetStarPairs = QTableWidget()
         self.tableWidgetStarPairs.setColumnCount(4)
+        self.statusbar = _StatusBar()
+
+
+class _StatusBar:
+    """记录 Delete/Backspace 操作反馈的状态栏替身。"""
+
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def showMessage(self, message: str) -> None:  # noqa: N802 - 保持 Qt 接口名称。
+        self.messages.append(message)
 
 
 class _StarPairTableHarness(StarPairTableMixin):
@@ -176,6 +187,55 @@ def _set_matched_position(harness: _StarPairTableHarness, star_id: str) -> None:
     )
 
 
+def _select_star_rows(harness: _StarPairTableHarness, *star_ids: str) -> None:
+    """按星表编号多选完整表格行。"""
+
+    table = harness.ui.tableWidgetStarPairs
+    table.clearSelection()
+    for star_id in star_ids:
+        row = _row_for_star_id(harness, star_id)
+        table.setRangeSelected(
+            QTableWidgetSelectionRange(row, 0, row, table.columnCount() - 1),
+            True,
+        )
+
+
+def test_delete_key_mixed_selection_only_clears_matched_rows() -> None:
+    """混选已配对和未配对行时，只清除配对，未配对行不得被删除。"""
+
+    harness = _StarPairTableHarness(
+        (_reference_star("matched-1", 1), _reference_star("unmatched-1", 2))
+    )
+    harness._update_star_pair_table(harness.reference_stars)
+    _set_matched_position(harness, "matched-1")
+    _select_star_rows(harness, "matched-1", "unmatched-1")
+
+    handled = harness._handle_star_pair_delete_key()
+
+    assert handled
+    assert len(harness._star_pair_store) == 0
+    assert set(_visible_star_ids(harness)) == {"matched-1", "unmatched-1"}
+    assert harness._excluded_reference_star_ids == []
+    assert harness.ui.statusbar.messages[-1] == "已清除 1 个匹配；1 个未配对行保持不变。"
+
+
+def test_delete_key_all_unmatched_selection_deletes_rows() -> None:
+    """选区全部未配对时，Delete/Backspace 才删除所选行。"""
+
+    harness = _StarPairTableHarness(
+        (_reference_star("unmatched-1", 1), _reference_star("unmatched-2", 2))
+    )
+    harness._update_star_pair_table(harness.reference_stars)
+    _select_star_rows(harness, "unmatched-1", "unmatched-2")
+
+    handled = harness._handle_star_pair_delete_key()
+
+    assert handled
+    assert _visible_star_ids(harness) == []
+    assert set(harness._excluded_reference_star_ids) == {"unmatched-1", "unmatched-2"}
+    assert harness.ui.statusbar.messages[-1] == "已删除 2 行参考星，后续序号已重新排列。"
+
+
 def test_deleting_auto_match_group_does_not_move_children_to_manual_group() -> None:
     harness = _StarPairTableHarness(
         (
@@ -234,6 +294,29 @@ def test_deleted_auto_match_row_can_reenter_auto_match_candidate_pool() -> None:
     assert "auto-1" not in harness._excluded_reference_star_ids
     assert "auto-1" in harness._auto_match_reference_star_ids
     assert harness._is_auto_match_row(_row_for_star_id(harness, "auto-1"))
+
+
+def test_deleted_manual_row_can_reenter_auto_match_candidate_pool() -> None:
+    """删除手动行只影响当前列表，不应永久阻止自动扩展再次选中该星。"""
+
+    reference_star = _reference_star("manual-1", 1)
+    harness = _StarPairTableHarness((reference_star,))
+    harness._update_star_pair_table(harness.reference_stars)
+
+    deleted_count = harness._delete_star_pair_rows([_row_for_star_id(harness, "manual-1")])
+
+    assert deleted_count == 1
+    assert "manual-1" in harness._excluded_reference_star_ids
+    assert "manual-1" not in AutoMatchMixin._auto_match_blocked_reference_star_ids(harness)
+
+    harness._auto_match_constraint_mode = lambda: AUTO_MATCH_CONSTRAINT_SOFT  # type: ignore[attr-defined]
+    harness._auto_match_soft_weight = lambda: 0.3  # type: ignore[attr-defined]
+    candidate_ids = AutoMatchMixin._ensure_auto_match_candidates_visible(harness, [reference_star], "B")
+
+    assert candidate_ids == {"manual-1"}
+    assert "manual-1" not in harness._excluded_reference_star_ids
+    assert "manual-1" in harness._auto_match_reference_star_ids
+    assert harness._is_auto_match_row(_row_for_star_id(harness, "manual-1"))
 
 
 def test_only_mask_exclusions_remain_blocked_after_unmatched_candidate_cleanup() -> None:
