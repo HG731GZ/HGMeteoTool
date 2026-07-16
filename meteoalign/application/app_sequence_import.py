@@ -161,26 +161,26 @@ class SequenceImportMixin:
         if first_starpair_path.exists():
             self._start_first_sequence_session_import(first_starpair_path, len(items))
             self.ui.statusbar.showMessage(
-                f"已导入序列 {len(items)} 张，正在后台载入第一张配对 JSON: {first_starpair_path}"
+                f"已导入序列 {len(items)} 张，正在后台载入第一张匹配 JSON: {first_starpair_path}"
             )
             return
 
         self.ui.statusbar.showMessage(
-            f"已导入序列 {len(items)} 张，第一张没有配对 JSON，正在载入点选基准: {items[0].path}"
+            f"已导入序列 {len(items)} 张，第一张没有匹配 JSON，正在载入点选基准: {items[0].path}"
         )
         self.start_single_image_import(items[0].path, preserve_sequence_status=True)
 
     def _start_first_sequence_session_import(self, json_path: Path, sequence_count: int) -> None:
         if getattr(self, "_json_import_thread", None) is not None:
             self.ui.statusbar.showMessage(
-                f"已导入序列 {sequence_count} 张；JSON 导入器正忙，暂未载入第一张配对 JSON: {json_path}"
+                f"已导入序列 {sequence_count} 张；JSON 导入器正忙，暂未载入第一张匹配 JSON: {json_path}"
             )
             return
         self.load_star_pair_session(
             json_path,
             switch_to_reference=False,
             show_progress=False,
-            clear_input_name="第一帧配对 JSON",
+            clear_input_name="第一帧匹配 JSON",
         )
 
     def _rejected_sequence_summary(self, rejected: list[RejectedSequenceImage], limit: int = 10) -> str:

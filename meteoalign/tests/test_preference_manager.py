@@ -109,7 +109,7 @@ def test_mosaic_display_scales_and_search_radii_have_independent_defaults(tmp_pa
 
 
 def test_psf_interaction_preferences_are_loaded_and_bounded(tmp_path: Path) -> None:
-    """单星自动配对搜索公式和 PSF 外圈倍率都应从配置读取并限制安全范围。"""
+    """单星自动匹配搜索公式和 PSF 外圈倍率都应从配置读取并限制安全范围。"""
 
     preference_path = tmp_path / "preference.json"
     preference_path.write_text(

@@ -117,6 +117,7 @@ from .app_utils import (
     _image_with_binary_mask,
 )
 from .preferences_dialog import PreferencesDialog, PreferencesLauncher
+from .star_pair_assistant_dialog import StarPairAssistantDialog
 
 # ---------------------------------------------------------------------------
 # 重新导出辅助函数（供 app_workers 等模块使用）
@@ -181,7 +182,7 @@ class MainWindow(
             if item is not None:
                 item.update()
 
-        # 已存在的配对文字不是实时渲染项，需要直接同步字号。
+        # 已存在的匹配文字不是实时渲染项，需要直接同步字号。
         for _ellipse_item, label_item in getattr(self, "_star_pair_annotations", {}).values():
             label_font = label_item.font()
             label_font.setPointSize(ui_config.star_name_font_size_pt)
@@ -217,6 +218,13 @@ class MainWindow(
         self.preferences_dialog.raise_()
         self.preferences_dialog.activateWindow()
 
+    def _show_star_pair_assistant(self) -> None:
+        """显示单实例非模态星点匹配助手，并将已有窗口提到前台。"""
+
+        self.star_pair_assistant.show()
+        self.star_pair_assistant.raise_()
+        self.star_pair_assistant.activateWindow()
+
     def _import_dialog_directory(self, fallback: str | Path) -> Path:
         """让所有导入对话框共享最近一次选择的目录。"""
 
@@ -231,6 +239,9 @@ class MainWindow(
         super().__init__()
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
+        # 匹配控件实际位于独立窗口；同名接口仍挂在主 UI 上，供各业务模块共享。
+        self.star_pair_assistant = StarPairAssistantDialog()
+        self.star_pair_assistant.bind_controls_to(self.ui)
         self.ui_config = load_star_map_ui_config()
         self._apply_ui_font_config(self.ui_config)
 
@@ -324,7 +335,7 @@ class MainWindow(
         self._rough_alignment_transform = None
         self._rough_source_astrometric_model = None
         self._star_pair_session_import_switch_to_reference = True
-        self._star_pair_session_import_clear_input_name = "新的配对 JSON"
+        self._star_pair_session_import_clear_input_name = "新的匹配 JSON"
         self._mask_import_thread: object | None = None
         self._mask_import_worker: QObject | None = None
         self._mask_import_progress: QProgressDialog | None = None
@@ -494,7 +505,9 @@ class MainWindow(
             self.ui.checkBoxShowImageSequenceMask.toggled.connect(self._handle_image_sequence_mask_toggled)
         self.ui.pushButtonExportStarPairs.clicked.connect(self.export_star_pair_session)
         self.ui.pushButtonImportStarPairs.clicked.connect(self.import_star_pair_session)
+        self.ui.pushButtonDeleteStarPairs.clicked.connect(self.delete_all_star_pair_rows)
         self.ui.pushButtonClearStarPairs.clicked.connect(self.clear_all_star_pair_positions)
+        self.ui.pushButtonOpenStarPairAssistant.clicked.connect(self._show_star_pair_assistant)
         self.ui.pushButtonImportSkyMask.clicked.connect(self.import_sky_mask)
         self.ui.pushButtonClearSkyMask.clicked.connect(self.clear_sky_mask)
         self.ui.checkBoxShowSkyMask.toggled.connect(self._refresh_real_image_display_for_mask)
@@ -567,6 +580,7 @@ class MainWindow(
         ViewControlsMixin.closeEvent(self, event)
         if event.isAccepted():
             self.preferences_dialog.close()
+            self.star_pair_assistant.close()
             self._shutdown_meteor_detection_worker()
 
     def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]

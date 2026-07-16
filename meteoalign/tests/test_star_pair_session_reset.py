@@ -4,9 +4,10 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtWidgets import QApplication, QTableWidget
+from PyQt5.QtWidgets import QApplication, QSpinBox, QTableWidget
 
 from meteoalign.application.app_star_pair_json_task import StarPairJsonTaskMixin
+from meteoalign.application.app_star_pair_reset import StarPairResetMixin
 from meteoalign.star_pair_store import StarPairStore
 
 
@@ -34,10 +35,13 @@ class _Ui:
     def __init__(self) -> None:
         self.tableWidgetStarPairs = QTableWidget()
         self.tableWidgetStarPairs.setColumnCount(5)
+        self.spinBoxReferenceStarCount = QSpinBox()
+        self.spinBoxReferenceStarCount.setRange(3, 40)
+        self.spinBoxReferenceStarCount.setValue(12)
         self.statusbar = _StatusBar()
 
 
-class _Harness(StarPairJsonTaskMixin):
+class _Harness(StarPairResetMixin, StarPairJsonTaskMixin):
     def __init__(self) -> None:
         _qapp()
         self.ui = _Ui()
@@ -81,6 +85,9 @@ class _Harness(StarPairJsonTaskMixin):
     def _update_reference_alignment_transform(self) -> None:
         self._update_alignment_called = True
 
+    def _is_star_pair_group_row(self, _row: int) -> bool:
+        return False
+
 
 def test_new_input_reset_clears_unmatched_reference_state() -> None:
     harness = _Harness()
@@ -106,6 +113,7 @@ def test_new_input_reset_clears_unmatched_reference_state() -> None:
     assert harness._sky_alignment_error_message == ""
     assert harness._source_model_error_message == ""
     assert harness._current_reference_star_map is harness._current_star_map
+    assert harness.ui.spinBoxReferenceStarCount.value() == 12
     assert harness._clear_annotations_called is True
     assert harness._leave_pick_called is True
     assert harness._refresh_reference_called is True

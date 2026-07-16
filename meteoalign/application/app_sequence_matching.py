@@ -85,7 +85,7 @@ class SequenceMatchingMixin:
                 )
             )
         if len(templates) < MIN_ALIGNMENT_PAIRS:
-            raise ValueError(f"第一张图只有 {len(templates)} 个有效恒星配对，至少需要 {MIN_ALIGNMENT_PAIRS} 个。")
+            raise ValueError(f"第一张图只有 {len(templates)} 个有效恒星匹配，至少需要 {MIN_ALIGNMENT_PAIRS} 个。")
         return templates
 
     def _sequence_pair_targets(self, templates: list[_SequencePairTemplate]) -> tuple[int, int]:
@@ -747,7 +747,7 @@ class SequenceMatchingMixin:
         pairs: list[_SequenceMatchedPair],
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         if len(pairs) < MIN_ALIGNMENT_PAIRS:
-            raise ValueError(f"有效配对只有 {len(pairs)} 个，至少需要 {MIN_ALIGNMENT_PAIRS} 个。")
+            raise ValueError(f"有效匹配只有 {len(pairs)} 个，至少需要 {MIN_ALIGNMENT_PAIRS} 个。")
         ra_dec_points = np.asarray(
             [(pair.reference_star.ra_deg, pair.reference_star.dec_deg) for pair in pairs],
             dtype=np.float64,
@@ -789,7 +789,7 @@ class SequenceMatchingMixin:
         require_accepted: bool,
     ) -> list[_SequenceMatchedPair]:
         if len(pairs) != int(time_fit.predicted_pixels.shape[0]):
-            raise ValueError("时间修正结果与星点配对数量不一致。")
+            raise ValueError("时间修正结果与星点匹配数量不一致。")
         updated_pairs: list[_SequenceMatchedPair] = []
         for index, pair in enumerate(pairs):
             if require_accepted and not bool(time_fit.accepted_mask[index]):
@@ -824,7 +824,7 @@ class SequenceMatchingMixin:
                 )
             )
         if len(updated_pairs) < MIN_ALIGNMENT_PAIRS:
-            raise ValueError(f"时间修正后可靠配对只有 {len(updated_pairs)} 个，至少需要 {MIN_ALIGNMENT_PAIRS} 个。")
+            raise ValueError(f"时间修正后可靠匹配只有 {len(updated_pairs)} 个，至少需要 {MIN_ALIGNMENT_PAIRS} 个。")
         return updated_pairs
 
     def _sequence_psf_search_radius_px(self) -> int:

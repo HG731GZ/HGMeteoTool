@@ -8,7 +8,7 @@ from ..simulator import ObserverSettings, ReferenceStar, project_horizontal_cata
 from ..star_pair_model import StarPairRecord, reference_star_from_pair_payload
 
 class StarPairReferencePayloadMixin:
-    """参考星 payload 构建与导入配对中的参考星合并。"""
+    """参考星 payload 构建与导入匹配中的参考星合并。"""
 
     def _is_catalog_reference_star(self, star: ReferenceStar) -> bool:
         star_id = star.star_id.strip()
@@ -91,6 +91,7 @@ class StarPairReferencePayloadMixin:
             utc_offset_hours=self.ui.doubleSpinBoxUtcOffset.value(),
             reference_label_mode=self._reference_label_mode(),
             reference_mag_limit=self.ui.doubleSpinBoxReferenceMagLimit.value(),
+            reference_star_count=self.ui.spinBoxReferenceStarCount.value(),
             manual_reference_star_ids=tuple(self._manual_reference_star_ids),
         )
         observer_payload = payload.get("observer")

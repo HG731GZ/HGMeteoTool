@@ -257,7 +257,7 @@ class StarPairAnnotationsMixin:
         if not star_id:
             return
 
-        # 真实星点位置一旦确认，就用黄色配对标注替代临时的蓝色聚焦提示。
+        # 真实星点位置一旦确认，就用黄色匹配标注替代临时的蓝色聚焦提示。
         if not preserve_focus_annotation:
             self._clear_focused_star_annotations()
         self._remove_star_pair_annotation(star_id)
@@ -352,7 +352,7 @@ class StarPairAnnotationsMixin:
 
     @staticmethod
     def _focus_marker_diameter_px(auto_pair_search_radius_px: float) -> float:
-        """蓝圈半径为自动配对搜索半径的两倍，因此直径为其四倍。"""
+        """蓝圈半径为自动匹配搜索半径的两倍，因此直径为其四倍。"""
 
         return max(2.0, float(auto_pair_search_radius_px) * 4.0)
 
@@ -454,7 +454,7 @@ class StarPairAnnotationsMixin:
         self._focus_star_pair_image_point(row, predicted_x, predicted_y, search_radius_px)
         self.ui.statusbar.showMessage(
             "已聚焦理论位置: x={x:.2f}, y={y:.2f}；蓝圈半径 {blue_radius} px，"
-            "为自动配对搜索半径 {search_radius} px 的两倍。"
+            "为自动匹配搜索半径 {search_radius} px 的两倍。"
             "切换标注选项可重置蓝圈。".format(
                 x=predicted_x,
                 y=predicted_y,

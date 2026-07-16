@@ -103,11 +103,11 @@ class StarPairActionsMixin:
             pick_action.setEnabled(self.current_image_preview is not None)
         auto_pair_action = None
         if len(normal_rows) == 1 and not self._star_pair_position_text(normal_rows[0]):
-            auto_pair_action = menu.addAction("自动配对")
+            auto_pair_action = menu.addAction("自动匹配")
             auto_pair_action.setEnabled(self._sky_alignment_transform is not None and self.current_image_preview is not None)
         clear_action = None
         if matched_rows:
-            clear_action = menu.addAction("清除选中配对" if len(matched_rows) > 1 else "清除配对")
+            clear_action = menu.addAction("清除选中匹配" if len(matched_rows) > 1 else "清除匹配")
 
         change_to_soft_action = None
         change_to_anchor_action = None
@@ -354,11 +354,38 @@ class StarPairActionsMixin:
         cleared_count = self._clear_star_pair_positions()
         self.ui.statusbar.showMessage(f"已清除 {cleared_count} 个星点匹配。")
 
+    def delete_all_star_pair_rows(self) -> None:
+        """确认后重置匹配表，并按当前参考星图范围恢复启动时的参考星列表。"""
+
+        table = self.ui.tableWidgetStarPairs
+        row_count = sum(1 for row in range(table.rowCount()) if not self._is_star_pair_group_row(row))
+        if row_count > 0:
+            reply = QMessageBox.question(
+                self,
+                "确认重置匹配列表",
+                (
+                    f"确定要重置当前匹配列表吗？\n\n"
+                    f"列表中的 {row_count} 行参考星及其匹配将被清空，随后会按当前参考星图范围和"
+                    "星空模拟的标注设置重新生成初始列表。"
+                ),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                self.ui.statusbar.showMessage("已取消重置匹配列表。")
+                return
+
+        _pair_count, deleted_count, rebuilt_count = self.reset_reference_star_list()
+        self.ui.statusbar.showMessage(
+            f"已重置匹配列表：清空 {deleted_count} 行参考星，并按当前参考星图重新添加 "
+            f"{rebuilt_count} 颗标注星。"
+        )
+
     def _clear_star_pair_position(self, row: int) -> None:
         star_label = self._star_pair_label(row)
         cleared_count = self._clear_star_pair_positions_for_rows([row])
         if cleared_count > 0:
-            self.ui.statusbar.showMessage(f"已清除 {star_label} 的真实图像配对。右键该行可重新点选位置。")
+            self.ui.statusbar.showMessage(f"已清除 {star_label} 的真实图像匹配。右键该行可重新点选位置。")
 
     def _delete_star_pair_row(self, row: int) -> None:
         deleted_count = self._delete_star_pair_rows([row])
@@ -533,7 +560,7 @@ class StarPairActionsMixin:
             cleared_count = self._clear_star_pair_positions_for_rows(rows_with_position)
             if cleared_count > 0:
                 unchanged_count = len(action_rows) - len(rows_with_position)
-                unchanged_text = f"；{unchanged_count} 个未配对行保持不变" if unchanged_count > 0 else ""
+                unchanged_text = f"；{unchanged_count} 个未匹配行保持不变" if unchanged_count > 0 else ""
                 self.ui.statusbar.showMessage(f"已清除 {cleared_count} 个匹配{unchanged_text}。")
             return True
 

@@ -25,7 +25,7 @@ from ..star_fitting import FittedStarPosition, detect_star_candidates, fit_star_
 
 
 class AutoMatchMixin:
-    """自动匹配 Mixin：参考星图点选、单星自动配对、场星批量匹配。"""
+    """自动匹配 Mixin：参考星图点选、单星自动匹配、场星批量匹配。"""
 
     ui: object
     _sky_alignment_transform: SkyAlignmentTransform | None
@@ -211,7 +211,7 @@ class AutoMatchMixin:
         self.ui.statusbar.showMessage(
             "已记录 {name} 的图像坐标: x={x:.2f}, y={y:.2f}；搜索半径 {search_radius} px，"
             "PSF FWHM=({fwhm_x:.2f}, {fwhm_y:.2f}) px，质量={quality:.2f}{saturated}。"
-            "右键配对表行可继续点选。".format(
+            "右键匹配表行可继续点选。".format(
                 name=star_name,
                 x=fitted_position.x,
                 y=fitted_position.y,
@@ -248,12 +248,12 @@ class AutoMatchMixin:
         message: str,
         *,
         silent_failure: bool,
-        dialog_title: str = "自动配对失败",
+        dialog_title: str = "自动匹配失败",
         warning: bool = False,
     ) -> bool:
-        """统一报告单星自动配对失败；双击联动模式只写状态栏。"""
+        """统一报告单星自动匹配失败；双击联动模式只写状态栏。"""
 
-        self.ui.statusbar.showMessage(f"自动配对失败：{message}")
+        self.ui.statusbar.showMessage(f"自动匹配失败：{message}")
         if not silent_failure:
             if warning:
                 QMessageBox.warning(self, dialog_title, message)
@@ -264,7 +264,7 @@ class AutoMatchMixin:
     def _auto_pair_star(self, row: int, *, silent_failure: bool = False) -> bool:
         if self.current_image_preview is None:
             return self._report_auto_pair_failure(
-                "请先导入真实图像，再自动配对星点。",
+                "请先导入真实图像，再自动匹配星点。",
                 silent_failure=silent_failure,
                 dialog_title="尚未导入图像",
             )
@@ -279,7 +279,7 @@ class AutoMatchMixin:
                 or self._reference_alignment_error_message
                 or f"至少需要 {MIN_PRELIMINARY_ALIGNMENT_PAIRS} 对已配准参考星。",
                 silent_failure=silent_failure,
-                dialog_title="无法自动配对",
+                dialog_title="无法自动匹配",
             )
 
         reference_star = self._reference_star_for_row(row)
@@ -287,7 +287,7 @@ class AutoMatchMixin:
             return self._report_auto_pair_failure(
                 "当前行没有对应的参考星。",
                 silent_failure=silent_failure,
-                dialog_title="无法自动配对",
+                dialog_title="无法自动匹配",
                 warning=True,
             )
 
@@ -295,14 +295,14 @@ class AutoMatchMixin:
         image = self.current_image_preview.image
         if not (0.0 <= predicted_x < image.width() and 0.0 <= predicted_y < image.height()):
             self.ui.statusbar.showMessage(
-                f"{self._star_pair_label(row)} 的预测位置在真实图像外，无法自动配对。"
+                f"{self._star_pair_label(row)} 的预测位置在真实图像外，无法自动匹配。"
             )
             return False
 
         search_radius_px = self._auto_pair_search_radius_px(transform)
         self._focus_star_pair_image_point(row, predicted_x, predicted_y, search_radius_px)
         self.ui.statusbar.showMessage(
-            f"已跳转到 {self._star_pair_label(row)} 的自动配对预测位置，正在搜索真实星点..."
+            f"已跳转到 {self._star_pair_label(row)} 的自动匹配预测位置，正在搜索真实星点..."
         )
         QApplication.processEvents()
 
@@ -316,7 +316,7 @@ class AutoMatchMixin:
                 reject_ambiguous=True,
                 selection_mode="predicted",
             )
-        except Exception as exc:  # noqa: BLE001 - 自动配对要把失败原因反馈给用户。
+        except Exception as exc:  # noqa: BLE001 - 自动匹配要把失败原因反馈给用户。
             return self._report_auto_pair_failure(
                 str(exc),
                 silent_failure=silent_failure,
@@ -332,7 +332,7 @@ class AutoMatchMixin:
         )
         self.ui.tableWidgetStarPairs.selectRow(row)
         self.ui.statusbar.showMessage(
-            "{label} 自动配对完成: x={x:.2f}, y={y:.2f}；预测偏差 {distance:.2f} px，搜索半径 {radius} px。".format(
+            "{label} 自动匹配完成: x={x:.2f}, y={y:.2f}；预测偏差 {distance:.2f} px，搜索半径 {radius} px。".format(
                 label=self._star_pair_label(row),
                 x=fitted_position.x,
                 y=fitted_position.y,
@@ -815,7 +815,7 @@ class AutoMatchMixin:
         else:
             mask_status = f"蒙版预筛 {mask_prefiltered_count} 个视场星点，拟合后落入蒙版 {skipped_mask}"
         self.ui.statusbar.showMessage(
-            "{status_prefix}：{group_name} 本次新增 {candidate_count}，配对成功 {matched_count}，已有 {skipped_existing}，"
+            "{status_prefix}：{group_name} 本次新增 {candidate_count}，匹配成功 {matched_count}，已有 {skipped_existing}，"
             "{mask_status}，歧义跳过 {skipped_ambiguous}，重复跳过 {skipped_duplicate}，失败 {failed_count}。".format(
                 status_prefix=status_prefix,
                 group_name=self._auto_match_group_label(auto_group_id),
@@ -832,5 +832,5 @@ class AutoMatchMixin:
             QMessageBox.information(
                 self,
                 "自动扩展匹配完成",
-                "没有新增配对。可以检查蒙版、搜索半径和新增数量，或先增加几颗手动配对星提高初始配准精度。",
+                "没有新增匹配。可以检查蒙版、搜索半径和新增数量，或先增加几颗手动匹配星提高初始配准精度。",
             )

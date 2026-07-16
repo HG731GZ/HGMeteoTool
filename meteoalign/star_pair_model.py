@@ -179,7 +179,7 @@ class PsfFit:
 
 @dataclass(frozen=True)
 class StarPairRecord:
-    """一条星点配对业务记录，不依赖具体表格行。"""
+    """一条星点匹配业务记录，不依赖具体表格行。"""
 
     reference_star: ReferenceStar
     image_x_px: float
@@ -278,7 +278,7 @@ def reference_star_from_pair_payload(
     observer: ObserverSettings | None = None,
     output_index: int = 0,
 ) -> ReferenceStar | None:
-    """从配对 JSON 记录恢复参考星信息。"""
+    """从匹配 JSON 记录恢复参考星信息。"""
 
     if not isinstance(payload, dict):
         return None
@@ -334,7 +334,7 @@ def star_pair_record_from_payload(
     observer: ObserverSettings | None = None,
     output_index: int = 0,
 ) -> StarPairRecord | None:
-    """从 JSON payload 恢复星点配对记录。"""
+    """从 JSON payload 恢复星点匹配记录。"""
 
     if not isinstance(payload, dict):
         return None

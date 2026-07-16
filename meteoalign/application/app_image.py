@@ -329,6 +329,7 @@ class ImageMixin:
         self.ui.pushButtonImportReferenceJson.setEnabled(enabled)
         self.ui.pushButtonImportStarPairs.setEnabled(enabled)
         self.ui.pushButtonExportStarPairs.setEnabled(enabled)
+        self.ui.pushButtonDeleteStarPairs.setEnabled(enabled)
         self.ui.pushButtonClearStarPairs.setEnabled(enabled)
 
     def _apply_loaded_image_preview(
@@ -352,7 +353,7 @@ class ImageMixin:
         if not clear_existing_pairs:
             current_image_path = Path(preview.path).expanduser().resolve()
             if previous_image_path is not None and previous_image_path != current_image_path:
-                # 导入另一张图的配对 JSON 时，即使尺寸相同也不能沿用旧图蒙版。
+                # 导入另一张图的匹配 JSON 时，即使尺寸相同也不能沿用旧图蒙版。
                 self._reset_sky_mask_status()
             else:
                 self._clear_sky_mask_if_size_mismatch(preview.image.width(), preview.image.height())
@@ -364,7 +365,7 @@ class ImageMixin:
         if clear_existing_pairs:
             exif_time_message = self._apply_single_image_exif_observation_time(preview.path)
         self.ui.statusbar.showMessage(
-            "已导入图像: {path}  原始: {width} x {height} px。{exif}右键配对表行选择“点选位置”。".format(
+            "已导入图像: {path}  原始: {width} x {height} px。{exif}右键匹配表行选择“点选位置”。".format(
                 path=Path(preview.path).expanduser().resolve(),
                 width=preview.original_width,
                 height=preview.original_height,
@@ -558,6 +559,7 @@ class ImageMixin:
                 utc_offset_hours=self.ui.doubleSpinBoxUtcOffset.value(),
                 reference_label_mode=self._reference_label_mode(),
                 reference_mag_limit=self.ui.doubleSpinBoxReferenceMagLimit.value(),
+                reference_star_count=self.ui.spinBoxReferenceStarCount.value(),
                 manual_reference_star_ids=tuple(self._manual_reference_star_ids),
             )
             image_path, json_path = save_reference_outputs(image, payload, self._next_reference_output_dir())

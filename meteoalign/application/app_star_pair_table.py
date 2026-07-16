@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .app_star_pair_actions import StarPairActionsMixin
 from .app_star_pair_annotations import StarPairAnnotationsMixin
+from .app_star_pair_reset import StarPairResetMixin
 from .app_star_pair_table_groups import StarPairTableGroupsMixin
 from ..config import StarMapUiConfig
 from ..alignment.models import SkyAlignmentTransform
@@ -12,6 +13,7 @@ from PyQt5.QtGui import QCursor
 class StarPairTableMixin(
     StarPairTableGroupsMixin,
     StarPairAnnotationsMixin,
+    StarPairResetMixin,
     StarPairActionsMixin,
 ):
     """星对表格管理 Mixin：组合表格、标注、拾取和删除动作。"""

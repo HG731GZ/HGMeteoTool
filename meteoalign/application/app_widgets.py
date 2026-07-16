@@ -4,7 +4,7 @@ from html import escape
 
 from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QFont
-from PyQt5.QtWidgets import QAbstractSlider, QAbstractSpinBox, QComboBox, QLabel
+from PyQt5.QtWidgets import QAbstractSlider, QAbstractSpinBox, QComboBox, QLabel, QWidget
 
 from ..config import StarMapUiConfig
 
@@ -20,6 +20,9 @@ class AppWidgetMixin:
         controls_font.setPointSize(ui_config.controls_font_size_pt)
         self.setFont(controls_font)
         self.ui.centralwidget.setFont(controls_font)
+        star_pair_assistant = getattr(self, "star_pair_assistant", None)
+        if star_pair_assistant is not None:
+            star_pair_assistant.setFont(controls_font)
 
         statusbar = getattr(self.ui, "statusbar", None)
         if statusbar is None:
@@ -42,13 +45,18 @@ class AppWidgetMixin:
     def _install_value_control_wheel_filters(self) -> None:
         """拦截所有会因滚轮改变值的控件，避免误改参数。"""
 
-        value_controls = (
-            *self.findChildren(QAbstractSpinBox),
-            *self.findChildren(QComboBox),
-            *self.findChildren(QAbstractSlider),
-        )
-        for control in value_controls:
-            control.installEventFilter(self)
+        roots: list[QWidget] = [self]
+        star_pair_assistant = getattr(self, "star_pair_assistant", None)
+        if star_pair_assistant is not None:
+            roots.append(star_pair_assistant)
+        for root in roots:
+            value_controls = (
+                *root.findChildren(QAbstractSpinBox),
+                *root.findChildren(QComboBox),
+                *root.findChildren(QAbstractSlider),
+            )
+            for control in value_controls:
+                control.installEventFilter(self)
 
     @staticmethod
     def _is_wheel_value_control(widget: object) -> bool:

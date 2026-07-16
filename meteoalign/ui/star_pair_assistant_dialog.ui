@@ -1,0 +1,277 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>StarPairAssistantDialog</class>
+ <widget class="QDialog" name="StarPairAssistantDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>390</width>
+    <height>700</height>
+   </rect>
+  </property>
+  <property name="minimumSize">
+   <size>
+    <width>350</width>
+    <height>560</height>
+   </size>
+  </property>
+  <property name="maximumSize">
+   <size>
+    <width>390</width>
+    <height>16777215</height>
+   </size>
+  </property>
+  <property name="windowTitle">
+   <string>星点匹配助手</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayoutStarPairAssistant">
+   <item>
+    <widget class="QGroupBox" name="groupBoxStarPairs">
+     <property name="title">
+      <string>参考星匹配</string>
+     </property>
+     <layout class="QVBoxLayout" name="verticalLayoutStarPairs">
+      <item>
+       <widget class="QTableWidget" name="tableWidgetStarPairs">
+        <property name="minimumSize">
+         <size>
+          <width>0</width>
+          <height>260</height>
+         </size>
+        </property>
+        <property name="contextMenuPolicy">
+         <enum>Qt::CustomContextMenu</enum>
+        </property>
+        <property name="alternatingRowColors">
+         <bool>true</bool>
+        </property>
+        <property name="selectionMode">
+         <enum>QAbstractItemView::ExtendedSelection</enum>
+        </property>
+        <property name="selectionBehavior">
+         <enum>QAbstractItemView::SelectRows</enum>
+        </property>
+        <property name="verticalScrollMode">
+         <enum>QAbstractItemView::ScrollPerPixel</enum>
+        </property>
+        <property name="rowCount">
+         <number>0</number>
+        </property>
+        <property name="columnCount">
+         <number>5</number>
+        </property>
+        <attribute name="horizontalHeaderCascadingSectionResizes">
+         <bool>false</bool>
+        </attribute>
+        <attribute name="horizontalHeaderDefaultSectionSize">
+         <number>72</number>
+        </attribute>
+        <attribute name="horizontalHeaderMinimumSectionSize">
+         <number>40</number>
+        </attribute>
+        <attribute name="horizontalHeaderStretchLastSection">
+         <bool>false</bool>
+        </attribute>
+        <attribute name="verticalHeaderVisible">
+         <bool>false</bool>
+        </attribute>
+        <column>
+         <property name="text">
+          <string>序号</string>
+         </property>
+        </column>
+        <column>
+         <property name="text">
+          <string>星名</string>
+         </property>
+        </column>
+        <column>
+         <property name="text">
+          <string>模式</string>
+         </property>
+        </column>
+        <column>
+         <property name="text">
+          <string>PSF质量</string>
+         </property>
+        </column>
+        <column>
+         <property name="text">
+          <string>残差</string>
+         </property>
+        </column>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayoutStarPairSessionButtons">
+     <item>
+      <widget class="QPushButton" name="pushButtonImportStarPairs">
+       <property name="text">
+        <string>导入匹配 JSON</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="pushButtonExportStarPairs">
+       <property name="text">
+        <string>导出匹配 JSON</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayoutStarPairResetButtons">
+     <item>
+      <widget class="QPushButton" name="pushButtonClearStarPairs">
+       <property name="toolTip">
+        <string>保留参考星行，只清除已经点选或自动匹配的位置</string>
+       </property>
+       <property name="text">
+        <string>清除所有匹配</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="pushButtonDeleteStarPairs">
+       <property name="toolTip">
+        <string>清空匹配与参考星行，再按当前参考星图重新生成初始列表</string>
+       </property>
+       <property name="text">
+        <string>重置匹配列表</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="groupBoxAutoMatch">
+     <property name="title">
+      <string>自动扩展匹配</string>
+     </property>
+     <layout class="QVBoxLayout" name="verticalLayoutAutoMatch">
+      <item>
+       <layout class="QFormLayout" name="formLayoutAutoMatch">
+        <property name="fieldGrowthPolicy">
+         <enum>QFormLayout::AllNonFixedFieldsGrow</enum>
+        </property>
+        <property name="labelAlignment">
+         <set>Qt::AlignLeft|Qt::AlignVCenter</set>
+        </property>
+        <item row="0" column="0">
+         <widget class="QLabel" name="labelAutoMatchCount">
+          <property name="text">
+           <string>每次新增</string>
+          </property>
+         </widget>
+        </item>
+        <item row="0" column="1">
+         <widget class="QSpinBox" name="spinBoxAutoMatchCount">
+          <property name="minimum">
+           <number>1</number>
+          </property>
+          <property name="maximum">
+           <number>10000</number>
+          </property>
+          <property name="value">
+           <number>200</number>
+          </property>
+          <property name="suffix">
+           <string> 颗</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="0">
+         <widget class="QLabel" name="labelAutoMatchConstraintMode">
+          <property name="text">
+           <string>新增约束</string>
+          </property>
+         </widget>
+        </item>
+        <item row="1" column="1">
+         <widget class="QComboBox" name="comboBoxAutoMatchConstraintMode">
+          <item>
+           <property name="text">
+            <string>锚点模式</string>
+           </property>
+          </item>
+          <item>
+           <property name="text">
+            <string>软约束模式</string>
+           </property>
+          </item>
+         </widget>
+        </item>
+        <item row="2" column="0">
+         <widget class="QLabel" name="labelAutoMatchSoftWeight">
+          <property name="text">
+           <string>软约束权重</string>
+          </property>
+         </widget>
+        </item>
+        <item row="2" column="1">
+         <widget class="QDoubleSpinBox" name="doubleSpinBoxAutoMatchSoftWeight">
+          <property name="decimals">
+           <number>2</number>
+          </property>
+          <property name="minimum">
+           <double>0.010000000000000</double>
+          </property>
+          <property name="maximum">
+           <double>1.000000000000000</double>
+          </property>
+          <property name="singleStep">
+           <double>0.050000000000000</double>
+          </property>
+          <property name="value">
+           <double>0.300000000000000</double>
+          </property>
+         </widget>
+        </item>
+        <item row="3" column="0">
+         <widget class="QLabel" name="labelAutoMatchRadius">
+          <property name="text">
+           <string>匹配搜索半径</string>
+          </property>
+         </widget>
+        </item>
+        <item row="3" column="1">
+         <widget class="QSpinBox" name="spinBoxAutoMatchRadius">
+          <property name="toolTip">
+           <string>星表预测位置到检测星源的最大允许距离；PSF 拟合窗口与此参数相互独立。</string>
+          </property>
+          <property name="minimum">
+           <number>4</number>
+          </property>
+          <property name="maximum">
+           <number>300</number>
+          </property>
+          <property name="value">
+           <number>30</number>
+          </property>
+          <property name="suffix">
+           <string> px</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+      <item>
+       <widget class="QPushButton" name="pushButtonAutoMatchFieldStars">
+        <property name="text">
+         <string>自动扩展匹配</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

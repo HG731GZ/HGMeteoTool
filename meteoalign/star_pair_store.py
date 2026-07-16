@@ -19,9 +19,9 @@ from .star_pair_model import (
 
 
 class StarPairStore(QObject):
-    """星点配对数据的统一存储，作为整个应用的唯一权威数据源。
+    """星点匹配数据的统一存储，作为整个应用的唯一权威数据源。
 
-    所有星点配对的增删改查、约束设置和分组管理都通过本 Store 进行。
+    所有星点匹配的增删改查、约束设置和分组管理都通过本 Store 进行。
     UI 层（表格、标注）只负责显示，不再直接持有业务数据。
 
     信号
@@ -47,7 +47,7 @@ class StarPairStore(QObject):
     # ------------------------------------------------------------------
 
     def add(self, record: StarPairRecord) -> None:
-        """添加或替换一条星点配对记录，以 star_id 为键。"""
+        """添加或替换一条星点匹配记录，以 star_id 为键。"""
         star_id = record.star_id
         if not star_id:
             return
@@ -185,7 +185,7 @@ class StarPairStore(QObject):
         )
 
     def set_pair_origin(self, star_id: str, origin: str) -> StarPairRecord | None:
-        """设置配对来源（手动/自动匹配）。"""
+        """设置匹配来源（手动/自动匹配）。"""
         if origin not in (PAIR_ORIGIN_MANUAL, PAIR_ORIGIN_AUTO_MATCH):
             origin = PAIR_ORIGIN_MANUAL
         return self._replace_record(star_id, pair_origin=origin)

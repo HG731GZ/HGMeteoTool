@@ -260,7 +260,7 @@ class RenderingMixin:
             seen_star_ids.add(star_id)
             ordered_stars.append(lookup_star)
 
-        # 已经配对的星必须保留在表格中，否则参考图切换到全星表投影后会丢失拟合锚点。
+        # 已经匹配的星必须保留在表格中，否则参考图切换到全星表投影后会丢失拟合锚点。
         for star_id in self._matched_reference_star_ids_from_table():
             append_lookup_star(star_id, keep_if_excluded=True)
 

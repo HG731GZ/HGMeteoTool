@@ -115,7 +115,7 @@ class ReferenceJsonImportWorker(QObject):
 
 
 class StarPairSessionImportWorker(QObject):
-    """后台线程 Worker：导入星点配对会话 JSON。"""
+    """后台线程 Worker：导入星点匹配会话 JSON。"""
 
     finished = pyqtSignal(object)
     failed = pyqtSignal(str)

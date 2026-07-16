@@ -169,6 +169,7 @@ class SequenceExportMixin:
             utc_offset_hours=self.ui.doubleSpinBoxUtcOffset.value(),
             reference_label_mode=self._reference_label_mode(),
             reference_mag_limit=self.ui.doubleSpinBoxReferenceMagLimit.value(),
+            reference_star_count=self.ui.spinBoxReferenceStarCount.value(),
             manual_reference_star_ids=tuple(pair.reference_star.star_id for pair in pairs),
         )
         observer_payload = payload.get("observer")
@@ -398,7 +399,7 @@ class SequenceExportMixin:
             payload = json.loads(json_path.read_text(encoding="utf-8"))
             preview = load_image_preview(first_item.path, max_long_side_px=None)
             current_tab = self.ui.tabWidgetMain.currentWidget()
-            self._clear_star_pair_positions_for_new_input("第一帧配对 JSON")
+            self._clear_star_pair_positions_for_new_input("第一帧匹配 JSON")
             self._apply_star_pair_session_payload(
                 payload,
                 json_path,
@@ -409,15 +410,15 @@ class SequenceExportMixin:
                 self.ui.tabWidgetMain.setCurrentWidget(current_tab)
             return True
         except Exception as exc:  # noqa: BLE001 - 序列导入时尽量保留序列页，错误转为界面提示。
-            message = f"无法自动载入第一帧配对 JSON：{json_path}\n{exc}"
+            message = f"无法自动载入第一帧匹配 JSON：{json_path}\n{exc}"
             if raise_on_error:
                 raise ValueError(message) from exc
             try:
                 self._load_first_sequence_image_without_tab_switch(first_item)
             except Exception as image_exc:  # noqa: BLE001 - 兜底载图失败同样反馈给用户。
                 message += f"\n\n第一帧图像也无法载入：{image_exc}"
-            QMessageBox.warning(self, "第一帧配对 JSON 载入失败", message)
-            self.ui.statusbar.showMessage(f"第一帧配对 JSON 载入失败: {json_path}")
+            QMessageBox.warning(self, "第一帧匹配 JSON 载入失败", message)
+            self.ui.statusbar.showMessage(f"第一帧匹配 JSON 载入失败: {json_path}")
             return False
 
     def _ensure_first_sequence_session_loaded_for_processing(self) -> None:
@@ -460,13 +461,13 @@ class SequenceExportMixin:
             if len(existing_paths) > 6:
                 sample_lines += f"\n... 另有 {len(existing_paths) - 6} 个文件"
             message = (
-                "开始处理后会覆盖第二帧及之后已有的配对 JSON 与模型 JSON。\n"
+                "开始处理后会覆盖第二帧及之后已有的匹配 JSON 与模型 JSON。\n"
                 "第一帧已有 JSON 会保留，不参与覆盖。\n\n"
                 f"已发现 {len(existing_paths)} 个已有输出文件：\n{sample_lines}\n\n是否继续？"
             )
         else:
             message = (
-                "开始处理后会为第二帧及之后写入同名配对 JSON 与模型 JSON。\n"
+                "开始处理后会为第二帧及之后写入同名匹配 JSON 与模型 JSON。\n"
                 "第一帧只作为用户基准，已有 JSON 会保留，缺失 JSON 会先自动补齐。是否继续？"
             )
         reply = QMessageBox.question(

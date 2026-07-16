@@ -1,8 +1,18 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import numpy as np
 
-from meteoalign.simulator import ProjectedStarMap, select_reference_stars
+from meteoalign.reference import build_reference_payload
+from meteoalign.simulator import (
+    CameraSettings,
+    ObserverSettings,
+    ProjectedStarMap,
+    ReferenceStar,
+    ViewSettings,
+    select_reference_stars,
+)
 
 
 def _projected_star_map_for_selection() -> ProjectedStarMap:
@@ -38,3 +48,42 @@ def test_reference_selection_does_not_filter_below_horizon_star() -> None:
 
     assert len(selected) == 1
     assert selected[0].star_id == "below"
+
+
+def test_reference_payload_keeps_configured_count_separate_from_saved_star_records() -> None:
+    """自动匹配附带的星记录再多，也不得覆盖用户设置的标注星数。"""
+
+    star_map = _projected_star_map_for_selection()
+    reference_stars = tuple(
+        ReferenceStar(
+            index=index,
+            star_id=str(star_map.star_ids[star_index]),
+            name=str(star_map.display_names[star_index]),
+            display_name=str(star_map.display_names[star_index]),
+            common_name="",
+            ra_deg=float(star_map.ra_deg[star_index]),
+            dec_deg=float(star_map.dec_deg[star_index]),
+            mag_v=float(star_map.mag_v[star_index]),
+            sim_x=float(star_map.x_px[star_index]),
+            sim_y=float(star_map.y_px[star_index]),
+            alt_deg=float(star_map.alt_deg[star_index]),
+            az_deg=float(star_map.az_deg[star_index]),
+        )
+        for index, star_index in enumerate(range(len(star_map)), start=1)
+    )
+    payload = build_reference_payload(
+        star_map=star_map,
+        reference_stars=reference_stars,
+        observer=ObserverSettings(
+            observation_time_utc=datetime(2026, 7, 16, tzinfo=timezone.utc),
+            latitude_deg=40.0,
+            longitude_deg=116.0,
+        ),
+        camera=CameraSettings(36.0, 24.0, 1000, 800, 24.0),
+        view=ViewSettings(0.0, 30.0),
+        visible_mag_limit=6.5,
+        reference_star_count=12,
+    )
+
+    assert len(payload["stars"]) == 2
+    assert payload["render"]["reference_star_count"] == 12

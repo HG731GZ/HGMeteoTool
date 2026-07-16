@@ -10,7 +10,7 @@ from ..image_path_resolution import associated_image_candidates, expected_image_
 
 
 # ---------------------------------------------------------------------------
-# 星点配对会话 — 图像路径解析
+# 星点匹配会话 — 图像路径解析
 # ---------------------------------------------------------------------------
 
 def _session_image_candidate(path_value: object, source_path: Path, *, force_same_dir_name: bool = False) -> Path | None:
@@ -57,12 +57,12 @@ def _session_image_file_stem(real_image: dict[str, object]) -> str:
 
 
 def _star_pair_session_real_image_metadata(payload: object) -> dict[str, object]:
-    """校验星点配对 JSON 的基本结构并返回真实图像元数据。"""
+    """校验星点匹配 JSON 的基本结构并返回真实图像元数据。"""
 
     if not isinstance(payload, dict):
         raise ValueError("JSON 根对象必须是字典。")
     if payload.get("format") != "meteoalign_star_pair_session":
-        raise ValueError("当前只支持 HoshinoPanoAssistant 星点配对 JSON。")
+        raise ValueError("当前只支持 HoshinoPanoAssistant 星点匹配 JSON。")
     real_image = payload.get("real_image")
     if not isinstance(real_image, dict):
         raise ValueError("JSON 缺少 real_image 字段。")
@@ -74,7 +74,7 @@ def _validate_star_pair_session_current_image(
     image_path: str | Path,
     image_size: tuple[int, int],
 ) -> Path:
-    """仅按无后缀文件名和尺寸确认当前图像是否属于配对 JSON。"""
+    """仅按无后缀文件名和尺寸确认当前图像是否属于匹配 JSON。"""
 
     real_image = _star_pair_session_real_image_metadata(payload)
     current_path = Path(image_path).expanduser().resolve()
@@ -97,7 +97,7 @@ def _validate_star_pair_session_current_image(
 
 
 def _resolve_star_pair_session_real_image_path(payload: object, source_path: Path) -> Path:
-    """从星点配对 JSON 中解析真实图像路径。"""
+    """从星点匹配 JSON 中解析真实图像路径。"""
     real_image = _star_pair_session_real_image_metadata(payload)
 
     searched_paths = associated_image_candidates(real_image, source_path)

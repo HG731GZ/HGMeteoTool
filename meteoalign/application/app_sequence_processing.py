@@ -137,7 +137,7 @@ class SequenceProcessingMixin:
                         )
                     if len(pairs) < minimum_pair_count:
                         raise ValueError(
-                            "补充匹配后有效配对 {count} 个，低于序列目标下限 {target} 个；"
+                            "补充匹配后有效匹配 {count} 个，低于序列目标下限 {target} 个；"
                             "请检查云层、遮挡、蒙版或增大自动匹配搜索半径。".format(
                                 count=len(pairs),
                                 target=minimum_pair_count,

@@ -137,7 +137,7 @@ def _initial_rectilinear_from_rotation(
         & (cam_z > 1e-6)
     )
     if np.count_nonzero(valid) < MIN_ALIGNMENT_PAIRS:
-        raise ValueError("普通广角初值中可见配对星不足。")
+        raise ValueError("普通广角初值中可见匹配星不足。")
 
     x_over_z = cam_x[valid] / cam_z[valid]
     y_over_z = -cam_y[valid] / cam_z[valid]
@@ -197,7 +197,7 @@ def _initial_projection_from_rotation(
         & np.isfinite(point_weights)
     )
     if np.count_nonzero(valid) < MIN_ALIGNMENT_PAIRS:
-        raise ValueError("投影初值中有效配对星不足。")
+        raise ValueError("投影初值中有效匹配星不足。")
 
     projected_x = projection_points[valid, 0]
     projected_y = projection_points[valid, 1]

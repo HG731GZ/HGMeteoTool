@@ -305,7 +305,7 @@ class AlignmentMixin:
         return sky_points, target_points
 
     def _matched_sky_alignment_data(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """收集用于天球配准的配对数据，只从 StarPairStore 读取。"""
+        """收集用于天球配准的匹配数据，只从 StarPairStore 读取。"""
         records = self._star_pair_store.valid_fit_records()
 
         sky_points: list[tuple[float, float]] = []
@@ -547,13 +547,13 @@ class AlignmentMixin:
 
         if manual_pair_count < MIN_PRELIMINARY_ALIGNMENT_PAIRS:
             self._reference_alignment_error_message = (
-                f"已配对 {manual_pair_count} 颗星；至少 {MIN_PRELIMINARY_ALIGNMENT_PAIRS} 颗后可低精度预测星点位置。"
+                f"已匹配 {manual_pair_count} 颗星；至少 {MIN_PRELIMINARY_ALIGNMENT_PAIRS} 颗后可低精度预测星点位置。"
             )
             self._sky_alignment_error_message = (
-                f"已配对 {manual_pair_count} 颗星；至少 {MIN_PRELIMINARY_ALIGNMENT_PAIRS} 颗后可自动配对和双击聚焦。"
+                f"已匹配 {manual_pair_count} 颗星；至少 {MIN_PRELIMINARY_ALIGNMENT_PAIRS} 颗后可自动匹配和双击聚焦。"
             )
             self._source_model_error_message = (
-                f"已配对 {manual_pair_count} 颗星；至少 {MIN_ALIGNMENT_PAIRS} 颗后可生成 xy→RA/Dec 映射。"
+                f"已匹配 {manual_pair_count} 颗星；至少 {MIN_ALIGNMENT_PAIRS} 颗后可生成 xy→RA/Dec 映射。"
             )
             self._update_star_pair_residual_columns()
             self._update_reference_alignment_display()
@@ -581,7 +581,7 @@ class AlignmentMixin:
         try:
             image = self.current_image_preview.image
             initial_rotation_matrix = self._manual_projection_initial_rotation_matrix()
-            # 源图基础投影由真实图像配对拟合，避免复用星空模拟页的镜头投影或鱼眼视场。
+            # 源图基础投影由真实图像匹配拟合，避免复用星空模拟页的镜头投影或鱼眼视场。
             source_projection_fov_deg = None
             self._sky_alignment_transform = fit_sky_alignment(
                 ra_dec_points=sky_points,
@@ -771,7 +771,7 @@ class AlignmentMixin:
                 self._sky_alignment_error_message
                 or self._reference_alignment_error_message
                 or self._source_model_error_message
-                or f"至少配对 {MIN_PRELIMINARY_ALIGNMENT_PAIRS} 颗星后可自动配对和双击聚焦。"
+                or f"至少匹配 {MIN_PRELIMINARY_ALIGNMENT_PAIRS} 颗星后可自动匹配和双击聚焦。"
             )
             self._set_alignment_status_text(status_text)
 

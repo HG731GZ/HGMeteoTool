@@ -71,7 +71,7 @@ class StarPairSessionMixin:
 
     def _default_star_pair_session_path(self) -> Path:
         if self.current_image_preview is not None:
-            # 导入的配对 JSON 可能位于别处；导出始终跟随当前真实图像，避免覆盖外部 JSON。
+            # 导入的匹配 JSON 可能位于别处；导出始终跟随当前真实图像，避免覆盖外部 JSON。
             return self._star_pair_session_path_for_image(Path(self.current_image_preview.path))
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         return project_root() / "outputs" / f"star_pairs_{timestamp}.json"
@@ -120,9 +120,9 @@ class StarPairSessionMixin:
             return True
         reply = QMessageBox.question(
             self,
-            "已有 JSON 配对更多",
+            "已有 JSON 匹配更多",
             (
-                f"已有文件包含 {existing_pair_count} 个配对，当前只有 {current_pair_count} 个配对。\n"
+                f"已有文件包含 {existing_pair_count} 个匹配，当前只有 {current_pair_count} 个匹配。\n"
                 f"继续会覆盖：{json_path}\n\n是否仍然覆盖？"
             ),
             QMessageBox.Yes | QMessageBox.No,
@@ -136,12 +136,12 @@ class StarPairSessionMixin:
         json_path = self._star_pair_session_path_for_image(image_path)
         if not json_path.exists():
             return
-        self.ui.statusbar.showMessage(f"发现同名配对 JSON，正在自动导入: {json_path}")
+        self.ui.statusbar.showMessage(f"发现同名匹配 JSON，正在自动导入: {json_path}")
         self.load_star_pair_session(json_path)
 
     def _build_star_pair_session_payload(self, json_path: Path) -> dict[str, object]:
         if self.current_image_preview is None:
-            raise ValueError("请先导入真实图像，再导出星点配对 JSON。")
+            raise ValueError("请先导入真实图像，再导出星点匹配 JSON。")
 
         preview = self.current_image_preview
         image_path = Path(preview.path).expanduser().resolve()
@@ -150,7 +150,7 @@ class StarPairSessionMixin:
         image_model = "manual_star_pair_session"
         try:
             fixed_bundle = self._single_image_fixed_camera_export_bundle()
-        except Exception:  # noqa: BLE001 - 配对 JSON 需要支持中途保存，固定模型未就绪时保留普通配对记录。
+        except Exception:  # noqa: BLE001 - 匹配 JSON 需要支持中途保存，固定模型未就绪时保留普通匹配记录。
             reference_payload = self._build_reference_payload_for_records(pair_records)
         else:
             pair_records = fixed_bundle["fit_pairs"]
@@ -187,7 +187,7 @@ class StarPairSessionMixin:
 
     def export_star_pair_session(self) -> None:
         if self.current_image_preview is None:
-            QMessageBox.information(self, "尚未导入图像", "请先导入真实图像，再导出星点配对 JSON。")
+            QMessageBox.information(self, "尚未导入图像", "请先导入真实图像，再导出星点匹配 JSON。")
             return
 
         default_path = self._default_star_pair_session_path()
@@ -197,14 +197,14 @@ class StarPairSessionMixin:
             payload = self._build_star_pair_session_payload(json_path)
             pair_count = int(payload.get("pair_count", 0))
             if not self._confirm_overwrite_if_existing_has_more_pairs(json_path, pair_count):
-                self.ui.statusbar.showMessage("已取消导出星点配对 JSON。")
+                self.ui.statusbar.showMessage("已取消导出星点匹配 JSON。")
                 return
             json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            self.ui.statusbar.showMessage(f"已导出星点配对 JSON: {json_path}  配对数: {pair_count}")
-            QMessageBox.information(self, "配对 JSON 已导出", f"JSON：{json_path}\n配对数：{pair_count}")
+            self.ui.statusbar.showMessage(f"已导出星点匹配 JSON: {json_path}  匹配数: {pair_count}")
+            QMessageBox.information(self, "匹配 JSON 已导出", f"JSON：{json_path}\n匹配数：{pair_count}")
         except Exception as exc:  # noqa: BLE001 - 导出入口需要把文件和字段错误直接反馈给用户。
-            self.ui.statusbar.showMessage(f"导出星点配对 JSON 失败: {exc}")
-            QMessageBox.critical(self, "导出星点配对 JSON 失败", str(exc))
+            self.ui.statusbar.showMessage(f"导出星点匹配 JSON 失败: {exc}")
+            QMessageBox.critical(self, "导出星点匹配 JSON 失败", str(exc))
 
     def import_star_pair_session(self) -> None:
         default_dir = project_root() / "outputs"
@@ -213,7 +213,7 @@ class StarPairSessionMixin:
         default_dir = self._import_dialog_directory(default_dir)
         file_path, _selected_filter = QFileDialog.getOpenFileName(
             self,
-            "导入星点配对 JSON",
+            "导入星点匹配 JSON",
             str(default_dir),
             STAR_PAIR_SESSION_JSON_FILTER,
         )
@@ -228,7 +228,7 @@ class StarPairSessionMixin:
         *,
         switch_to_reference: bool = True,
         show_progress: bool = True,
-        clear_input_name: str = "新的配对 JSON",
+        clear_input_name: str = "新的匹配 JSON",
     ) -> None:
         if self._json_import_thread is not None:
             QMessageBox.information(self, "正在导入 JSON", "当前已有 JSON 正在导入，请稍候。")
@@ -239,13 +239,13 @@ class StarPairSessionMixin:
         self._star_pair_session_import_clear_input_name = clear_input_name
         if show_progress:
             self._json_import_progress = self._show_json_import_progress(
-                title="正在导入配对 JSON",
-                label_text=f"正在读取配对 JSON 并恢复真实图像...\n{json_path}",
-                status_text=f"正在导入星点配对 JSON: {json_path}",
+                title="正在导入匹配 JSON",
+                label_text=f"正在读取匹配 JSON 并恢复真实图像...\n{json_path}",
+                status_text=f"正在导入星点匹配 JSON: {json_path}",
             )
         else:
             self._json_import_progress = None
-            self.ui.statusbar.showMessage(f"正在后台导入星点配对 JSON: {json_path}")
+            self.ui.statusbar.showMessage(f"正在后台导入星点匹配 JSON: {json_path}")
 
         current_preview = self.current_image_preview
         if current_preview is None:
@@ -502,12 +502,12 @@ class StarPairSessionMixin:
                 switch_to_reference=self._star_pair_session_import_switch_to_reference,
             )
         except Exception as exc:  # noqa: BLE001 - 主线程恢复界面时也需要把错误反馈给用户。
-            self.ui.statusbar.showMessage(f"导入星点配对 JSON 失败: {exc}")
-            QMessageBox.critical(self, "导入星点配对 JSON 失败", str(exc))
+            self.ui.statusbar.showMessage(f"导入星点匹配 JSON 失败: {exc}")
+            QMessageBox.critical(self, "导入星点匹配 JSON 失败", str(exc))
 
     def _handle_star_pair_session_import_failed(self, error_message: str) -> None:
-        self.ui.statusbar.showMessage(f"导入星点配对 JSON 失败: {error_message}")
-        QMessageBox.critical(self, "导入星点配对 JSON 失败", error_message)
+        self.ui.statusbar.showMessage(f"导入星点匹配 JSON 失败: {error_message}")
+        QMessageBox.critical(self, "导入星点匹配 JSON 失败", error_message)
 
     def _apply_star_pair_session_payload(
         self,
@@ -521,7 +521,7 @@ class StarPairSessionMixin:
             raise ValueError("JSON 根对象必须是字典。")
         payload_format = payload.get("format")
         if payload_format != STAR_PAIR_SESSION_FORMAT:
-            raise ValueError("当前只支持 HoshinoPanoAssistant 星点配对 JSON。")
+            raise ValueError("当前只支持 HoshinoPanoAssistant 星点匹配 JSON。")
 
         reference_payload = payload.get("reference_payload")
         pair_payloads = payload.get("pairs", [])
@@ -552,7 +552,13 @@ class StarPairSessionMixin:
         self._suspend_alignment_updates = True
         try:
             self._set_alignment_model(payload.get("sky_alignment_model"))
-            self._apply_reference_payload(reference_payload, source_path)
+            # 匹配会话恢复图像几何与星空范围，但参考星数量沿用当前会话。
+            # 这也兼容旧版本把自动匹配总数误写成 reference_star_count 的 JSON。
+            self._apply_reference_payload(
+                reference_payload,
+                source_path,
+                preserve_reference_star_count=True,
+            )
             if current_tab is not None:
                 self.ui.tabWidgetMain.setCurrentWidget(current_tab)
             pair_records = star_pair_records_from_payloads(pair_payloads, observer=self._observer_settings())
@@ -601,5 +607,5 @@ class StarPairSessionMixin:
         elif current_tab is not None:
             self.ui.tabWidgetMain.setCurrentWidget(current_tab)
         self.ui.statusbar.showMessage(
-            f"已导入星点配对 JSON: {source_path}  真实图像: {image_path}  恢复配对: {restored_count}"
+            f"已导入星点匹配 JSON: {source_path}  真实图像: {image_path}  恢复匹配: {restored_count}"
         )

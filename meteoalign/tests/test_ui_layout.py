@@ -15,6 +15,8 @@ from PyQt5.QtWidgets import QApplication, QFormLayout, QHeaderView, QMainWindow,
 from meteoalign.application.app_sequence_table_preview import SequenceTablePreviewMixin
 from meteoalign.application.app_mosaic import MosaicProjectionMixin, MosaicSourceItem
 from meteoalign.application.app_rendering import RenderingMixin
+from meteoalign.application.main_window import MainWindow
+from meteoalign.application.star_pair_assistant_dialog import StarPairAssistantDialog
 from meteoalign.ui.ui_main_window import Ui_MainWindow
 
 
@@ -44,7 +46,7 @@ FORM_LAYOUTS = (
     "formLayoutImportedImage",
     "formLayoutCameraProfileReuse",
     "formLayoutAdjacentImageFraming",
-    "formLayoutAutoMatch",
+    "formLayoutSourceModel",
     "formLayoutMosaicSourceModel",
     "formLayoutMosaicObserver",
     "formLayoutMosaicProjection",
@@ -113,6 +115,61 @@ def test_dynamic_information_labels_are_not_collapsed_by_layout() -> None:
     value_label = ui.formLayoutImportedImage.itemAt(0, QFormLayout.FieldRole).widget()
     assert title_label.x() < value_label.x()
     assert value_label.width() > title_label.width()
+
+    window.close()
+
+
+def test_star_pair_assistant_owns_moved_controls_and_uses_normal_window_layer() -> None:
+    """匹配控件应位于窄幅普通顶层窗口，并可绑定给主窗口业务层使用。"""
+
+    app = QApplication.instance() or QApplication([])
+    window = QMainWindow()
+    main_ui = Ui_MainWindow()
+    main_ui.setupUi(window)
+    dialog = StarPairAssistantDialog()
+    dialog.bind_controls_to(main_ui)
+
+    assert not dialog.isModal()
+    assert dialog.parentWidget() is None
+    assert dialog.windowFlags() & Qt.WindowType_Mask == Qt.Window
+    assert not bool(dialog.windowFlags() & Qt.WindowStaysOnTopHint)
+    assert dialog.windowTitle() == "星点匹配助手"
+    assert dialog.width() == 390
+    assert dialog.minimumWidth() == 350
+    assert dialog.maximumWidth() == 390
+    assert main_ui.pushButtonOpenStarPairAssistant.text() == "星点匹配助手"
+    assert main_ui.tableWidgetStarPairs is dialog.ui.tableWidgetStarPairs
+    assert dialog.ui.pushButtonDeleteStarPairs.text() == "重置匹配列表"
+    assert dialog.ui.pushButtonClearStarPairs.text() == "清除所有匹配"
+    assert dialog.ui.horizontalLayoutStarPairSessionButtons.itemAt(0).widget() is dialog.ui.pushButtonImportStarPairs
+    assert dialog.ui.horizontalLayoutStarPairSessionButtons.itemAt(1).widget() is dialog.ui.pushButtonExportStarPairs
+    assert dialog.ui.horizontalLayoutStarPairResetButtons.itemAt(0).widget() is dialog.ui.pushButtonClearStarPairs
+    assert dialog.ui.horizontalLayoutStarPairResetButtons.itemAt(1).widget() is dialog.ui.pushButtonDeleteStarPairs
+    assert dialog.ui.formLayoutAutoMatch.fieldGrowthPolicy() == QFormLayout.AllNonFixedFieldsGrow
+
+    calls: list[str] = []
+    dialog.show = lambda: calls.append("show")  # type: ignore[method-assign]
+    dialog.raise_ = lambda: calls.append("raise")  # type: ignore[method-assign]
+    dialog.activateWindow = lambda: calls.append("activate")  # type: ignore[method-assign]
+    host = SimpleNamespace(star_pair_assistant=dialog)
+    MainWindow._show_star_pair_assistant(host)  # type: ignore[arg-type]
+    MainWindow._show_star_pair_assistant(host)  # type: ignore[arg-type]
+    assert calls == ["show", "raise", "activate"] * 2
+
+    dialog.close()
+    window.close()
+
+
+def test_horizontal_import_export_buttons_use_consistent_order() -> None:
+    """横向并列的导入、导出入口必须统一为导入在左、导出在右。"""
+
+    app = QApplication.instance() or QApplication([])
+    window = QMainWindow()
+    ui = Ui_MainWindow()
+    ui.setupUi(window)
+
+    assert ui.horizontalLayoutMosaicFramingIo.itemAt(0).widget() is ui.pushButtonImportMosaicFraming
+    assert ui.horizontalLayoutMosaicFramingIo.itemAt(1).widget() is ui.pushButtonExportMosaicFraming
 
     window.close()
 

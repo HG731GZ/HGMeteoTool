@@ -18,7 +18,7 @@ class _StatusBar:
 
 
 class _ClearAllHarness(StarPairActionsMixin):
-    """隔离验证清除全部配对前的确认流程。"""
+    """隔离验证清除全部匹配前的确认流程。"""
 
     def __init__(self, pair_count: int) -> None:
         self.ui = SimpleNamespace(statusbar=_StatusBar())

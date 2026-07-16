@@ -49,7 +49,7 @@ def _fit_point_weights(point_count: int, point_weights: np.ndarray | None) -> np
         return np.ones(point_count, dtype=np.float64)
     weights = np.asarray(point_weights, dtype=np.float64).reshape(-1)
     if weights.shape[0] != point_count:
-        raise ValueError("拟合权重数量必须与配对星数量一致。")
+        raise ValueError("拟合权重数量必须与匹配星数量一致。")
     if not np.all(np.isfinite(weights)):
         raise ValueError("拟合权重包含无效数值。")
     return np.clip(weights, FIT_WEIGHT_MIN, FIT_WEIGHT_MAX).astype(np.float64)
@@ -60,7 +60,7 @@ def _residual_anchor_mask(point_count: int, anchor_mask: np.ndarray | None) -> n
         return np.ones(point_count, dtype=bool)
     mask = np.asarray(anchor_mask, dtype=bool).reshape(-1)
     if mask.shape[0] != point_count:
-        raise ValueError("残差锚点标记数量必须与配对星数量一致。")
+        raise ValueError("残差锚点标记数量必须与匹配星数量一致。")
     return mask.astype(bool)
 
 

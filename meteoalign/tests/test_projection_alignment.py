@@ -59,7 +59,7 @@ def test_two_pairs_build_preliminary_reflected_similarity() -> None:
 
 
 def test_preliminary_alignment_rejects_one_pair() -> None:
-    """单个配对仍不足以确定位置、比例和旋转。"""
+    """单个匹配仍不足以确定位置、比例和旋转。"""
 
     with pytest.raises(ValueError, match="至少需要 2 对"):
         fit_preliminary_sky_alignment(
@@ -348,7 +348,7 @@ def _fit_real_pair_payload(payload: dict[str, object], matching_model: str):
 def test_real_star_pair_json_fisheye_alignment_stays_well_conditioned() -> None:
     json_path = Path("outputs/star_pairs_20260704_171042.json")
     if not json_path.exists():
-        pytest.skip("缺少实际星点配对 JSON，跳过真实数据回归测试。")
+        pytest.skip("缺少实际星点匹配 JSON，跳过真实数据回归测试。")
 
     payload = json.loads(json_path.read_text(encoding="utf-8"))
     transform, radec, pixels = _fit_real_pair_payload(payload, SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT)
@@ -366,7 +366,7 @@ def test_real_star_pair_json_fisheye_alignment_stays_well_conditioned() -> None:
 def test_real_star_pair_json_rectilinear_alignment_uses_reference_pose() -> None:
     json_path = Path("outputs/star_pairs_20260705_210257.json")
     if not json_path.exists():
-        pytest.skip("缺少 14mm 普通广角配对 JSON，跳过真实数据回归测试。")
+        pytest.skip("缺少 14mm 普通广角匹配 JSON，跳过真实数据回归测试。")
 
     payload = json.loads(json_path.read_text(encoding="utf-8"))
     transform, radec, pixels = _fit_real_pair_payload(payload, SKY_MATCHING_MODEL_RECTILINEAR)
@@ -387,7 +387,7 @@ def test_real_star_pair_json_rectilinear_alignment_uses_reference_pose() -> None
 def test_single_capture_equisolid_json_anchors_matched_stars() -> None:
     json_path = Path("outputs/star_pairs_20260704_214537.json")
     if not json_path.exists():
-        pytest.skip("缺少单次成像鱼眼配对 JSON，跳过锚点插值回归测试。")
+        pytest.skip("缺少单次成像鱼眼匹配 JSON，跳过锚点插值回归测试。")
 
     payload = json.loads(json_path.read_text(encoding="utf-8"))
     transform, radec, pixels = _fit_real_pair_payload(payload, SKY_MATCHING_MODEL_FISHEYE_EQUISOLID)

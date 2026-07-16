@@ -342,7 +342,7 @@ def _fit_known_projection_parameters(
             strict_visibility=True,
         )
         if not np.all(valid):
-            failure_messages.append("拟合后仍有配对星无法投影")
+            failure_messages.append("拟合后仍有匹配星无法投影")
             continue
         residual_vectors = projected - target_points
         if not _array_is_finite(residual_vectors):
@@ -394,15 +394,15 @@ def _fit_polynomial_coefficients(
     try:
         condition_number = float(np.linalg.cond(design))
     except np.linalg.LinAlgError as exc:
-        raise ValueError("配准矩阵无法稳定求解，请检查配对星位置。") from exc
+        raise ValueError("配准矩阵无法稳定求解，请检查匹配星位置。") from exc
     if not np.isfinite(condition_number) or condition_number > MAX_ALIGNMENT_CONDITION_NUMBER:
-        raise ValueError("配对星几何分布过于集中，无法稳定求解配准。")
+        raise ValueError("匹配星几何分布过于集中，无法稳定求解配准。")
     try:
         coefficients, _residuals, rank, _singular_values = np.linalg.lstsq(design, target_values, rcond=None)
     except np.linalg.LinAlgError as exc:
-        raise ValueError("配准矩阵无法稳定求解，请检查配对星位置。") from exc
+        raise ValueError("配准矩阵无法稳定求解，请检查匹配星位置。") from exc
     if not _array_is_finite(coefficients):
-        raise ValueError("配准结果包含无效系数，请检查配对星位置。")
+        raise ValueError("配准结果包含无效系数，请检查匹配星位置。")
     return coefficients.astype(np.float64), int(rank), int(design.shape[1])
 
 
@@ -418,7 +418,7 @@ def _fit_image_polynomial(
             coeff_x, rank_x, term_count = _fit_polynomial_coefficients(source_points, target_points[:, 0], degree)
             coeff_y, rank_y, _term_count_y = _fit_polynomial_coefficients(source_points, target_points[:, 1], degree)
             if rank_x < term_count or rank_y < term_count:
-                raise ValueError("配对星几何分布过于集中，无法稳定求解配准。")
+                raise ValueError("匹配星几何分布过于集中，无法稳定求解配准。")
         except ValueError as exc:
             last_error = exc
             continue
@@ -428,12 +428,12 @@ def _fit_image_polynomial(
                 (coeff_x, coeff_y)
             )
         if not _array_is_finite(predicted) or float(np.nanmax(np.abs(predicted))) > MAX_TRANSFORM_ABS_PX:
-            last_error = ValueError("配准结果数值过大，请检查配对星是否匹配正确。")
+            last_error = ValueError("配准结果数值过大，请检查匹配星是否匹配正确。")
             continue
         residual = predicted - target_points
         rms_px = float(np.sqrt(np.mean(np.sum(residual * residual, axis=1))))
         if not np.isfinite(rms_px):
-            last_error = ValueError("配准残差包含无效数值，请检查配对星位置。")
+            last_error = ValueError("配准残差包含无效数值，请检查匹配星位置。")
             continue
         return degree, coeff_x, coeff_y, rms_px
 
@@ -524,7 +524,7 @@ def fit_sky_alignment(
     center, east, north = _sky_plane_basis(sky_radec)
     sky_points = _project_radec_to_sky_plane(sky_radec[:, 0], sky_radec[:, 1], center, east, north)
     if not _array_is_finite(sky_points):
-        raise ValueError("天球投影包含无效数值，请检查配对星坐标。")
+        raise ValueError("天球投影包含无效数值，请检查匹配星坐标。")
     interpolation = fit_anchor_interpolation(
         sky_points,
         target,
@@ -535,7 +535,7 @@ def fit_sky_alignment(
     residual = predicted - target
     rms_px = float(np.sqrt(np.mean(np.sum(residual * residual, axis=1))))
     if not np.isfinite(rms_px):
-        raise ValueError("天球锚点插值残差包含无效数值，请检查配对星位置。")
+        raise ValueError("天球锚点插值残差包含无效数值，请检查匹配星位置。")
     return SkyAlignmentTransform(
         pair_count=pair_count,
         center_vector=center,

@@ -6,7 +6,7 @@ from dataclasses import replace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QApplication, QTableWidget, QTableWidgetSelectionRange
+from PyQt5.QtWidgets import QApplication, QMessageBox, QSpinBox, QTableWidget, QTableWidgetSelectionRange
 
 from meteoalign.application.app_constants import (
     AUTO_MATCH_CONSTRAINT_ANCHOR,
@@ -55,6 +55,9 @@ class _Ui:
     def __init__(self) -> None:
         self.tableWidgetStarPairs = QTableWidget()
         self.tableWidgetStarPairs.setColumnCount(5)
+        self.spinBoxReferenceStarCount = QSpinBox()
+        self.spinBoxReferenceStarCount.setRange(3, 40)
+        self.spinBoxReferenceStarCount.setValue(12)
         self.statusbar = _StatusBar()
 
 
@@ -88,6 +91,7 @@ class _StarPairTableHarness(StarPairTableMixin):
         self._sky_alignment_transform = None
         self._current_star_map = object()
         self._manual_reference_star_ids: list[str] = []
+        self._imported_reference_star_by_id: dict[str, ReferenceStar] = {}
         self._excluded_reference_star_ids: list[str] = []
         self._mask_excluded_reference_star_ids: set[str] = set()
         self.current_image_preview = None
@@ -150,6 +154,9 @@ class _StarPairTableHarness(StarPairTableMixin):
     def _remove_star_pair_annotation(self, star_id: str) -> None:
         self._star_pair_annotations.pop(star_id, None)
 
+    def _clear_star_pair_annotations(self) -> None:
+        self._star_pair_annotations.clear()
+
 
 def _row_for_star_id(harness: _StarPairTableHarness, star_id: str) -> int:
     table = harness.ui.tableWidgetStarPairs
@@ -201,7 +208,7 @@ def _select_star_rows(harness: _StarPairTableHarness, *star_ids: str) -> None:
 
 
 def test_delete_key_mixed_selection_only_clears_matched_rows() -> None:
-    """混选已配对和未配对行时，只清除配对，未配对行不得被删除。"""
+    """混选已匹配和未匹配行时，只清除匹配，未匹配行不得被删除。"""
 
     harness = _StarPairTableHarness(
         (_reference_star("matched-1", 1), _reference_star("unmatched-1", 2))
@@ -216,11 +223,11 @@ def test_delete_key_mixed_selection_only_clears_matched_rows() -> None:
     assert len(harness._star_pair_store) == 0
     assert set(_visible_star_ids(harness)) == {"matched-1", "unmatched-1"}
     assert harness._excluded_reference_star_ids == []
-    assert harness.ui.statusbar.messages[-1] == "已清除 1 个匹配；1 个未配对行保持不变。"
+    assert harness.ui.statusbar.messages[-1] == "已清除 1 个匹配；1 个未匹配行保持不变。"
 
 
 def test_delete_key_all_unmatched_selection_deletes_rows() -> None:
-    """选区全部未配对时，Delete/Backspace 才删除所选行。"""
+    """选区全部未匹配时，Delete/Backspace 才删除所选行。"""
 
     harness = _StarPairTableHarness(
         (_reference_star("unmatched-1", 1), _reference_star("unmatched-2", 2))
@@ -257,6 +264,67 @@ def test_deleting_auto_match_group_does_not_move_children_to_manual_group() -> N
     assert _visible_star_ids(harness) == ["manual-1"]
     assert "auto-1" in harness._excluded_reference_star_ids
     assert "auto-2" in harness._excluded_reference_star_ids
+
+
+def test_reset_all_rows_rebuilds_startup_reference_list() -> None:
+    """重置匹配列表后应清空派生分组与排除项，再恢复当前范围内的初始标注星。"""
+
+    harness = _StarPairTableHarness(
+        (
+            _reference_star("manual-1", 1),
+            _reference_star("manual-2", 2),
+            _reference_star("auto-1", 3),
+        )
+    )
+    harness._auto_match_reference_star_ids = ["auto-1"]
+    harness._auto_match_group_order = ["A"]
+    harness._auto_match_group_by_star_id = {"auto-1": "A"}
+    harness._auto_match_group_expanded_by_id = {"A": False}
+    harness._excluded_reference_star_ids = ["manual-2"]
+    harness._update_star_pair_table((harness.reference_stars[0], harness.reference_stars[2]))
+    _set_matched_position(harness, "manual-1")
+    _set_matched_position(harness, "auto-1")
+
+    pair_count, deleted_count, rebuilt_count = harness.reset_reference_star_list()
+
+    assert pair_count == 2
+    assert deleted_count == 2
+    assert rebuilt_count == 3
+    assert _visible_star_ids(harness) == ["manual-1", "manual-2", "auto-1"]
+    assert len(harness._star_pair_store) == 0
+    assert harness._manual_reference_star_ids == []
+    assert harness._auto_match_reference_star_ids == []
+    assert harness._auto_match_group_order == []
+    assert harness._auto_match_group_by_star_id == {}
+    assert harness._auto_match_group_expanded_by_id == {}
+    assert harness._excluded_reference_star_ids == []
+    assert harness._mask_excluded_reference_star_ids == set()
+    assert harness.ui.spinBoxReferenceStarCount.value() == 12
+
+
+def test_reset_match_list_confirmation_uses_reset_wording(monkeypatch) -> None:
+    """重置入口及确认提示不应继续使用“删除所有匹配”的旧名称。"""
+
+    harness = _StarPairTableHarness((_reference_star("manual-1", 1),))
+    harness._update_star_pair_table(harness.reference_stars)
+    captured: list[tuple[str, str]] = []
+
+    def confirm(_parent, title, message, *_args):  # type: ignore[no-untyped-def]
+        captured.append((title, message))
+        return QMessageBox.Yes
+
+    monkeypatch.setattr(QMessageBox, "question", confirm)
+
+    harness.delete_all_star_pair_rows()
+
+    assert captured == [
+        (
+            "确认重置匹配列表",
+            "确定要重置当前匹配列表吗？\n\n"
+            "列表中的 1 行参考星及其匹配将被清空，随后会按当前参考星图范围和星空模拟的标注设置重新生成初始列表。",
+        )
+    ]
+    assert harness.ui.statusbar.messages[-1] == "已重置匹配列表：清空 1 行参考星，并按当前参考星图重新添加 1 颗标注星。"
 
 
 def test_deleting_matched_manual_row_removes_it_instead_of_preserving_matched_star() -> None:

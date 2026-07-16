@@ -92,7 +92,7 @@ def _fit_point_weights(point_count: int, point_weights: np.ndarray | None) -> np
         return np.ones(point_count, dtype=np.float64)
     weights = np.asarray(point_weights, dtype=np.float64).reshape(-1)
     if weights.shape[0] != point_count:
-        raise ValueError("固定相机模型权重数量必须与配对星数量一致。")
+        raise ValueError("固定相机模型权重数量必须与匹配星数量一致。")
     if not np.all(np.isfinite(weights)):
         raise ValueError("固定相机模型权重包含无效数值。")
     return np.clip(weights, FIT_WEIGHT_MIN, FIT_WEIGHT_MAX).astype(np.float64)
@@ -550,7 +550,7 @@ def fit_fixed_camera_model(
     else:
         raw_anchor_mask = np.asarray(residual_anchor_mask, dtype=bool).reshape(-1)
         if raw_anchor_mask.shape[0] != vectors.shape[0]:
-            raise ValueError("固定相机模型锚点标记数量必须与配对星数量一致。")
+            raise ValueError("固定相机模型锚点标记数量必须与匹配星数量一致。")
         anchor_mask = raw_anchor_mask[finite]
     pseudo_radec = unit_vectors_to_radec(normalized_vectors)
     transform = fit_projection_sky_alignment(

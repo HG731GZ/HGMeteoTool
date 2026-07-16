@@ -33,10 +33,10 @@ SEQUENCE_REFINEMENT_MODES = (
 
 
 class SequenceRefinementMixin:
-    """用序列输出的配对星对每帧模型进行可选后处理。"""
+    """用序列输出的匹配星对每帧模型进行可选后处理。"""
 
     def _sequence_refinement_ready(self) -> bool:
-        """仅当序列每张图都具有配对和模型输出时允许精修。"""
+        """仅当序列每张图都具有匹配和模型输出时允许精修。"""
 
         items = list(getattr(self, "_image_sequence_items", []))
         if not items or bool(getattr(self, "_sequence_processing_active", False)):
@@ -79,21 +79,21 @@ class SequenceRefinementMixin:
 
     @staticmethod
     def _sequence_refinement_fit_data(starpair_payload: dict[str, object]) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """从序列配对 JSON 提取 RA/Dec、PSF 像素、权重和锚点标记。"""
+        """从序列匹配 JSON 提取 RA/Dec、PSF 像素、权重和锚点标记。"""
 
         pair_payloads = starpair_payload.get("pairs")
         if not isinstance(pair_payloads, list):
-            raise ValueError("配对 JSON 缺少 pairs 列表。")
+            raise ValueError("匹配 JSON 缺少 pairs 列表。")
         records = [record for record in star_pair_records_from_payloads(pair_payloads) if record.is_valid_for_fit()]
         if len(records) < MIN_ALIGNMENT_PAIRS:
-            raise ValueError(f"有效配对只有 {len(records)} 个，至少需要 {MIN_ALIGNMENT_PAIRS} 个。")
+            raise ValueError(f"有效匹配只有 {len(records)} 个，至少需要 {MIN_ALIGNMENT_PAIRS} 个。")
         return SequenceRefinementMixin._sequence_refinement_fit_arrays(records)
 
     @staticmethod
     def _sequence_refinement_fit_arrays(
         records: list[StarPairRecord],
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """将配对记录转换为两种精修共用的数值输入。"""
+        """将匹配记录转换为两种精修共用的数值输入。"""
 
         ra_dec_points = np.asarray(
             [(record.reference_star.ra_deg, record.reference_star.dec_deg) for record in records],
@@ -126,7 +126,7 @@ class SequenceRefinementMixin:
         starpair_payload: dict[str, object],
         profile: CameraCalibrationProfile,
     ) -> str:
-        """选择单帧重新拟合的基础投影，优先沿用序列配对时的选择。"""
+        """选择单帧重新拟合的基础投影，优先沿用序列匹配时的选择。"""
 
         selected = str(starpair_payload.get("sky_alignment_model") or "").strip()
         if selected == SKY_MATCHING_MODEL_POLYNOMIAL:

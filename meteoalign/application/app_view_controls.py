@@ -222,12 +222,18 @@ class ViewControlsMixin:
             if event.type() in (QEvent.Resize, QEvent.Show):
                 QTimer.singleShot(0, lambda label=watched: self._refresh_elided_label(label))
             return False
-        if watched is self.ui.tableWidgetStarPairs:
+        star_pair_table = getattr(self.ui, "tableWidgetStarPairs", None)
+        if watched is star_pair_table:
             if event.type() == QEvent.KeyPress and event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
                 return self._handle_star_pair_delete_key()
             if event.type() == QEvent.Wheel:
                 return self._handle_star_pair_table_wheel(event)
-        if watched is self.ui.tableWidgetStarPairs.viewport() and event.type() == QEvent.Wheel:
+        try:
+            star_pair_viewport = star_pair_table.viewport() if star_pair_table is not None else None
+        except RuntimeError:
+            # 独立匹配窗口关闭时，Qt 可能先销毁表格，再向主窗口事件过滤器投递清理事件。
+            star_pair_viewport = None
+        if watched is star_pair_viewport and event.type() == QEvent.Wheel:
             return self._handle_star_pair_table_wheel(event)
         if hasattr(self.ui, "tableWidgetImageSequence") and watched is self.ui.tableWidgetImageSequence:
             if event.type() == QEvent.Wheel:

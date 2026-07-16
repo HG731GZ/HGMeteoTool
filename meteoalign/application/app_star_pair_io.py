@@ -62,6 +62,7 @@ class StarPairIOMixin(
     _apply_sequence_time_fit: object  # 方法
     _sequence_pair_records: object  # 方法
     _clear_star_pair_positions: object  # 方法
+    reset_reference_star_list: object  # 方法
     _clear_star_pair_annotations: object  # 方法
     _refresh_star_pair_table_styles: object  # 方法
     _refresh_reference_stars_from_current_map: object  # 方法

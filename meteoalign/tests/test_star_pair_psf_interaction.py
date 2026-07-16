@@ -46,7 +46,7 @@ def _reference_star(star_id: str, index: int) -> ReferenceStar:
 
 
 def test_right_click_auto_pair_search_radius_uses_independent_preferences() -> None:
-    """单星自动配对应使用独立 RMS 公式，而不依赖批量匹配搜索半径控件。"""
+    """单星自动匹配应使用独立 RMS 公式，而不依赖批量匹配搜索半径控件。"""
 
     host = SimpleNamespace(
         current_image_preview=SimpleNamespace(
@@ -127,7 +127,7 @@ def test_psf_annotation_adds_green_outer_ellipse_at_configured_diameter() -> Non
 
 
 def test_focus_blue_circle_radius_is_twice_auto_pair_search_radius() -> None:
-    """蓝圈半径必须严格等于自动配对搜索半径的两倍。"""
+    """蓝圈半径必须严格等于自动匹配搜索半径的两倍。"""
 
     _qapp()
     host = _AnnotationHarness()
@@ -147,7 +147,7 @@ def test_focus_blue_circle_radius_is_twice_auto_pair_search_radius() -> None:
 
 
 def test_double_click_link_runs_silent_auto_pair_only_for_unmatched_row() -> None:
-    """联动开关开启时，未配对行双击应把静默标志传给自动配对。"""
+    """联动开关开启时，未匹配行双击应把静默标志传给自动匹配。"""
 
     calls: list[tuple[int, bool]] = []
     host = SimpleNamespace(
@@ -215,7 +215,7 @@ def test_linked_auto_pair_failure_keeps_blue_circle_and_does_not_open_dialog(mon
 
     assert result is False
     assert focused == [(0, 120.0, 80.0, 17)]
-    assert status_messages[-1] == "自动配对失败：搜索范围内没有可靠星点"
+    assert status_messages[-1] == "自动匹配失败：搜索范围内没有可靠星点"
 
 
 def test_psf_quality_sort_keeps_missing_values_last_in_both_directions() -> None:

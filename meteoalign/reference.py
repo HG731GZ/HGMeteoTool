@@ -19,6 +19,7 @@ def build_reference_payload(
     reference_mag_limit: float | None = None,
     manual_reference_star_ids: tuple[str, ...] = (),
     generated_at_utc: datetime | None = None,
+    reference_star_count: int | None = None,
 ) -> dict[str, object]:
     generated_time = generated_at_utc or datetime.now(timezone.utc)
     if generated_time.tzinfo is None:
@@ -64,7 +65,10 @@ def build_reference_payload(
             "visible_mag_limit": visible_mag_limit,
             "reference_label_mode": reference_label_mode,
             "reference_mag_limit": reference_mag_limit,
-            "reference_star_count": len(reference_stars),
+            # 标注数量是用户设置，不等于为保存手动/自动匹配而附带的全部参考星记录数。
+            "reference_star_count": (
+                len(reference_stars) if reference_star_count is None else int(reference_star_count)
+            ),
         },
         "manual_reference_star_ids": list(manual_reference_star_ids),
         "stars": [

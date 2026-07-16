@@ -119,7 +119,13 @@ class ReferenceJsonIOMixin:
             parsed = parsed.replace(tzinfo=timezone.utc)
         return parsed.astimezone(timezone.utc)
 
-    def _apply_reference_payload(self, payload: object, source_path: Path) -> None:
+    def _apply_reference_payload(
+        self,
+        payload: object,
+        source_path: Path,
+        *,
+        preserve_reference_star_count: bool = False,
+    ) -> None:
         if not isinstance(payload, dict):
             raise ValueError("JSON 根对象必须是字典。")
         if payload.get("format") != "meteoalign_phase1_reference":
@@ -192,9 +198,14 @@ class ReferenceJsonIOMixin:
             if reference_label_mode not in REFERENCE_LABEL_MODES:
                 reference_label_mode = REFERENCE_LABEL_MODE_FIXED_COUNT
             self.ui.comboBoxReferenceLabelMode.setCurrentIndex(REFERENCE_LABEL_MODES.index(reference_label_mode))
-            self.ui.spinBoxReferenceStarCount.setValue(self._payload_int(render, "reference_star_count"))
+            if not preserve_reference_star_count:
+                self.ui.spinBoxReferenceStarCount.setValue(self._payload_int(render, "reference_star_count"))
             self.ui.doubleSpinBoxReferenceMagLimit.setValue(
-                self._payload_optional_float(render, "reference_mag_limit", self.ui.doubleSpinBoxReferenceMagLimit.value())
+                self._payload_optional_float(
+                    render,
+                    "reference_mag_limit",
+                    self.ui.doubleSpinBoxReferenceMagLimit.value(),
+                )
             )
         finally:
             self._syncing_camera_dimensions = previous_syncing

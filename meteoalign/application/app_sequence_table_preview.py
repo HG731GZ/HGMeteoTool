@@ -218,17 +218,17 @@ class SequenceTablePreviewMixin:
 
     def _sequence_starpair_rms_from_json(self, json_path: Path) -> tuple[float | None, int, str, bool]:
         if not json_path.exists():
-            return None, 0, "未找到同名配对 JSON。", False
+            return None, 0, "未找到同名匹配 JSON。", False
         try:
             payload = json.loads(json_path.read_text(encoding="utf-8"))
         except Exception as exc:  # noqa: BLE001 - 这里只用于界面诊断，坏文件不阻断序列导入。
-            return None, 0, f"已有配对 JSON：{json_path}\n无法读取：{exc}", True
+            return None, 0, f"已有匹配 JSON：{json_path}\n无法读取：{exc}", True
         if not isinstance(payload, dict):
-            return None, 0, f"已有配对 JSON：{json_path}\n根对象不是字典。", True
+            return None, 0, f"已有匹配 JSON：{json_path}\n根对象不是字典。", True
 
         pair_payloads = payload.get("pairs")
         if not isinstance(pair_payloads, list):
-            return None, 0, f"已有配对 JSON：{json_path}\n没有 pairs 列表。", True
+            return None, 0, f"已有匹配 JSON：{json_path}\n没有 pairs 列表。", True
         residuals: list[float] = []
         for pair_payload in pair_payloads:
             if not isinstance(pair_payload, dict):
@@ -245,10 +245,10 @@ class SequenceTablePreviewMixin:
             if math.isfinite(residual):
                 residuals.append(residual)
         if not residuals:
-            return None, len(pair_payloads), f"已有配对 JSON：{json_path}\n但没有可用残差字段。", True
+            return None, len(pair_payloads), f"已有匹配 JSON：{json_path}\n但没有可用残差字段。", True
         residual_array = np.asarray(residuals, dtype=np.float64)
         rms = float(np.sqrt(np.mean(residual_array * residual_array)))
-        tooltip = "已有配对 JSON：{path}\n配对数：{count}\n残差 RMS：{rms:.2f} px".format(
+        tooltip = "已有匹配 JSON：{path}\n匹配数：{count}\n残差 RMS：{rms:.2f} px".format(
             path=json_path,
             count=len(residuals),
             rms=rms,
