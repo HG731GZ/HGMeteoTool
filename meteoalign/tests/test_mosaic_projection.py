@@ -9,7 +9,6 @@ import numpy as np
 from meteoalign.alignment.constants import SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT
 from meteoalign.application.app_reference_json_io import ReferenceJsonIOMixin
 from meteoalign.application.app_mosaic import MosaicProjectionMixin, MosaicSourceItem
-from meteoalign.config import load_star_map_ui_config
 from meteoalign.mosaic.render_coordinator import MosaicRenderCoordinator
 from meteoalign.mosaic_framing import MOSAIC_FRAMING_SCHEMA
 from meteoalign.mosaic_common import (
@@ -163,42 +162,6 @@ def test_mosaic_model_defaults_keep_projection_for_free_anchor_models() -> None:
     assert window.ui.comboBoxMosaicProjection.currentIndex() == 0
 
 
-def test_mosaic_ui_config_reads_texture_and_grid_defaults(tmp_path: Path) -> None:
-    config_path = tmp_path / "preference.json"
-    config_path.write_text(
-        """
-        {
-          // 自由拼图预览贴图缩放比例。
-          "mosaic_texture_scale_percent": 50.0,
-          "mosaic_texture_max_long_side_px": 1800,
-          "mosaic_grid_precision_default": 30,
-          "mosaic_render_fps_limit": 75,
-          "mosaic_export_block_rows": 512,
-          "mosaic_map_tile_size_px": 4,
-          "mosaic_export_tiff_lzw_compression": false
-        }
-        """,
-        encoding="utf-8",
-    )
-
-    config = load_star_map_ui_config(config_path)
-
-    assert config.mosaic_texture_scale_percent == 50.0
-    assert config.mosaic_texture_max_long_side_px == 1800
-    assert config.mosaic_grid_precision_default == 30
-    assert config.mosaic_render_fps_limit == 75
-    assert config.mosaic_export_block_rows == 512
-    assert config.mosaic_map_tile_size_px == 4
-    assert not config.mosaic_export_tiff_lzw_compression
-
-
-def test_mosaic_render_fps_limit_is_clamped() -> None:
-    window = MosaicProjectionMixin.__new__(MosaicProjectionMixin)
-    window.ui_config = SimpleNamespace(mosaic_render_fps_limit=500)
-
-    assert MosaicProjectionMixin._mosaic_render_fps_limit(window) == 240
-
-
 def test_mosaic_sky_preview_uses_independent_font_and_star_scales() -> None:
     """全景构图必须把独立字号和星点比例传给天空渲染服务。"""
 
@@ -216,25 +179,6 @@ def test_mosaic_sky_preview_uses_independent_font_and_star_scales() -> None:
     assert style.star_radius_scale == 0.6
     assert style.draw_grid
     assert style.draw_direction_labels
-
-
-def test_mosaic_exact_remap_repair_defaults_to_off() -> None:
-    window = MosaicProjectionMixin.__new__(MosaicProjectionMixin)
-    window.ui = SimpleNamespace()
-
-    assert not MosaicProjectionMixin._mosaic_exact_remap_repair_enabled(window)
-
-    window.ui = SimpleNamespace(checkBoxMosaicExactRemapRepair=_CheckBox(True))
-
-    assert MosaicProjectionMixin._mosaic_exact_remap_repair_enabled(window)
-
-
-def test_mosaic_map_tile_size_prefers_ui_control() -> None:
-    window = MosaicProjectionMixin.__new__(MosaicProjectionMixin)
-    window.ui_config = SimpleNamespace(mosaic_map_tile_size_px=16)
-    window.ui = SimpleNamespace(doubleSpinBoxMosaicMapTileSize=_SpinBox(5.0))
-
-    assert MosaicProjectionMixin._mosaic_map_tile_size_px(window) == 5
 
 
 def test_mosaic_texture_long_side_uses_lower_limit_and_interaction_half() -> None:

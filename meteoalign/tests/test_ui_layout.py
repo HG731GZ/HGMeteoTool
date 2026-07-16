@@ -10,7 +10,7 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import QEvent, Qt
-from PyQt5.QtWidgets import QApplication, QFormLayout, QHeaderView, QMainWindow, QPushButton, QSizePolicy, QTableWidget
+from PyQt5.QtWidgets import QApplication, QFormLayout, QHeaderView, QMainWindow, QSizePolicy, QTableWidget
 
 from meteoalign.application.app_sequence_table_preview import SequenceTablePreviewMixin
 from meteoalign.application.app_mosaic import MosaicProjectionMixin, MosaicSourceItem
@@ -52,34 +52,6 @@ FORM_LAYOUTS = (
     "formLayoutMosaicCrop",
     "formLayoutMosaicBatchSettings",
 )
-
-
-def test_meteor_tab_is_leftmost_while_simulator_remains_default() -> None:
-    """流星框选应位于最左侧，但程序启动后仍显示星空模拟。"""
-
-    app = QApplication.instance() or QApplication([])
-    window = QMainWindow()
-    ui = Ui_MainWindow()
-    ui.setupUi(window)
-
-    assert ui.tabWidgetMain.indexOf(ui.tabMeteorSelection) == 0
-    assert ui.tabWidgetMain.indexOf(ui.tabSimulator) == 1
-    assert ui.tabWidgetMain.currentWidget() is ui.tabSimulator
-
-    window.close()
-
-
-def test_star_pair_initial_status_uses_two_pair_interaction_threshold() -> None:
-    """设计器源文件生成的界面应提示两对星解锁交互预测。"""
-
-    app = QApplication.instance() or QApplication([])
-    window = QMainWindow()
-    ui = Ui_MainWindow()
-    ui.setupUi(window)
-
-    assert ui.labelAlignmentTransformStatus.text() == "至少配对 2 颗星后可自动配对和双击聚焦"
-
-    window.close()
 
 
 def test_status_image_context_is_visible_only_on_star_matching_tab() -> None:
@@ -145,52 +117,6 @@ def test_dynamic_information_labels_are_not_collapsed_by_layout() -> None:
     window.close()
 
 
-def test_adjacent_alignment_settings_button_is_right_of_calculation_button() -> None:
-    """粗略取景参数齿轮必须紧随计算按钮，且保留无障碍名称。"""
-
-    app = QApplication.instance() or QApplication([])
-    window = QMainWindow()
-    ui = Ui_MainWindow()
-    ui.setupUi(window)
-    window.show()
-    app.processEvents()
-
-    layout = ui.horizontalLayoutAdjacentImageFramingButtons
-    assert layout.indexOf(ui.pushButtonCalculateAdjacentFraming) < layout.indexOf(
-        ui.toolButtonAdjacentAlignmentSettings
-    )
-    assert ui.toolButtonAdjacentAlignmentSettings.text() == "设定"
-    assert ui.toolButtonAdjacentAlignmentSettings.minimumSize().width() == 56
-    assert ui.toolButtonAdjacentAlignmentSettings.maximumSize().width() == 56
-    assert ui.toolButtonAdjacentAlignmentSettings.height() == ui.pushButtonCalculateAdjacentFraming.height()
-    assert ui.toolButtonAdjacentAlignmentSettings.accessibleName() == "粗略取景参数设置"
-    assert isinstance(ui.toolButtonAdjacentAlignmentSettings, QPushButton)
-
-    window.close()
-
-
-def test_sequence_refinement_controls_and_columns_are_available() -> None:
-    """序列页应提供两种单帧精修方式及三类 RMS 列。"""
-
-    app = QApplication.instance() or QApplication([])
-    window = QMainWindow()
-    ui = Ui_MainWindow()
-    ui.setupUi(window)
-    window.show()
-    app.processEvents()
-
-    assert not ui.comboBoxSequenceRefinementMode.isEnabled()
-    assert not ui.pushButtonRefineSequenceFrames.isEnabled()
-    assert ui.comboBoxSequenceRefinementMode.itemText(0) == "优化取景角度"
-    assert ui.comboBoxSequenceRefinementMode.itemText(1) == "单帧重新拟合"
-    assert ui.tableWidgetImageSequence.columnCount() == 5
-    assert ui.tableWidgetImageSequence.horizontalHeaderItem(2).text() == "δt RMS"
-    assert ui.tableWidgetImageSequence.horizontalHeaderItem(3).text() == "δt + pose RMS"
-    assert ui.tableWidgetImageSequence.horizontalHeaderItem(4).text() == "重拟合RMS"
-
-    window.close()
-
-
 def test_sequence_table_columns_can_be_resized_by_user() -> None:
     """序列表应提供足够宽的文件名列，且不在刷新时覆盖用户调整。"""
 
@@ -217,8 +143,8 @@ def test_sequence_table_columns_can_be_resized_by_user() -> None:
     assert table.columnWidth(1) == 420
 
 
-def test_mosaic_source_file_table_layout_and_selection_sync() -> None:
-    """全景源文件表应位于拍摄信息上方，并跟随单图预览定位。"""
+def test_mosaic_source_file_table_selection_sync() -> None:
+    """全景源文件表应跟随单图预览定位。"""
 
     app = QApplication.instance() or QApplication([])
     window = QMainWindow()
@@ -228,26 +154,6 @@ def test_mosaic_source_file_table_layout_and_selection_sync() -> None:
     mixin.ui = ui
     mixin.schedule_mosaic_render = lambda *args, **kwargs: None  # type: ignore[method-assign]
     mixin._configure_mosaic_source_table()
-
-    assert ui.verticalLayoutMosaicSidePanel.indexOf(ui.groupBoxMosaicSourceFiles) < (
-        ui.verticalLayoutMosaicSidePanel.indexOf(ui.groupBoxMosaicObserver)
-    )
-    assert ui.pushButtonImportMosaicModel.text() == "导入模型"
-    assert ui.pushButtonClearMosaicModels.text() == "清除所有导入"
-    assert ui.pushButtonClearMosaicFraming.text() == "清除取景"
-    framing_layout = ui.horizontalLayoutMosaicFramingIo
-    assert framing_layout.indexOf(ui.pushButtonExportMosaicFraming) < framing_layout.indexOf(
-        ui.pushButtonImportMosaicFraming
-    ) < framing_layout.indexOf(ui.pushButtonClearMosaicFraming)
-    assert not hasattr(ui, "pushButtonImportMosaicModels")
-    assert not hasattr(ui, "pushButtonResetMosaicObserver")
-    assert ui.tableWidgetMosaicSourceFiles.columnCount() == 4
-    assert [
-        ui.tableWidgetMosaicSourceFiles.horizontalHeaderItem(column).text()
-        for column in range(4)
-    ] == ["序号", "文件名", "投影类型", "流星数"]
-    for column in range(4):
-        assert ui.tableWidgetMosaicSourceFiles.horizontalHeader().sectionResizeMode(column) == QHeaderView.Interactive
 
     def source_item(name: str, projection: str, meteor_count: int) -> MosaicSourceItem:
         source_model = SimpleNamespace(

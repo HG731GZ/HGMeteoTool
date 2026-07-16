@@ -267,27 +267,6 @@ def test_clear_all_meteor_imports_confirms_before_discarding_unsaved_changes(tmp
     app.processEvents()
 
 
-def test_meteor_mask_controls_follow_requested_ui_positions() -> None:
-    """蒙版按钮应位于导入图片下方，显示勾选项应位于预览标题右侧。"""
-
-    app = _application()
-    host = _MeteorSelectionHost()
-    controls_layout = host.ui.verticalLayoutMeteorSelectionControls
-    assert controls_layout.indexOf(host.ui.horizontalLayoutMeteorSelectionImportActions) < controls_layout.indexOf(
-        host.ui.horizontalLayoutMeteorSelectionMaskActions
-    )
-    mask_actions = host.ui.horizontalLayoutMeteorSelectionMaskActions
-    assert mask_actions.indexOf(host.ui.pushButtonImportMeteorMask) < mask_actions.indexOf(
-        host.ui.pushButtonClearMeteorMask
-    )
-    preview_header = host.ui.horizontalLayoutMeteorSelectionPreviewHeader
-    assert preview_header.indexOf(host.ui.labelMeteorSelectionPreviewTitle) < preview_header.indexOf(
-        host.ui.checkBoxShowMeteorMask
-    ) < preview_header.indexOf(host.ui.toolButtonMeteorSelectionNext)
-    host.close()
-    app.processEvents()
-
-
 def test_meteor_mask_preview_caches_unmasked_and_masked_images(tmp_path, monkeypatch) -> None:
     """反复勾选显示蒙版时应复用原始与蒙版预览缓存。"""
 

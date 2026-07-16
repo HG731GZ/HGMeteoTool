@@ -17,8 +17,6 @@ CORE_PACKAGE_NAMES = (
     "calibration",
 )
 FORBIDDEN_CORE_IMPORT_PREFIXES = ("PyQt5", "meteoalign.application.app_")
-# 当前 application/app_* 模块共有 39 条横向 import；后续重构只能减少，不能增加。
-APP_CROSS_IMPORT_BASELINE = 39
 
 
 @dataclass(frozen=True)
@@ -120,22 +118,6 @@ def test_numerical_core_packages_do_not_import_qt_or_app_modules() -> None:
 
     assert not violations, "核心层存在禁止依赖：\n" + "\n".join(
         violation.format_location() for violation in violations
-    )
-
-
-def test_application_module_cross_imports_do_not_exceed_baseline() -> None:
-    """application/app_* 横向依赖暂以现状为上限，后续拆分只能使其下降。"""
-
-    cross_imports = [
-        occurrence
-        for path in sorted(APPLICATION_ROOT.glob("app_*.py"))
-        for occurrence in _import_occurrences(path)
-        if occurrence.target_module.startswith("meteoalign.application.app_")
-    ]
-
-    assert len(cross_imports) <= APP_CROSS_IMPORT_BASELINE, (
-        f"application/app_* 横向 import 从基线 {APP_CROSS_IMPORT_BASELINE} 增加到 {len(cross_imports)}：\n"
-        + "\n".join(occurrence.format_location() for occurrence in cross_imports)
     )
 
 

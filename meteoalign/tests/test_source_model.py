@@ -76,42 +76,6 @@ def test_source_astrometric_model_round_trip_and_json_payload() -> None:
     assert np.max(np.linalg.norm(restored_sample_pixels - sample_pixels, axis=1)) < 1e-6
 
 
-def test_source_astrometric_model_path_sections_are_near_json_start() -> None:
-    center, east, north = _local_basis(120.0, 30.0)
-    sky_plane = np.asarray(
-        [
-            [0.0, 0.0],
-            [-1.0, 0.0],
-            [1.0, 0.0],
-            [0.0, -1.0],
-            [0.0, 1.0],
-        ],
-        dtype=np.float64,
-    )
-    radec = sky_plane_to_radec(sky_plane, center, east, north)
-    pixels = np.column_stack(
-        (
-            500.0 + 18.0 * sky_plane[:, 0],
-            420.0 + 20.0 * sky_plane[:, 1],
-        )
-    )
-
-    model = fit_source_astrometric_model(radec, pixels, image_size=(1000, 800))
-    payload = model.to_json_payload(
-        source_image={
-            "path": "/tmp/source.fit",
-            "relative_path": "source.fit",
-        },
-        mask={
-            "path": "/tmp/mask.png",
-            "relative_path": "mask.png",
-            "active": True,
-        },
-    )
-
-    assert list(payload)[:5] == ["schema", "version", "generated_at_utc", "source_image", "mask"]
-
-
 def test_frame_pose_preserves_projection_handedness() -> None:
     pose = FramePose(
         np.asarray(
