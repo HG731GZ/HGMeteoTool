@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
-from PyQt5.QtWidgets import QFileDialog, QMessageBox
+from PyQt5.QtWidgets import QMessageBox
 
 from ..alignment.constants import MIN_ALIGNMENT_PAIRS
 from .app_utils import _relative_image_path_for_session
@@ -197,26 +197,43 @@ class SourceModelExportMixin:
             generated_at_utc=datetime.now(timezone.utc).isoformat(),
         )
 
+    def _write_current_source_model(
+        self,
+        *,
+        preload_to_mosaic: bool = True,
+    ) -> tuple[Path, int, float, bool] | None:
+        """把当前源图映射写入默认同名 JSON；用户拒绝覆盖时返回空。"""
+
+        if self.current_image_preview is None:
+            raise ValueError("请先导入真实图像，再导出 xy→RA/Dec 映射 JSON。")
+        default_path = self._default_source_model_path()
+        default_path.parent.mkdir(parents=True, exist_ok=True)
+        json_path = default_path
+        payload = self._build_source_model_payload(json_path)
+        diagnostics = payload.get("diagnostics", {})
+        pair_count = int(diagnostics.get("pair_count", 0)) if isinstance(diagnostics, dict) else 0
+        rms_px = float(diagnostics.get("rms_px", float("nan"))) if isinstance(diagnostics, dict) else float("nan")
+        if not self._confirm_overwrite_if_existing_has_more_pairs(json_path, pair_count, model_json=True):
+            self.ui.statusbar.showMessage("已取消导出 xy→RA/Dec 映射 JSON。")
+            return None
+        json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        preloaded_to_mosaic = False
+        if preload_to_mosaic and hasattr(self, "load_mosaic_model_json"):
+            preloaded_to_mosaic = bool(self.load_mosaic_model_json(json_path, quiet=True))
+        if hasattr(self, "_refresh_image_group_assistant_status"):
+            self._refresh_image_group_assistant_status()
+        return json_path, pair_count, rms_px, preloaded_to_mosaic
+
     def export_source_model_json(self) -> None:
         if self.current_image_preview is None:
             QMessageBox.information(self, "尚未导入图像", "请先导入真实图像，再导出 xy→RA/Dec 映射 JSON。")
             return
 
-        default_path = self._default_source_model_path()
-        default_path.parent.mkdir(parents=True, exist_ok=True)
-        json_path = default_path
         try:
-            payload = self._build_source_model_payload(json_path)
-            diagnostics = payload.get("diagnostics", {})
-            pair_count = int(diagnostics.get("pair_count", 0)) if isinstance(diagnostics, dict) else 0
-            rms_px = float(diagnostics.get("rms_px", float("nan"))) if isinstance(diagnostics, dict) else float("nan")
-            if not self._confirm_overwrite_if_existing_has_more_pairs(json_path, pair_count, model_json=True):
-                self.ui.statusbar.showMessage("已取消导出 xy→RA/Dec 映射 JSON。")
+            result = self._write_current_source_model()
+            if result is None:
                 return
-            json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            preloaded_to_mosaic = False
-            if hasattr(self, "load_mosaic_model_json"):
-                preloaded_to_mosaic = bool(self.load_mosaic_model_json(json_path, quiet=True))
+            json_path, pair_count, rms_px, preloaded_to_mosaic = result
             preload_status = "，已预载到全景构图" if preloaded_to_mosaic else "，自由投影预载失败"
             self.ui.statusbar.showMessage(
                 f"已导出 xy→RA/Dec 映射 JSON: {json_path}  匹配数: {pair_count}  "

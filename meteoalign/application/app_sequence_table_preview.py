@@ -109,6 +109,8 @@ class SequenceTablePreviewMixin:
             self.ui.pushButtonProcessImageSequence.setEnabled(self._sequence_can_process())
         self._update_image_sequence_mask_controls()
         self._update_sequence_refinement_controls()
+        if hasattr(self, "_update_image_group_controls"):
+            self._update_image_group_controls()
 
     def _update_sequence_refinement_controls(self) -> None:
         """仅在整个序列已有成对输出时开放单帧结果修正。"""

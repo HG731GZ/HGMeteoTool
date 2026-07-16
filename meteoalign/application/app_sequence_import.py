@@ -129,6 +129,8 @@ class SequenceImportMixin:
             return
 
         self._set_sequence_import_progress_label("正在整理序列表并生成第一帧预览...")
+        if hasattr(self, "_reset_image_group_status"):
+            self._reset_image_group_status()
         self._clear_image_sequence_preview_cache()
         self._image_sequence_items = items
         self._image_sequence_current_index = 0

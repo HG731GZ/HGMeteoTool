@@ -185,21 +185,34 @@ class StarPairSessionMixin:
             "matching": self._auto_match_settings_payload(),
         }
 
+    def _write_current_star_pair_session(self) -> tuple[Path, int] | None:
+        """把当前匹配写入默认同名 JSON；用户拒绝覆盖时返回空。"""
+
+        if self.current_image_preview is None:
+            raise ValueError("请先导入真实图像，再导出星点匹配 JSON。")
+        default_path = self._default_star_pair_session_path()
+        default_path.parent.mkdir(parents=True, exist_ok=True)
+        json_path = default_path
+        payload = self._build_star_pair_session_payload(json_path)
+        pair_count = int(payload.get("pair_count", 0))
+        if not self._confirm_overwrite_if_existing_has_more_pairs(json_path, pair_count):
+            self.ui.statusbar.showMessage("已取消导出星点匹配 JSON。")
+            return None
+        json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        if hasattr(self, "_refresh_image_group_assistant_status"):
+            self._refresh_image_group_assistant_status()
+        return json_path, pair_count
+
     def export_star_pair_session(self) -> None:
         if self.current_image_preview is None:
             QMessageBox.information(self, "尚未导入图像", "请先导入真实图像，再导出星点匹配 JSON。")
             return
 
-        default_path = self._default_star_pair_session_path()
-        default_path.parent.mkdir(parents=True, exist_ok=True)
-        json_path = default_path
         try:
-            payload = self._build_star_pair_session_payload(json_path)
-            pair_count = int(payload.get("pair_count", 0))
-            if not self._confirm_overwrite_if_existing_has_more_pairs(json_path, pair_count):
-                self.ui.statusbar.showMessage("已取消导出星点匹配 JSON。")
+            result = self._write_current_star_pair_session()
+            if result is None:
                 return
-            json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            json_path, pair_count = result
             self.ui.statusbar.showMessage(f"已导出星点匹配 JSON: {json_path}  匹配数: {pair_count}")
             QMessageBox.information(self, "匹配 JSON 已导出", f"JSON：{json_path}\n匹配数：{pair_count}")
         except Exception as exc:  # noqa: BLE001 - 导出入口需要把文件和字段错误直接反馈给用户。

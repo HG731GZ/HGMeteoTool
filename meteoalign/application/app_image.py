@@ -35,6 +35,7 @@ class ImageMixin:
     current_sky_masked_image: QImage | None
     _mask_excluded_reference_star_ids: set
     _preserve_sequence_on_next_image_load: bool
+    _preserve_image_group_on_next_image_load: bool
     _sky_alignment_transform: object | None
     _source_astrometric_model: object | None
     _reference_alignment_error_message: str
@@ -242,7 +243,7 @@ class ImageMixin:
         self.start_sky_mask_import(mask_path)
         return True
 
-    def import_single_image(self) -> None:
+    def import_images(self) -> None:
         if self._image_import_thread is not None:
             QMessageBox.information(self, "正在导入图像", "当前已有图像正在导入，请稍候。")
             return
@@ -250,24 +251,38 @@ class ImageMixin:
         if not default_dir.exists():
             default_dir = project_root()
         default_dir = self._import_dialog_directory(default_dir)
-        file_path, _selected_filter = QFileDialog.getOpenFileName(
+        file_paths, _selected_filter = QFileDialog.getOpenFileNames(
             self,
-            "导入单张图像",
+            "导入图像",
             str(default_dir),
             IMAGE_FILE_FILTER,
         )
-        if not file_path:
+        if not file_paths:
             return
-        self._remember_import_path(file_path)
-        self.start_single_image_import(file_path)
+        self._remember_import_path(file_paths)
+        normalized_paths = self._set_image_group_paths(file_paths)
+        if not normalized_paths:
+            return
+        preserve_image_group = len(normalized_paths) > 1
+        self.start_single_image_import(
+            normalized_paths[0],
+            preserve_image_group_status=preserve_image_group,
+        )
 
-    def start_single_image_import(self, file_path: str | Path, *, preserve_sequence_status: bool = False) -> None:
+    def start_single_image_import(
+        self,
+        file_path: str | Path,
+        *,
+        preserve_sequence_status: bool = False,
+        preserve_image_group_status: bool = False,
+    ) -> None:
         if self._image_import_thread is not None:
             QMessageBox.information(self, "正在导入图像", "当前已有图像正在导入，请稍候。")
             return
 
         image_path = Path(file_path)
         self._preserve_sequence_on_next_image_load = bool(preserve_sequence_status)
+        self._preserve_image_group_on_next_image_load = bool(preserve_image_group_status)
         self._set_image_import_controls_enabled(False)
         self.ui.statusbar.showMessage(f"正在读取整张图像并量化为 8-bit: {image_path}")
 
@@ -304,9 +319,16 @@ class ImageMixin:
             self.ui.statusbar.showMessage(f"导入图像失败: {exc}")
             QMessageBox.critical(self, "导入图像失败", str(exc))
 
-    def _reset_image_import_results(self, *, preserve_sequence_status: bool) -> None:
+    def _reset_image_import_results(
+        self,
+        *,
+        preserve_sequence_status: bool,
+        preserve_image_group_status: bool,
+    ) -> None:
         if not preserve_sequence_status and hasattr(self, "_reset_image_sequence_status"):
             self._reset_image_sequence_status()
+        if not preserve_image_group_status and hasattr(self, "_reset_image_group_status"):
+            self._reset_image_group_status()
         if hasattr(self, "_clear_adjacent_rough_framing"):
             self._clear_adjacent_rough_framing(
                 status_text="当前图像已改变，请重新计算粗略取景",
@@ -320,10 +342,12 @@ class ImageMixin:
         self._source_model_error_message = ""
 
     def _set_image_import_controls_enabled(self, enabled: bool) -> None:
-        self.ui.pushButtonImportSingleImage.setEnabled(enabled)
+        self.ui.pushButtonImportImages.setEnabled(enabled)
         self.ui.pushButtonImportImageSequence.setEnabled(enabled)
         if hasattr(self.ui, "pushButtonProcessImageSequence"):
             self._update_image_sequence_controls()
+        if hasattr(self, "_update_image_group_controls"):
+            self._update_image_group_controls()
 
     def _set_json_import_controls_enabled(self, enabled: bool) -> None:
         self.ui.pushButtonImportReferenceJson.setEnabled(enabled)
@@ -331,6 +355,11 @@ class ImageMixin:
         self.ui.pushButtonExportStarPairs.setEnabled(enabled)
         self.ui.pushButtonDeleteStarPairs.setEnabled(enabled)
         self.ui.pushButtonClearStarPairs.setEnabled(enabled)
+        if hasattr(self.ui, "pushButtonOpenImageGroupAssistant"):
+            if enabled and hasattr(self, "_update_image_group_controls"):
+                self._update_image_group_controls()
+            else:
+                self.ui.pushButtonOpenImageGroupAssistant.setEnabled(False)
 
     def _apply_loaded_image_preview(
         self,
@@ -341,6 +370,10 @@ class ImageMixin:
     ) -> None:
         preserve_sequence_status = bool(getattr(self, "_preserve_sequence_on_next_image_load", False))
         self._preserve_sequence_on_next_image_load = False
+        preserve_image_group_status = bool(
+            getattr(self, "_preserve_image_group_on_next_image_load", False)
+        )
+        self._preserve_image_group_on_next_image_load = False
         previous_image_path = (
             Path(self.current_image_preview.path).expanduser().resolve()
             if self.current_image_preview is not None
@@ -348,7 +381,10 @@ class ImageMixin:
         )
         if clear_existing_pairs:
             self._clear_star_pair_positions_for_new_input("新的真实图像")
-            self._reset_image_import_results(preserve_sequence_status=preserve_sequence_status)
+            self._reset_image_import_results(
+                preserve_sequence_status=preserve_sequence_status,
+                preserve_image_group_status=preserve_image_group_status,
+            )
         self.current_image_preview = preview
         if not clear_existing_pairs:
             current_image_path = Path(preview.path).expanduser().resolve()
@@ -361,6 +397,8 @@ class ImageMixin:
         if switch_to_reference:
             self.ui.tabWidgetMain.setCurrentWidget(self.ui.tabReferenceImage)
         self._update_imported_image_labels(preview)
+        if hasattr(self, "_refresh_image_group_assistant_status"):
+            self._refresh_image_group_assistant_status()
         exif_time_message = ""
         if clear_existing_pairs:
             exif_time_message = self._apply_single_image_exif_observation_time(preview.path)
@@ -393,6 +431,7 @@ class ImageMixin:
 
     def _handle_single_image_import_failed(self, error_message: str) -> None:
         self._preserve_sequence_on_next_image_load = False
+        self._preserve_image_group_on_next_image_load = False
         if self._image_import_progress is not None:
             self._image_import_progress.close()
         self.ui.statusbar.showMessage(f"导入图像失败: {error_message}")

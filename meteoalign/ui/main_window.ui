@@ -1563,9 +1563,9 @@
               <item>
                <layout class="QHBoxLayout" name="horizontalLayoutImageImportButtons">
                 <item>
-                 <widget class="QPushButton" name="pushButtonImportSingleImage">
+                 <widget class="QPushButton" name="pushButtonImportImages">
                   <property name="text">
-                   <string>导入单张图像</string>
+                   <string>导入图像</string>
                   </property>
                  </widget>
                 </item>
@@ -1768,14 +1768,31 @@
            </widget>
            </item>
            <item>
-           <widget class="QPushButton" name="pushButtonOpenStarPairAssistant">
-             <property name="text">
-              <string>星点匹配助手</string>
-             </property>
-             <property name="toolTip">
-              <string>打开参考星匹配列表与自动扩展匹配工具</string>
-             </property>
-            </widget>
+            <layout class="QHBoxLayout" name="horizontalLayoutMatchingAssistants">
+             <item>
+              <widget class="QPushButton" name="pushButtonOpenImageGroupAssistant">
+               <property name="enabled">
+                <bool>false</bool>
+               </property>
+               <property name="text">
+                <string>图像组助手</string>
+               </property>
+               <property name="toolTip">
+                <string>打开多图像匹配进度列表</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="pushButtonOpenStarPairAssistant">
+               <property name="text">
+                <string>星点匹配助手</string>
+               </property>
+               <property name="toolTip">
+                <string>打开参考星匹配列表与自动扩展匹配工具</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
            </item>
            <item>
             <widget class="QGroupBox" name="groupBoxAstrometricModel">

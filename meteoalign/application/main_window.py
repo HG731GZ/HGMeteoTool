@@ -100,6 +100,7 @@ from .app_adjacent_framing import AdjacentFramingMixin
 from .app_star_pair_table import StarPairTableMixin
 from .app_alignment import AlignmentMixin
 from .app_star_pair_io import StarPairIOMixin
+from .app_image_group import ImageGroupMixin
 from .app_image import ImageMixin
 from .app_meteor_selection import MeteorSelectionMixin
 from .app_sequence import SequenceBatchMixin
@@ -117,6 +118,7 @@ from .app_utils import (
     _image_with_binary_mask,
 )
 from .preferences_dialog import PreferencesDialog, PreferencesLauncher
+from .image_group_assistant_dialog import ImageGroupAssistantDialog
 from .star_pair_assistant_dialog import StarPairAssistantDialog
 
 # ---------------------------------------------------------------------------
@@ -140,6 +142,7 @@ class MainWindow(
     StarPairIOMixin,
     SequenceBatchMixin,
     SequenceRefinementMixin,
+    ImageGroupMixin,
     ImageMixin,
     MeteorSelectionMixin,
     AutoMatchMixin,
@@ -156,6 +159,7 @@ class MainWindow(
     - StarPairTableMixin: 星对表格管理
     - AlignmentMixin: 天球配准与残差
     - StarPairIOMixin: JSON 导入导出
+    - ImageGroupMixin: 多图列表与图像切换
     - ImageMixin: 图像与蒙版导入
     - MeteorSelectionMixin: 流星框选
     - AutoMatchMixin: 自动匹配场星
@@ -242,6 +246,7 @@ class MainWindow(
         # 匹配控件实际位于独立窗口；同名接口仍挂在主 UI 上，供各业务模块共享。
         self.star_pair_assistant = StarPairAssistantDialog()
         self.star_pair_assistant.bind_controls_to(self.ui)
+        self.image_group_assistant = ImageGroupAssistantDialog()
         self.ui_config = load_star_map_ui_config()
         self._apply_ui_font_config(self.ui_config)
 
@@ -390,6 +395,8 @@ class MainWindow(
         self._sequence_processing_active = False
         self._sequence_refinement_active = False
         self._preserve_sequence_on_next_image_load = False
+        self._image_group_paths: tuple[Path, ...] = ()
+        self._preserve_image_group_on_next_image_load = False
 
         self._init_defaults()
         self._connect_inputs()
@@ -482,7 +489,7 @@ class MainWindow(
         self.ui.doubleSpinBoxReferenceMagLimit.valueChanged.connect(self._handle_reference_label_options_changed)
         self.ui.pushButtonSwapOrientation.clicked.connect(self._swap_camera_orientation)
         self.ui.pushButtonExportReference.clicked.connect(self.export_reference_map)
-        self.ui.pushButtonImportSingleImage.clicked.connect(self.import_single_image)
+        self.ui.pushButtonImportImages.clicked.connect(self.import_images)
         if hasattr(self.ui, "pushButtonImportAdjacentImage"):
             self.ui.pushButtonImportAdjacentImage.clicked.connect(self.import_adjacent_image)
         if hasattr(self.ui, "pushButtonCalculateAdjacentFraming"):
@@ -507,6 +514,8 @@ class MainWindow(
         self.ui.pushButtonImportStarPairs.clicked.connect(self.import_star_pair_session)
         self.ui.pushButtonDeleteStarPairs.clicked.connect(self.delete_all_star_pair_rows)
         self.ui.pushButtonClearStarPairs.clicked.connect(self.clear_all_star_pair_positions)
+        self.ui.pushButtonOpenImageGroupAssistant.clicked.connect(self._show_image_group_assistant)
+        self.image_group_assistant.image_activated.connect(self._handle_image_group_image_activated)
         self.ui.pushButtonOpenStarPairAssistant.clicked.connect(self._show_star_pair_assistant)
         self.ui.pushButtonImportSkyMask.clicked.connect(self.import_sky_mask)
         self.ui.pushButtonClearSkyMask.clicked.connect(self.clear_sky_mask)
@@ -581,6 +590,7 @@ class MainWindow(
         if event.isAccepted():
             self.preferences_dialog.close()
             self.star_pair_assistant.close()
+            self.image_group_assistant.close()
             self._shutdown_meteor_detection_worker()
 
     def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
