@@ -7,6 +7,7 @@ import pytest
 from PyQt5.QtGui import QImage
 
 from meteoalign.adjacent_alignment import resolve_model_source_image_path
+from meteoalign.application import app_star_pair_session
 from meteoalign.application.app_star_pair_session import StarPairSessionMixin
 from meteoalign.application.app_utils import (
     _resolve_star_pair_session_real_image_path,
@@ -116,6 +117,67 @@ def test_star_pair_session_rejects_current_image_with_different_size(tmp_path: P
 
     with pytest.raises(ValueError, match="图像尺寸"):
         _validate_star_pair_session_current_image(payload, current_image, (120, 80))
+
+
+def test_star_pair_session_can_ignore_loaded_image_when_importing_new_sequence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """导入新序列首帧时，后台任务应自行解析 JSON 中记录的图像。"""
+
+    created_workers: list[object] = []
+
+    class _FakeWorker:
+        def __init__(
+            self,
+            file_path: Path,
+            *,
+            current_image_path: Path | None = None,
+            current_image_size: tuple[int, int] | None = None,
+        ) -> None:
+            self.file_path = file_path
+            self.current_image_path = current_image_path
+            self.current_image_size = current_image_size
+            self.finished = object()
+            self.failed = object()
+            created_workers.append(self)
+
+    def _fake_start_task(**kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(thread=object(), worker=kwargs["worker"])
+
+    class _StatusBar:
+        def showMessage(self, _message: str) -> None:  # noqa: N802 - Qt 风格 API。
+            return
+
+    class _Harness(StarPairSessionMixin):
+        def __init__(self) -> None:
+            self.ui = SimpleNamespace(statusbar=_StatusBar())
+            self.current_image_preview = SimpleNamespace(
+                path=tmp_path / "上一序列.tif",
+                original_width=6000,
+                original_height=4000,
+            )
+            self._json_import_thread = None
+            self._json_import_worker = None
+
+        def _set_json_import_controls_enabled(self, _enabled: bool) -> None:
+            return
+
+        def _cleanup_json_import(self) -> None:
+            return
+
+    monkeypatch.setattr(app_star_pair_session, "StarPairSessionImportWorker", _FakeWorker)
+    monkeypatch.setattr(app_star_pair_session, "start_qt_worker_task", _fake_start_task)
+
+    harness = _Harness()
+    json_path = tmp_path / "新序列_starpairs.json"
+    harness.load_star_pair_session(json_path, show_progress=False, reuse_current_image=False)
+
+    assert len(created_workers) == 1
+    worker = created_workers[0]
+    assert worker.file_path == json_path
+    assert worker.current_image_path is None
+    assert worker.current_image_size is None
 
 
 def test_star_pair_export_path_is_always_next_to_current_image(tmp_path: Path) -> None:

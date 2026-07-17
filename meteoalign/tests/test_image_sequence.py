@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from datetime import timezone, timedelta
+from types import SimpleNamespace
 
 from PIL import Image
 
 import pytest
 
+from meteoalign.application.app_sequence_import import SequenceImportMixin
 from meteoalign.image_sequence import collect_image_sequence, read_image_capture_time
 
 
@@ -58,3 +60,33 @@ def test_read_image_capture_time_rejects_datetime_without_original_time(tmp_path
 
     with pytest.raises(ValueError, match="原始拍摄时间"):
         read_image_capture_time(image_path)
+
+
+def test_sequence_first_session_import_does_not_reuse_previous_loaded_image(tmp_path) -> None:
+    """新序列首帧 JSON 不应与星点匹配页中遗留的旧图像校验。"""
+
+    calls: list[tuple[object, dict[str, object]]] = []
+
+    def _load_star_pair_session(file_path: object, **kwargs: object) -> None:
+        calls.append((file_path, kwargs))
+
+    harness = SimpleNamespace(
+        _json_import_thread=None,
+        ui=SimpleNamespace(statusbar=SimpleNamespace(showMessage=lambda _message: None)),
+        load_star_pair_session=_load_star_pair_session,
+    )
+    json_path = tmp_path / "新序列_starpairs.json"
+
+    SequenceImportMixin._start_first_sequence_session_import(harness, json_path, 27)
+
+    assert calls == [
+        (
+            json_path,
+            {
+                "switch_to_reference": False,
+                "show_progress": False,
+                "clear_input_name": "第一帧匹配 JSON",
+                "reuse_current_image": False,
+            },
+        )
+    ]

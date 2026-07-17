@@ -256,6 +256,7 @@ class StarPairSessionMixin:
         switch_to_reference: bool = True,
         show_progress: bool = True,
         clear_input_name: str = "新的匹配 JSON",
+        reuse_current_image: bool = True,
     ) -> None:
         if self._json_import_thread is not None:
             QMessageBox.information(self, "正在导入 JSON", "当前已有 JSON 正在导入，请稍候。")
@@ -274,7 +275,7 @@ class StarPairSessionMixin:
             self._json_import_progress = None
             self.ui.statusbar.showMessage(f"正在后台导入星点匹配 JSON: {json_path}")
 
-        current_preview = self.current_image_preview
+        current_preview = self.current_image_preview if reuse_current_image else None
         if current_preview is None:
             worker = StarPairSessionImportWorker(json_path)
         else:
