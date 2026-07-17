@@ -106,7 +106,7 @@
         </column>
         <column>
          <property name="text">
-          <string>PSF</string>
+          <string>匹配质量</string>
          </property>
         </column>
         <column>

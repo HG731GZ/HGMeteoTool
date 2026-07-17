@@ -63,7 +63,10 @@ def test_star_pair_record_round_trips_json_payload() -> None:
         residual_dx_px=1.0,
         residual_dy_px=-2.0,
         residual_px=float(np.hypot(1.0, -2.0)),
-        extra_fields={"theoretical_x_px": 120.0},
+        extra_fields={
+            "theoretical_x_px": 120.0,
+            "auto_match_quality_score": 0.76,
+        },
     )
 
     payload = record.to_json_payload()
@@ -83,6 +86,7 @@ def test_star_pair_record_round_trips_json_payload() -> None:
     assert restored.fit_weight == 0.35
     assert restored.group_id == "B"
     assert restored.extra_fields["theoretical_x_px"] == 120.0
+    assert restored.extra_fields["auto_match_quality_score"] == 0.76
 
 
 def test_star_pair_record_payload_can_recover_missing_altaz_from_observer() -> None:

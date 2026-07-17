@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 import numpy as np
 from PyQt5.QtCore import QPoint, Qt
@@ -8,6 +9,30 @@ from PyQt5.QtWidgets import QApplication, QGraphicsView, QMessageBox, QProgressD
 
 from ..alignment.constants import MIN_ALIGNMENT_PAIRS, MIN_PRELIMINARY_ALIGNMENT_PAIRS
 from ..alignment.models import SkyAlignmentTransform
+from ..auto_match_quality import (
+    AUTO_MATCH_ASSIGNMENT_COST_KEY,
+    AUTO_MATCH_ASSIGNMENT_ROW_MARGIN_KEY,
+    AUTO_MATCH_ASSIGNMENT_SCORE_KEY,
+    AUTO_MATCH_ASSIGNMENT_SOURCE_MARGIN_KEY,
+    AUTO_MATCH_GEOMETRY_SCORE_KEY,
+    AUTO_MATCH_OBSERVED_FLUX_KEY,
+    AUTO_MATCH_PSF_BRIGHTNESS_KEY,
+    AUTO_MATCH_PHOTOMETRIC_RESIDUAL_MAG_KEY,
+    AUTO_MATCH_PHOTOMETRIC_SCATTER_MAG_KEY,
+    AUTO_MATCH_PHOTOMETRIC_SCORE_KEY,
+    AUTO_MATCH_PHOTOMETRIC_ZERO_POINT_MAG_KEY,
+    AUTO_MATCH_POSITION_SCORE_KEY,
+    AUTO_MATCH_PREDICTION_OFFSET_PX_KEY,
+    AUTO_MATCH_PREDICTION_OFFSET_RATIO_KEY,
+    AUTO_MATCH_QUALITY_SCORE_KEY,
+    AutoMatchPhotometricModel,
+    AutoMatchPhotometrySample,
+    auto_match_position_quality,
+    combine_auto_match_quality,
+    evaluate_auto_match_photometry,
+    fit_auto_match_photometric_model,
+    psf_brightness_proxy,
+)
 from ..matching_constants import (
     AUTO_MATCH_ANNOTATION_LIMIT,
     AUTO_MATCH_DUPLICATE_MIN_DISTANCE_PX,
@@ -20,8 +45,26 @@ from ..matching_constants import (
     REFERENCE_STAR_PICK_SCREEN_RADIUS_PX,
 )
 from ..simulator import ProjectedStarMap, ReferenceStar
-from ..psf.matching import assign_predicted_sources, merge_source_candidates
+from ..psf.matching import (
+    SourceAssignmentDiagnostic,
+    assign_predicted_sources,
+    merge_source_candidates,
+)
+from ..psf.models import StarSourceCandidate
 from ..star_fitting import FittedStarPosition, detect_star_candidates, fit_star_position
+
+
+@dataclass(frozen=True)
+class _AutoExpansionFit:
+    """尚未写入匹配表的自动扩展拟合结果。"""
+
+    row: int
+    reference_star: ReferenceStar
+    fitted_position: FittedStarPosition
+    assigned_source: StarSourceCandidate
+    predicted_x: float
+    predicted_y: float
+    assignment_diagnostic: SourceAssignmentDiagnostic
 
 
 class AutoMatchMixin:
@@ -628,6 +671,109 @@ class AutoMatchMixin:
     def _existing_matched_positions(self) -> list[tuple[float, float]]:
         return [record.position for record in self._star_pair_store.snapshot()]
 
+    def _existing_auto_match_photometry_samples(self) -> list[AutoMatchPhotometrySample]:
+        """读取既有自动扩展测光样本；手动匹配不进入亮度标定。"""
+
+        store = getattr(self, "_star_pair_store", None)
+        if store is None:
+            return []
+        samples: list[AutoMatchPhotometrySample] = []
+        for record in store.auto_match_records():
+            if record.psf is None:
+                continue
+            flux = psf_brightness_proxy(
+                record.psf.amplitude,
+                record.psf.sigma_x,
+                record.psf.sigma_y,
+            )
+            sample = AutoMatchPhotometrySample(
+                star_id=record.star_id,
+                catalog_mag=float(record.reference_star.mag_v),
+                flux=flux,
+                x_px=float(record.image_x_px),
+                y_px=float(record.image_y_px),
+            )
+            if all(
+                math.isfinite(value)
+                for value in (sample.catalog_mag, sample.flux, sample.x_px, sample.y_px)
+            ) and sample.flux > 0.0:
+                samples.append(sample)
+        return samples
+
+    def _auto_expansion_quality_fields(
+        self,
+        provisional: _AutoExpansionFit,
+        *,
+        search_radius_px: float,
+        photometric_model: AutoMatchPhotometricModel | None,
+    ) -> tuple[dict[str, object], bool]:
+        """计算自动扩展综合质量字段，并返回是否应按亮度异常拒绝。"""
+
+        fitted = provisional.fitted_position
+        source = provisional.assigned_source
+        diagnostic = provisional.assignment_diagnostic
+        prediction_offset_px = float(
+            np.hypot(fitted.x - provisional.predicted_x, fitted.y - provisional.predicted_y)
+        )
+        position_score = auto_match_position_quality(prediction_offset_px, search_radius_px)
+        sample = AutoMatchPhotometrySample(
+            star_id=provisional.reference_star.star_id.strip(),
+            catalog_mag=float(provisional.reference_star.mag_v),
+            flux=psf_brightness_proxy(fitted.amplitude, fitted.sigma_x, fitted.sigma_y),
+            x_px=float(fitted.x),
+            y_px=float(fitted.y),
+        )
+        photometric_evaluation = None
+        if photometric_model is not None:
+            photometric_evaluation = evaluate_auto_match_photometry(
+                sample,
+                photometric_model,
+                saturated=bool(fitted.saturated or source.saturated),
+            )
+        photometric_score = (
+            None
+            if photometric_evaluation is None
+            else photometric_evaluation.quality_score
+        )
+        quality_score, geometry_score = combine_auto_match_quality(
+            position_score,
+            diagnostic.confidence_score,
+            photometric_score,
+        )
+        radius = max(float(search_radius_px), 1.0)
+        fields: dict[str, object] = {
+            AUTO_MATCH_QUALITY_SCORE_KEY: quality_score,
+            AUTO_MATCH_GEOMETRY_SCORE_KEY: geometry_score,
+            AUTO_MATCH_POSITION_SCORE_KEY: position_score,
+            AUTO_MATCH_ASSIGNMENT_SCORE_KEY: float(diagnostic.confidence_score),
+            AUTO_MATCH_PREDICTION_OFFSET_PX_KEY: prediction_offset_px,
+            AUTO_MATCH_PREDICTION_OFFSET_RATIO_KEY: prediction_offset_px / radius,
+            AUTO_MATCH_ASSIGNMENT_COST_KEY: float(diagnostic.assigned_cost),
+            AUTO_MATCH_OBSERVED_FLUX_KEY: float(source.flux),
+            AUTO_MATCH_PSF_BRIGHTNESS_KEY: float(sample.flux),
+        }
+        if math.isfinite(float(diagnostic.row_margin)):
+            fields[AUTO_MATCH_ASSIGNMENT_ROW_MARGIN_KEY] = float(diagnostic.row_margin)
+        if math.isfinite(float(diagnostic.source_margin)):
+            fields[AUTO_MATCH_ASSIGNMENT_SOURCE_MARGIN_KEY] = float(diagnostic.source_margin)
+        if photometric_evaluation is not None:
+            fields[AUTO_MATCH_PHOTOMETRIC_RESIDUAL_MAG_KEY] = float(
+                photometric_evaluation.residual_mag
+            )
+            if photometric_evaluation.quality_score is not None:
+                fields[AUTO_MATCH_PHOTOMETRIC_SCORE_KEY] = float(
+                    photometric_evaluation.quality_score
+                )
+        if photometric_model is not None:
+            fields[AUTO_MATCH_PHOTOMETRIC_ZERO_POINT_MAG_KEY] = float(
+                photometric_model.zero_point_at(sample.catalog_mag, fitted.x, fitted.y)
+            )
+            fields[AUTO_MATCH_PHOTOMETRIC_SCATTER_MAG_KEY] = float(
+                photometric_model.scatter_mag
+            )
+        reject = bool(photometric_evaluation is not None and photometric_evaluation.reject)
+        return fields, reject
+
     def _position_is_duplicate(
         self,
         position: tuple[float, float],
@@ -691,8 +837,10 @@ class AutoMatchMixin:
         skipped_mask = 0
         skipped_duplicate = 0
         skipped_ambiguous = 0
+        skipped_photometric = 0
         failed_count = 0
         canceled = False
+        provisional_matches: list[_AutoExpansionFit] = []
         progress = QProgressDialog(self)
         progress.setWindowTitle("正在自动扩展匹配")
         progress.setLabelText(f"正在检测 {len(candidates)} 颗新增星附近的图像星源...")
@@ -743,6 +891,7 @@ class AutoMatchMixin:
             },
             unique_sources,
             search_radius_px=float(search_radius_px),
+            strict_mutual=True,
         )
         skipped_ambiguous = len(assignment.ambiguous_star_ids)
         progress.setLabelText(f"正在对 {len(assignment.assignments)} 个一对一星源做 PSF 拟合...")
@@ -808,18 +957,74 @@ class AutoMatchMixin:
                     self._mask_excluded_reference_star_ids.add(star_id)
                     skipped_mask += 1
                     continue
-                fitted_xy = (float(fitted_position.x), float(fitted_position.y))
+                diagnostic = assignment.diagnostics.get(star_id)
+                if diagnostic is None:
+                    failed_count += 1
+                    continue
+                provisional_matches.append(
+                    _AutoExpansionFit(
+                        row=row,
+                        reference_star=reference_star,
+                        fitted_position=fitted_position,
+                        assigned_source=assigned_source,
+                        predicted_x=float(predicted_x),
+                        predicted_y=float(predicted_y),
+                        assignment_diagnostic=diagnostic,
+                    )
+                )
+
+            image_size = (image.width(), image.height())
+            photometry_samples = self._existing_auto_match_photometry_samples()
+            photometry_samples.extend(
+                AutoMatchPhotometrySample(
+                    star_id=provisional.reference_star.star_id.strip(),
+                    catalog_mag=float(provisional.reference_star.mag_v),
+                    flux=psf_brightness_proxy(
+                        provisional.fitted_position.amplitude,
+                        provisional.fitted_position.sigma_x,
+                        provisional.fitted_position.sigma_y,
+                    ),
+                    x_px=float(provisional.fitted_position.x),
+                    y_px=float(provisional.fitted_position.y),
+                )
+                for provisional in provisional_matches
+            )
+            photometric_model = fit_auto_match_photometric_model(
+                photometry_samples,
+                image_size,
+            )
+
+            for provisional in provisional_matches:
+                quality_fields, photometric_rejected = self._auto_expansion_quality_fields(
+                    provisional,
+                    search_radius_px=float(search_radius_px),
+                    photometric_model=photometric_model,
+                )
+                if photometric_rejected:
+                    skipped_photometric += 1
+                    continue
+                fitted = provisional.fitted_position
+                fitted_xy = (float(fitted.x), float(fitted.y))
                 duplicate_radius = max(
                     AUTO_MATCH_DUPLICATE_MIN_DISTANCE_PX,
-                    min(24.0, max(fitted_position.fwhm_x, fitted_position.fwhm_y) * 0.65),
+                    min(24.0, max(fitted.fwhm_x, fitted.fwhm_y) * 0.65),
                 )
                 if self._position_is_duplicate(fitted_xy, accepted_positions, duplicate_radius):
                     skipped_duplicate += 1
                     continue
-
-                self._set_star_pair_position(row, fitted_position, update_alignment=False)
+                self._set_star_pair_position(
+                    provisional.row,
+                    fitted,
+                    update_alignment=False,
+                )
+                star_id = provisional.reference_star.star_id.strip()
+                self._star_pair_store.update_extra_fields(star_id, quality_fields)
+                self._refresh_star_pair_quality_cell(provisional.row)
                 if annotate_matches:
-                    self._add_or_update_star_pair_annotation(row, fitted_position)
+                    self._add_or_update_star_pair_annotation(
+                        provisional.row,
+                        fitted,
+                    )
                 accepted_positions.append(fitted_xy)
                 matched_count += 1
         finally:
@@ -837,7 +1042,8 @@ class AutoMatchMixin:
             mask_status = f"蒙版预筛 {mask_prefiltered_count} 个视场星点，拟合后落入蒙版 {skipped_mask}"
         self.ui.statusbar.showMessage(
             "{status_prefix}：{group_name} 本次新增 {candidate_count}，匹配成功 {matched_count}，已有 {skipped_existing}，"
-            "{mask_status}，歧义跳过 {skipped_ambiguous}，重复跳过 {skipped_duplicate}，失败 {failed_count}。".format(
+            "{mask_status}，歧义跳过 {skipped_ambiguous}，亮度异常 {skipped_photometric}，"
+            "重复跳过 {skipped_duplicate}，失败 {failed_count}。".format(
                 status_prefix=status_prefix,
                 group_name=self._auto_match_group_label(auto_group_id),
                 candidate_count=len(candidates),
@@ -845,6 +1051,7 @@ class AutoMatchMixin:
                 skipped_existing=skipped_existing,
                 mask_status=mask_status,
                 skipped_ambiguous=skipped_ambiguous,
+                skipped_photometric=skipped_photometric,
                 skipped_duplicate=skipped_duplicate,
                 failed_count=failed_count,
             )

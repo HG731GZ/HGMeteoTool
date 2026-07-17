@@ -10,6 +10,7 @@ from .app_constants import (
     STAR_PAIR_POSITION_COLUMN,
     STAR_PAIR_ROW_TYPE_MANUAL,
 )
+from ..auto_match_quality import AUTO_MATCH_QUALITY_FIELD_KEYS
 from ..star_fitting import FittedStarPosition
 from ..star_pair_model import (
     PAIR_ORIGIN_AUTO_MATCH,
@@ -293,6 +294,9 @@ class StarPairActionsMixin:
                 fit_weight=float(fit_weight),
             )
             store.add(record)
+
+        # 位置变化后旧的自动扩展质量已经失效；批量自动扩展会在本次拟合完成后写入新值。
+        store.remove_extra_fields(star_id, AUTO_MATCH_QUALITY_FIELD_KEYS)
 
         if self._is_auto_match_row(row):
             self._auto_match_group_by_star_id.pop(star_id, None)

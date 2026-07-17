@@ -34,6 +34,14 @@ from .app_constants import (
     STAR_PAIR_SORT_KEY_QUALITY,
     STAR_PAIR_SORT_KEY_RESIDUAL,
 )
+from ..auto_match_quality import (
+    AUTO_MATCH_ASSIGNMENT_SCORE_KEY,
+    AUTO_MATCH_GEOMETRY_SCORE_KEY,
+    AUTO_MATCH_PHOTOMETRIC_RESIDUAL_MAG_KEY,
+    AUTO_MATCH_PHOTOMETRIC_SCORE_KEY,
+    AUTO_MATCH_PREDICTION_OFFSET_PX_KEY,
+    AUTO_MATCH_QUALITY_SCORE_KEY,
+)
 from ..simulator import ReferenceStar
 from ..star_fitting import FittedStarPosition
 
@@ -52,7 +60,7 @@ class StarPairTableGroupsMixin:
         table = self.ui.tableWidgetStarPairs
         digit_width = table.fontMetrics().horizontalAdvance(STAR_PAIR_QUALITY_WIDTH_SAMPLE)
         header_item = table.horizontalHeaderItem(STAR_PAIR_QUALITY_COLUMN)
-        header_text = header_item.text() if header_item is not None else "PSF"
+        header_text = header_item.text() if header_item is not None else "匹配质量"
         header_width = table.horizontalHeader().fontMetrics().horizontalAdvance(header_text)
         return max(digit_width + 6, header_width + 6, 44)
 
@@ -247,12 +255,15 @@ class StarPairTableGroupsMixin:
             group_id: self._auto_match_group_expanded_by_id.get(group_id, True)
             for group_id in self._auto_match_group_order
         }
+        next_group_index = 0
         for group_id in self._auto_match_group_order:
             if len(group_id) == 1 and "A" <= group_id <= "Z":
-                self._auto_match_next_group_index = max(
-                    self._auto_match_next_group_index,
+                next_group_index = max(
+                    next_group_index,
                     ord(group_id) - ord("A") + 1,
                 )
+        # 删除末尾自动匹配表后允许复用其字母，例如删除 C 后下一批仍从 C 开始。
+        self._auto_match_next_group_index = next_group_index
 
     # ---- 约束管理 ----
 
@@ -331,13 +342,53 @@ class StarPairTableGroupsMixin:
 
     def _star_pair_quality_score(self, row: int) -> float | None:
         record = self._star_pair_record_for_row(row)
-        if record is None or record.psf is None:
+        if record is None or not record.is_auto_match:
             return None
-        quality_score = float(record.psf.quality_score)
+        try:
+            quality_score = float(record.extra_fields[AUTO_MATCH_QUALITY_SCORE_KEY])
+        except (KeyError, TypeError, ValueError):
+            return None
         return quality_score if math.isfinite(quality_score) else None
 
+    def _auto_match_quality_tooltip(self, fields: dict[str, object]) -> str:
+        """生成自动扩展匹配质量的分项说明。"""
+
+        def finite_value(key: str) -> float | None:
+            try:
+                value = float(fields[key])
+            except (KeyError, TypeError, ValueError):
+                return None
+            return value if math.isfinite(value) else None
+
+        quality_score = finite_value(AUTO_MATCH_QUALITY_SCORE_KEY)
+        if quality_score is None:
+            return "尚无自动扩展匹配质量；手动匹配不计算该指标。"
+        details = [f"自动扩展匹配综合质量：{quality_score:.2f}（越高越可靠）。"]
+        geometry_score = finite_value(AUTO_MATCH_GEOMETRY_SCORE_KEY)
+        prediction_offset = finite_value(AUTO_MATCH_PREDICTION_OFFSET_PX_KEY)
+        assignment_score = finite_value(AUTO_MATCH_ASSIGNMENT_SCORE_KEY)
+        if geometry_score is not None:
+            geometry_text = f"几何质量 {geometry_score:.2f}"
+            if prediction_offset is not None:
+                geometry_text += f"，加入模型前预测偏差 {prediction_offset:.2f} px"
+            if assignment_score is not None:
+                geometry_text += f"，分配可信度 {assignment_score:.2f}"
+            details.append(geometry_text + "。")
+        photometric_residual = finite_value(AUTO_MATCH_PHOTOMETRIC_RESIDUAL_MAG_KEY)
+        photometric_score = finite_value(AUTO_MATCH_PHOTOMETRIC_SCORE_KEY)
+        if photometric_score is not None and photometric_residual is not None:
+            details.append(
+                f"亮度一致性 {photometric_score:.2f}，星等—PSF 亮度残差 {photometric_residual:+.2f} mag；"
+                "PSF 亮度综合使用峰值和椭圆面积，可适应大量饱和星。"
+            )
+        elif photometric_residual is not None:
+            details.append(f"星等—PSF 亮度残差 {photometric_residual:+.2f} mag。")
+        else:
+            details.append("自动扩展测光样本不足，当前综合质量只使用几何与分配信息。")
+        return "\n".join(details)
+
     def _refresh_star_pair_quality_cell(self, row: int) -> None:
-        """用当前 PSF 记录刷新质量单元格；未拟合时保持空白。"""
+        """刷新自动扩展匹配质量；手动匹配和旧记录保持空白。"""
 
         if row < 0 or row >= self.ui.tableWidgetStarPairs.rowCount():
             return
@@ -354,6 +405,11 @@ class StarPairTableGroupsMixin:
             table.setItem(row, STAR_PAIR_QUALITY_COLUMN, quality_item)
         quality_score = self._star_pair_quality_score(row)
         quality_item.setText("" if quality_score is None else f"{quality_score:.2f}")
+        record = self._star_pair_record_for_row(row)
+        if record is None or not record.is_auto_match:
+            quality_item.setToolTip("手动匹配不计算自动扩展匹配质量。")
+        else:
+            quality_item.setToolTip(self._auto_match_quality_tooltip(record.extra_fields))
 
     def _set_star_pair_constraint(self, row: int, mode: str, fit_weight: float | None = None) -> None:
         if row < 0 or row >= self.ui.tableWidgetStarPairs.rowCount() or self._is_star_pair_group_row(row):
@@ -483,6 +539,7 @@ class StarPairTableGroupsMixin:
                 "group_id": record.group_id,
                 "group_name": record.group_name,
                 "residual_px": record.residual_px,
+                "extra_fields": dict(record.extra_fields),
             }
         return states
 
@@ -835,14 +892,17 @@ class StarPairTableGroupsMixin:
             item.setToolTip(constraint_tip)
         if position is not None:
             position_item.setText(f"({fit_weight:.2f})" if mode == AUTO_MATCH_CONSTRAINT_SOFT else "锚点")
-        fit_payload = saved_state.get("fit_payload")
-        if isinstance(fit_payload, dict):
+        extra_fields = saved_state.get("extra_fields")
+        if row_type == STAR_PAIR_ROW_TYPE_AUTO_MATCH and isinstance(extra_fields, dict):
             try:
-                quality_score = float(fit_payload["quality_score"])
+                quality_score = float(extra_fields[AUTO_MATCH_QUALITY_SCORE_KEY])
             except (KeyError, TypeError, ValueError):
                 quality_score = float("nan")
             if math.isfinite(quality_score):
                 quality_item.setText(f"{quality_score:.2f}")
+            quality_item.setToolTip(self._auto_match_quality_tooltip(extra_fields))
+        else:
+            quality_item.setToolTip("手动匹配不计算自动扩展匹配质量。")
 
         table.setItem(row, STAR_PAIR_INDEX_COLUMN, index_item)
         table.setItem(row, STAR_PAIR_NAME_COLUMN, name_item)
@@ -933,12 +993,14 @@ class StarPairTableGroupsMixin:
 
         if self._star_pair_sort_key == STAR_PAIR_SORT_KEY_QUALITY:
             def quality_sort_key(entry: tuple[int, ReferenceStar, str, str, str]) -> tuple[int, float, int]:
-                sequence_number, star, _index_text, _row_type, _group_id = entry
-                fit_payload = saved_states.get(star.star_id.strip(), {}).get("fit_payload")
-                if not isinstance(fit_payload, dict):
+                sequence_number, star, _index_text, row_type, _group_id = entry
+                if row_type != STAR_PAIR_ROW_TYPE_AUTO_MATCH:
+                    return 1, 0.0, sequence_number
+                extra_fields = saved_states.get(star.star_id.strip(), {}).get("extra_fields")
+                if not isinstance(extra_fields, dict):
                     return 1, 0.0, sequence_number
                 try:
-                    quality_score = float(fit_payload["quality_score"])
+                    quality_score = float(extra_fields[AUTO_MATCH_QUALITY_SCORE_KEY])
                 except (KeyError, TypeError, ValueError):
                     return 1, 0.0, sequence_number
                 if not math.isfinite(quality_score):

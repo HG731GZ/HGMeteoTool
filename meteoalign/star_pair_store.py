@@ -132,6 +132,37 @@ class StarPairStore(QObject):
         """仅更新 PSF 拟合结果。"""
         return self._replace_record(star_id, psf=psf)
 
+    def update_extra_fields(
+        self,
+        star_id: str,
+        fields: dict[str, object],
+    ) -> StarPairRecord | None:
+        """合并更新扩展字段，供自动匹配诊断等可选数据使用。"""
+
+        record = self._records.get(star_id)
+        if record is None:
+            return None
+        updated_fields = dict(record.extra_fields)
+        updated_fields.update(fields)
+        return self._replace_record(star_id, extra_fields=updated_fields)
+
+    def remove_extra_fields(
+        self,
+        star_id: str,
+        field_names: set[str] | frozenset[str],
+    ) -> StarPairRecord | None:
+        """删除指定扩展字段；位置重新点选时用来避免保留过期诊断。"""
+
+        record = self._records.get(star_id)
+        if record is None or not field_names.intersection(record.extra_fields):
+            return record
+        updated_fields = {
+            key: value
+            for key, value in record.extra_fields.items()
+            if key not in field_names
+        }
+        return self._replace_record(star_id, extra_fields=updated_fields)
+
     def set_constraint(
         self,
         star_id: str,

@@ -287,6 +287,35 @@ def test_deleting_auto_match_group_does_not_move_children_to_manual_group() -> N
     assert "auto-2" in harness._excluded_reference_star_ids
 
 
+def test_deleting_last_auto_match_group_reuses_its_letter() -> None:
+    """删除末尾的自动 C 表后，下一次自动扩展应继续生成 C，而不是跳到 D。"""
+
+    harness = _StarPairTableHarness(
+        (
+            _reference_star("auto-a", 1),
+            _reference_star("auto-b", 2),
+            _reference_star("auto-c", 3),
+        )
+    )
+    harness._auto_match_reference_star_ids = ["auto-a", "auto-b", "auto-c"]
+    harness._auto_match_group_order = ["A", "B", "C"]
+    harness._auto_match_group_by_star_id = {
+        "auto-a": "A",
+        "auto-b": "B",
+        "auto-c": "C",
+    }
+    harness._auto_match_group_expanded_by_id = {"A": True, "B": True, "C": True}
+    harness._auto_match_next_group_index = 3
+    harness._update_star_pair_table(harness.reference_stars)
+
+    deleted_count = harness._delete_auto_match_group("C")
+    next_group_id = harness._create_auto_match_group()
+
+    assert deleted_count == 1
+    assert next_group_id == "C"
+    assert harness._auto_match_group_order == ["A", "B", "C"]
+
+
 def test_reset_all_rows_rebuilds_startup_reference_list() -> None:
     """重置匹配列表后应清空派生分组与排除项，再恢复当前范围内的初始标注星。"""
 

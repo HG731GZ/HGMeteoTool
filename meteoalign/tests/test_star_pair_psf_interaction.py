@@ -327,21 +327,21 @@ def test_manual_pair_failure_reactivates_star_pair_assistant(monkeypatch) -> Non
     assistant.close()
 
 
-def test_psf_quality_sort_keeps_missing_values_last_in_both_directions() -> None:
-    """质量排序无论方向如何都应把尚未拟合的参考星放到末尾。"""
+def test_auto_match_quality_sort_keeps_missing_values_last_in_both_directions() -> None:
+    """自动匹配质量排序无论方向如何都应把缺少指标的星放到末尾。"""
 
     first = _reference_star("first", 1)
     second = _reference_star("second", 2)
     missing = _reference_star("missing", 3)
     entries = [
-        (1, first, "1", "manual", ""),
-        (2, second, "2", "manual", ""),
-        (3, missing, "3", "manual", ""),
+        (1, first, "A1", "auto_match", "A"),
+        (2, second, "A2", "auto_match", "A"),
+        (3, missing, "A3", "auto_match", "A"),
     ]
     saved_states = {
-        "first": {"fit_payload": {"quality_score": 0.25}},
-        "second": {"fit_payload": {"quality_score": 0.90}},
-        "missing": {"fit_payload": None},
+        "first": {"extra_fields": {"auto_match_quality_score": 0.25}},
+        "second": {"extra_fields": {"auto_match_quality_score": 0.90}},
+        "missing": {"extra_fields": {}},
     }
     host = SimpleNamespace(
         _star_pair_sort_key=STAR_PAIR_SORT_KEY_QUALITY,
