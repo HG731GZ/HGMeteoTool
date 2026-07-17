@@ -59,7 +59,7 @@
          <number>0</number>
         </property>
         <property name="columnCount">
-         <number>5</number>
+         <number>6</number>
         </property>
         <attribute name="horizontalHeaderCascadingSectionResizes">
          <bool>false</bool>
@@ -68,7 +68,7 @@
          <number>72</number>
         </attribute>
         <attribute name="horizontalHeaderMinimumSectionSize">
-         <number>40</number>
+         <number>24</number>
         </attribute>
         <attribute name="horizontalHeaderStretchLastSection">
          <bool>false</bool>
@@ -93,12 +93,17 @@
         </column>
         <column>
          <property name="text">
-          <string>PSF质量</string>
+          <string>PSF</string>
          </property>
         </column>
         <column>
          <property name="text">
           <string>残差</string>
+         </property>
+        </column>
+        <column>
+         <property name="text">
+          <string>标注</string>
          </property>
         </column>
        </widget>

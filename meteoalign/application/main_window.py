@@ -356,6 +356,7 @@ class MainWindow(
         self._star_pick_circle_diameter_px = self.ui_config.star_pick_circle_default_diameter_px
         self._star_pick_previous_drag_mode = self.ui.realImageView.dragMode()
         self._star_pair_annotations: dict[str, tuple[QGraphicsEllipseItem, QGraphicsSimpleTextItem]] = {}
+        self._hidden_star_pair_annotation_ids: set[str] = set()
         self._focused_star_annotations: list[QGraphicsItem] = []
         self._current_star_map: ProjectedStarMap | None = None
         self._current_reference_star_map: ProjectedStarMap | None = None

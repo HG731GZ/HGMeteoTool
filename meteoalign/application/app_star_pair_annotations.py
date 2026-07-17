@@ -131,8 +131,12 @@ class StarPairAnnotationsMixin:
         self._focused_star_annotations.clear()
 
     def _update_star_pair_annotation_visibility(self) -> None:
-        visible = self._show_real_image_annotations()
-        for ellipse_item, label_item in self._star_pair_annotations.values():
+        show_all = self._show_real_image_annotations()
+        row_annotation_enabled = getattr(self, "_star_pair_annotation_is_enabled_for_id", None)
+        for star_id, (ellipse_item, label_item) in self._star_pair_annotations.items():
+            visible = show_all and (
+                not callable(row_annotation_enabled) or row_annotation_enabled(star_id)
+            )
             ellipse_item.setVisible(visible)
             label_item.setVisible(visible)
 

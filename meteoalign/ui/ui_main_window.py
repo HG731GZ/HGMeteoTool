@@ -1024,6 +1024,7 @@ class Ui_MainWindow(object):
         self.tableWidgetMosaicSourceFiles.setHorizontalHeaderItem(2, item)
         item = QtWidgets.QTableWidgetItem()
         self.tableWidgetMosaicSourceFiles.setHorizontalHeaderItem(3, item)
+        self.tableWidgetMosaicSourceFiles.verticalHeader().setVisible(False)
         self.verticalLayoutMosaicSourceFiles.addWidget(self.tableWidgetMosaicSourceFiles)
         self.verticalLayoutMosaicSidePanel.addWidget(self.groupBoxMosaicSourceFiles)
         self.groupBoxMosaicObserver = QtWidgets.QGroupBox(self.widgetMosaicSidePanel)

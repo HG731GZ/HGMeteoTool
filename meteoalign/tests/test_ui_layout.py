@@ -16,6 +16,7 @@ from PyQt5.QtWidgets import QApplication, QFormLayout, QHeaderView, QMainWindow,
 from meteoalign.application.app_sequence_table_preview import SequenceTablePreviewMixin
 from meteoalign.application.app_mosaic import MosaicProjectionMixin, MosaicSourceItem
 from meteoalign.application.app_rendering import RenderingMixin
+from meteoalign.application.app_star_pair_table_groups import StarPairTableGroupsMixin
 from meteoalign.application.main_window import MainWindow
 from meteoalign.application.star_pair_assistant_dialog import StarPairAssistantDialog
 from meteoalign.ui.ui_main_window import Ui_MainWindow
@@ -238,6 +239,24 @@ def test_star_pair_assistant_owns_moved_controls_and_uses_normal_window_layer() 
     assert dialog.ui.horizontalLayoutStarPairResetButtons.itemAt(0).widget() is dialog.ui.pushButtonClearStarPairs
     assert dialog.ui.horizontalLayoutStarPairResetButtons.itemAt(1).widget() is dialog.ui.pushButtonDeleteStarPairs
     assert dialog.ui.formLayoutAutoMatch.fieldGrowthPolicy() == QFormLayout.AllNonFixedFieldsGrow
+    assert dialog.ui.tableWidgetStarPairs.columnCount() == 6
+    assert dialog.ui.tableWidgetStarPairs.horizontalHeaderItem(3).text() == "PSF"
+    assert dialog.ui.tableWidgetStarPairs.horizontalHeaderItem(5).text() == "标注"
+    assert dialog.ui.tableWidgetStarPairs.verticalHeader().isHidden()
+
+    table_host = StarPairTableGroupsMixin()
+    table_host.ui = dialog.ui
+    table_host._star_pair_sort_key = None
+    table_host._star_pair_sort_descending = True
+    table_host._configure_star_pair_table_columns()
+    dialog.show()
+    app.processEvents()
+    table = dialog.ui.tableWidgetStarPairs
+    assert table.columnWidth(0) < table.columnWidth(4)
+    assert table.columnWidth(2) < table.columnWidth(4)
+    assert table.columnWidth(5) < table.columnWidth(4)
+    assert table.columnWidth(1) > table.columnWidth(4)
+    assert table.horizontalScrollBar().maximum() == 0
 
     calls: list[str] = []
     dialog.show = lambda: calls.append("show")  # type: ignore[method-assign]
@@ -341,6 +360,7 @@ def test_mosaic_source_file_table_selection_sync() -> None:
     mixin._update_mosaic_display_model_combo()
 
     table = ui.tableWidgetMosaicSourceFiles
+    assert table.verticalHeader().isHidden()
     assert table.item(0, 0).text() == "1"
     assert table.item(0, 1).text() == "first.tif"
     assert table.item(0, 2).text() == "TAN"

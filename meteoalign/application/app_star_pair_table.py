@@ -27,6 +27,7 @@ class StarPairTableMixin(
     _star_pick_circle_diameter_px: int
     _star_pick_previous_drag_mode: object
     _star_pair_annotations: dict
+    _hidden_star_pair_annotation_ids: set
     _focused_star_annotations: list
     _manual_match_group_expanded: bool
     _auto_match_reference_star_ids: list

@@ -82,6 +82,7 @@ class AlignmentMixin:
     _parse_star_pair_position_text: object  # method
     _star_pair_fit_constraint: object  # method
     _star_pair_position_count: object  # method
+    _reference_stars_with_visible_annotations: object  # 方法
     _alignment_residual_distances: object  # method
     _view_settings: object  # method
     _build_aligned_reference_star_map: object  # method
@@ -791,20 +792,26 @@ class AlignmentMixin:
             return
 
         display_star_map = star_map
+        show_reference_annotations = self._show_reference_annotations()
         if has_alignment:
             assert transform is not None
             scene_rect = self._reference_alignment_scene_rect()
             target_size = (int(scene_rect.width()), int(scene_rect.height()))
             display_key: tuple[object, ...] = ("aligned", target_size[0], target_size[1])
             element_scale = self._aligned_star_element_scale(target_size)
-            number_reference_stars = self._show_reference_annotations()
+            number_reference_stars = show_reference_annotations
             display_star_map = self._build_aligned_reference_star_map(transform, target_size)
             self._current_reference_star_map = display_star_map
             if isinstance(transform, RoughFramingTransform):
                 self._refresh_reference_stars_for_rough_framing(display_star_map)
+            annotation_reference_stars = (
+                self._reference_stars_with_visible_annotations()
+                if show_reference_annotations
+                else ()
+            )
             self.reference_star_map_item.set_star_map(
                 display_star_map,
-                reference_stars=self._current_reference_stars,
+                reference_stars=annotation_reference_stars,
                 sky_transform=transform,
                 target_size=target_size,
                 element_scale=element_scale,
@@ -816,11 +823,16 @@ class AlignmentMixin:
         else:
             target_size = None
             display_key = ("native", star_map.width, star_map.height)
-            number_reference_stars = self._show_reference_annotations()
+            number_reference_stars = show_reference_annotations
             self._current_reference_star_map = star_map
+            annotation_reference_stars = (
+                self._reference_stars_with_visible_annotations()
+                if show_reference_annotations
+                else ()
+            )
             self.reference_star_map_item.set_star_map(
                 star_map,
-                reference_stars=self._current_reference_stars,
+                reference_stars=annotation_reference_stars,
                 sky_transform=None,
                 target_size=None,
                 element_scale=1.0,
@@ -840,12 +852,12 @@ class AlignmentMixin:
             assert target_size is not None
             self.real_reference_overlay_item.set_star_map(
                 display_star_map,
-                reference_stars=self._current_reference_stars,
+                reference_stars=annotation_reference_stars,
                 sky_transform=transform,
                 target_size=target_size,
                 element_scale=self._aligned_star_element_scale(target_size),
                 draw_common_names=False,
-                number_reference_stars=self._show_reference_annotations(),
+                number_reference_stars=show_reference_annotations,
             )
             self.real_reference_overlay_item.setOpacity(self._reference_overlay_opacity())
             self.real_reference_overlay_item.setVisible(True)

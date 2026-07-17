@@ -2468,6 +2468,9 @@
                  <property name="rowCount">
                   <number>0</number>
                  </property>
+                 <attribute name="verticalHeaderVisible">
+                  <bool>false</bool>
+                 </attribute>
                  <column>
                   <property name="text">
                    <string>序号</string>

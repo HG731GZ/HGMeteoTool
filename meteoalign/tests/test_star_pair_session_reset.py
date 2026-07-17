@@ -34,7 +34,7 @@ class _StatusBar:
 class _Ui:
     def __init__(self) -> None:
         self.tableWidgetStarPairs = QTableWidget()
-        self.tableWidgetStarPairs.setColumnCount(5)
+        self.tableWidgetStarPairs.setColumnCount(6)
         self.spinBoxReferenceStarCount = QSpinBox()
         self.spinBoxReferenceStarCount.setRange(3, 40)
         self.spinBoxReferenceStarCount.setValue(12)
@@ -62,6 +62,7 @@ class _Harness(StarPairResetMixin, StarPairJsonTaskMixin):
         self._reference_alignment_error_message = "旧参考错误"
         self._sky_alignment_error_message = "旧配准错误"
         self._source_model_error_message = "旧模型错误"
+        self._hidden_star_pair_annotation_ids = {"hidden-old"}
         self._current_star_map = object()
         self._current_reference_star_map = object()
         self._clear_annotations_called = False
@@ -112,6 +113,7 @@ def test_new_input_reset_clears_unmatched_reference_state() -> None:
     assert harness._reference_alignment_error_message == ""
     assert harness._sky_alignment_error_message == ""
     assert harness._source_model_error_message == ""
+    assert harness._hidden_star_pair_annotation_ids == set()
     assert harness._current_reference_star_map is harness._current_star_map
     assert harness.ui.spinBoxReferenceStarCount.value() == 12
     assert harness._clear_annotations_called is True

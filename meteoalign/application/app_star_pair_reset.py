@@ -53,6 +53,7 @@ class StarPairResetMixin:
         self._mask_excluded_reference_star_ids = set()
         self._star_pair_sort_key = None
         self._star_pair_sort_descending = True
+        self._hidden_star_pair_annotation_ids = set()
         self._current_reference_stars = ()
 
         self._sky_alignment_transform = None

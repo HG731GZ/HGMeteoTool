@@ -5,17 +5,31 @@ from dataclasses import replace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QApplication, QMessageBox, QSpinBox, QTableWidget, QTableWidgetSelectionRange
+from PyQt5.QtCore import QPoint, Qt
+from PyQt5.QtTest import QTest
+from PyQt5.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
+    QMessageBox,
+    QSpinBox,
+    QStyle,
+    QStyleOptionViewItem,
+    QStyledItemDelegate,
+    QTableWidget,
+    QTableWidgetSelectionRange,
+)
 
 from meteoalign.application.app_constants import (
     AUTO_MATCH_CONSTRAINT_ANCHOR,
     AUTO_MATCH_CONSTRAINT_MODES,
     AUTO_MATCH_CONSTRAINT_SOFT,
+    STAR_PAIR_ANNOTATION_COLUMN,
     STAR_PAIR_NAME_COLUMN,
+    STAR_PAIR_POSITION_COLUMN,
     STAR_PAIR_ROW_TYPE_MANUAL,
 )
 from meteoalign.application.app_auto_match import AutoMatchMixin
+from meteoalign.application import app_star_pair_actions as star_pair_actions_module
 from meteoalign.application.app_star_pair_table import StarPairTableMixin
 from meteoalign.application.star_pair_assistant_dialog import StarPairAssistantDialog
 from meteoalign.simulator import ReferenceStar
@@ -55,7 +69,9 @@ def _reference_star(star_id: str, index: int) -> ReferenceStar:
 class _Ui:
     def __init__(self) -> None:
         self.tableWidgetStarPairs = QTableWidget()
-        self.tableWidgetStarPairs.setColumnCount(5)
+        self.tableWidgetStarPairs.setColumnCount(6)
+        self.tableWidgetStarPairs.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.tableWidgetStarPairs.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.spinBoxReferenceStarCount = QSpinBox()
         self.spinBoxReferenceStarCount.setRange(3, 40)
         self.spinBoxReferenceStarCount.setValue(12)
@@ -80,6 +96,7 @@ class _StarPairTableHarness(StarPairTableMixin):
         self._current_reference_stars: tuple[ReferenceStar, ...] = ()
         self._active_star_pair_row = None
         self._star_pair_annotations = {}
+        self._hidden_star_pair_annotation_ids: set[str] = set()
         self._focused_star_annotations = []
         self._manual_match_group_expanded = True
         self._auto_match_reference_star_ids: list[str] = []
@@ -157,6 +174,9 @@ class _StarPairTableHarness(StarPairTableMixin):
 
     def _clear_star_pair_annotations(self) -> None:
         self._star_pair_annotations.clear()
+
+    def _show_real_image_annotations(self) -> bool:
+        return True
 
 
 def _row_for_star_id(harness: _StarPairTableHarness, star_id: str) -> int:
@@ -440,3 +460,175 @@ def test_only_mask_exclusions_remain_blocked_after_unmatched_candidate_cleanup()
     assert "masked-1" in blocked_star_ids
     assert "failed-1" in harness._excluded_reference_star_ids
     assert "masked-1" in harness._excluded_reference_star_ids
+
+
+def test_annotation_checkbox_applies_to_all_selected_rows_and_both_previews() -> None:
+    """多选行切换一次复选框后，两类标注都必须遵循相同的行级状态。"""
+
+    class _VisibleItem:
+        def __init__(self) -> None:
+            self.visible = True
+
+        def setVisible(self, visible: bool) -> None:  # noqa: N802 - 模拟 Qt 接口。
+            self.visible = visible
+
+    harness = _StarPairTableHarness(
+        (
+            _reference_star("manual-1", 1),
+            _reference_star("manual-2", 2),
+            _reference_star("manual-3", 3),
+        )
+    )
+    harness._update_star_pair_table(harness.reference_stars)
+    _select_star_rows(harness, "manual-1", "manual-2")
+
+    changed_row = _row_for_star_id(harness, "manual-1")
+    changed_item = harness.ui.tableWidgetStarPairs.item(changed_row, STAR_PAIR_ANNOTATION_COLUMN)
+    assert changed_item is not None
+    changed_item.setCheckState(Qt.Unchecked)
+    harness._handle_star_pair_item_changed(changed_item)
+
+    assert harness._hidden_star_pair_annotation_ids == {"manual-1", "manual-2"}
+    for star_id in ("manual-1", "manual-2"):
+        item = harness.ui.tableWidgetStarPairs.item(
+            _row_for_star_id(harness, star_id),
+            STAR_PAIR_ANNOTATION_COLUMN,
+        )
+        assert item is not None and item.checkState() == Qt.Unchecked
+    visible_item = harness.ui.tableWidgetStarPairs.item(
+        _row_for_star_id(harness, "manual-3"),
+        STAR_PAIR_ANNOTATION_COLUMN,
+    )
+    assert visible_item is not None and visible_item.checkState() == Qt.Checked
+    assert [star.star_id for star in harness._reference_stars_with_visible_annotations()] == ["manual-3"]
+
+    annotation_items = {
+        star_id: (_VisibleItem(), _VisibleItem())
+        for star_id in ("manual-1", "manual-2", "manual-3")
+    }
+    harness._star_pair_annotations = annotation_items
+    harness._update_star_pair_annotation_visibility()
+    assert not annotation_items["manual-1"][0].visible
+    assert not annotation_items["manual-2"][1].visible
+    assert annotation_items["manual-3"][0].visible
+
+
+def test_clicking_checkbox_keeps_multirow_batch_behavior() -> None:
+    """真实鼠标点击复选框时也应把目标状态应用到当前多选行。"""
+
+    app = _qapp()
+    harness = _StarPairTableHarness(
+        (_reference_star("manual-1", 1), _reference_star("manual-2", 2))
+    )
+    harness._update_star_pair_table(harness.reference_stars)
+    harness._configure_star_pair_table_columns()
+    table = harness.ui.tableWidgetStarPairs
+    table.itemChanged.connect(harness._handle_star_pair_item_changed)
+    table.resize(480, 240)
+    table.show()
+    app.processEvents()
+    _select_star_rows(harness, "manual-1", "manual-2")
+
+    row = _row_for_star_id(harness, "manual-1")
+    item = table.item(row, STAR_PAIR_ANNOTATION_COLUMN)
+    assert item is not None
+    table.scrollToItem(item)
+    app.processEvents()
+    item_index = table.model().index(row, STAR_PAIR_ANNOTATION_COLUMN)
+    option = QStyleOptionViewItem()
+    option.initFrom(table)
+    option.rect = table.visualItemRect(item)
+    QStyledItemDelegate(table).initStyleOption(option, item_index)
+    check_rect = table.style().subElementRect(QStyle.SE_ItemViewItemCheckIndicator, option, table)
+    QTest.mouseClick(table.viewport(), Qt.LeftButton, pos=check_rect.center())
+    app.processEvents()
+
+    assert harness._hidden_star_pair_annotation_ids == {"manual-1", "manual-2"}
+    selected_star_ids = {
+        harness._star_pair_star_id(index.row())
+        for index in table.selectionModel().selectedRows()
+    }
+    assert selected_star_ids == {"manual-1", "manual-2"}
+    table.close()
+
+
+def test_group_annotation_toggle_hides_and_restores_only_that_list() -> None:
+    """分组头菜单文案和批量状态应在隐藏、显示之间切换。"""
+
+    harness = _StarPairTableHarness(
+        (
+            _reference_star("manual-1", 1),
+            _reference_star("manual-2", 2),
+            _reference_star("auto-1", 3),
+        )
+    )
+    harness._auto_match_reference_star_ids = ["auto-1"]
+    harness._auto_match_group_order = ["A"]
+    harness._auto_match_group_by_star_id = {"auto-1": "A"}
+    harness._auto_match_group_expanded_by_id = {"A": True}
+    harness._update_star_pair_table(harness.reference_stars)
+    group_row = harness._manual_match_group_row()
+    assert group_row is not None
+
+    assert harness._star_pair_group_annotation_action_text(group_row) == "隐藏列表所有标注"
+    assert harness._toggle_star_pair_group_annotations(group_row) == 2
+    assert harness._star_pair_group_annotation_action_text(group_row) == "显示列表所有标注"
+    assert harness._hidden_star_pair_annotation_ids == {"manual-1", "manual-2"}
+    auto_item = harness.ui.tableWidgetStarPairs.item(
+        _row_for_star_id(harness, "auto-1"),
+        STAR_PAIR_ANNOTATION_COLUMN,
+    )
+    assert auto_item is not None and auto_item.checkState() == Qt.Checked
+
+    assert harness._toggle_star_pair_group_annotations(group_row) == 2
+    assert harness._star_pair_group_annotation_action_text(group_row) == "隐藏列表所有标注"
+    assert harness._hidden_star_pair_annotation_ids == set()
+
+
+def test_auto_group_annotation_action_is_last_in_context_menu(monkeypatch) -> None:
+    """自动匹配分组菜单中的整组标注动作应固定在最下面。"""
+
+    menu_labels: list[str] = []
+
+    class _Menu:
+        def __init__(self, _parent: object) -> None:
+            return
+
+        def addAction(self, text: str):  # noqa: N802 - 模拟 Qt 接口。
+            menu_labels.append(text)
+            return object()
+
+        def exec_(self, _point: object) -> None:
+            return None
+
+    monkeypatch.setattr(star_pair_actions_module, "QMenu", _Menu)
+    harness = _StarPairTableHarness((_reference_star("auto-1", 1),))
+    harness._auto_match_reference_star_ids = ["auto-1"]
+    harness._auto_match_group_order = ["A"]
+    harness._auto_match_group_by_star_id = {"auto-1": "A"}
+    harness._auto_match_group_expanded_by_id = {"A": True}
+    harness._update_star_pair_table(harness.reference_stars)
+    group_row = harness._auto_match_group_row("A")
+    assert group_row is not None
+    table = harness.ui.tableWidgetStarPairs
+    point = QPoint(4, table.rowViewportPosition(group_row) + table.rowHeight(group_row) // 2)
+
+    harness._show_star_pair_context_menu(point)
+
+    assert menu_labels == ["折叠自动匹配表", "删除自动匹配表", "隐藏列表所有标注"]
+
+
+def test_soft_constraint_and_group_mode_text_stay_compact() -> None:
+    """软约束只显示权重，折叠表头的模式列保持空白。"""
+
+    harness = _StarPairTableHarness((_reference_star("manual-1", 1),))
+    harness._update_star_pair_table(harness.reference_stars)
+    _set_matched_position(harness, "manual-1")
+    harness._star_pair_store.set_constraint("manual-1", AUTO_MATCH_CONSTRAINT_SOFT, 0.3)
+    harness._update_star_pair_table(harness.reference_stars)
+
+    row = _row_for_star_id(harness, "manual-1")
+    group_row = harness._manual_match_group_row()
+    assert group_row is not None
+    assert harness.ui.tableWidgetStarPairs.item(row, STAR_PAIR_POSITION_COLUMN).text() == "(0.30)"
+    assert harness.ui.tableWidgetStarPairs.item(group_row, STAR_PAIR_POSITION_COLUMN).text() == ""

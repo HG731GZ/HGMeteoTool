@@ -83,20 +83,26 @@ class StarPairActionsMixin:
             selected_rows = [row]
 
         menu = QMenu(self)
-        if self._is_manual_match_group_row(row) and len(selected_rows) == 1:
+        if self._is_manual_match_group_row(row):
             toggle_action = menu.addAction("折叠手动匹配表" if self._manual_match_group_expanded else "展开手动匹配表")
+            annotation_action = menu.addAction(self._star_pair_group_annotation_action_text(row))
             selected_action = menu.exec_(table.viewport().mapToGlobal(point))
             if selected_action is toggle_action:
                 self._toggle_manual_match_group()
+            elif selected_action is annotation_action:
+                self._toggle_star_pair_group_annotations(row)
             return
-        if self._is_auto_match_group_row(row) and len(selected_rows) == 1:
+        if self._is_auto_match_group_row(row):
             group_id = self._row_auto_match_group_id(row)
             expanded = self._auto_match_group_expanded_by_id.get(group_id, True)
             toggle_action = menu.addAction("折叠自动匹配表" if expanded else "展开自动匹配表")
             delete_group_action = menu.addAction("删除自动匹配表")
+            annotation_action = menu.addAction(self._star_pair_group_annotation_action_text(row))
             selected_action = menu.exec_(table.viewport().mapToGlobal(point))
             if selected_action is toggle_action:
                 self._toggle_auto_match_group(group_id)
+            elif selected_action is annotation_action:
+                self._toggle_star_pair_group_annotations(row)
             elif selected_action is delete_group_action:
                 deleted_count = self._delete_auto_match_group(group_id)
                 if deleted_count > 0:
@@ -510,6 +516,7 @@ class StarPairActionsMixin:
             return 0
 
         deleted_star_ids = auto_star_ids_to_delete | manual_star_ids_to_delete
+        self._hidden_star_pair_annotations().difference_update(deleted_star_ids)
         if self._active_star_pair_row is not None:
             active_star_id = self._star_pair_star_id(self._active_star_pair_row)
             if active_star_id in deleted_star_ids:

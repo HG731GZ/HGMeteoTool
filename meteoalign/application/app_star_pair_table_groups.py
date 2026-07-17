@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import math
+from functools import partial
 
 import numpy as np
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QItemSelectionModel, QTimer, Qt
 from PyQt5.QtGui import QBrush, QColor, QFont
 from PyQt5.QtWidgets import QHeaderView, QTableWidgetItem
 
@@ -11,9 +12,12 @@ from .app_constants import (
     AUTO_MATCH_CONSTRAINT_ANCHOR,
     AUTO_MATCH_CONSTRAINT_MODES,
     AUTO_MATCH_CONSTRAINT_SOFT,
+    STAR_PAIR_ANNOTATION_COLUMN,
     STAR_PAIR_AUTO_GROUP_ROLE,
     STAR_PAIR_INDEX_COLUMN,
+    STAR_PAIR_INDEX_WIDTH_SAMPLE,
     STAR_PAIR_MANUAL_GROUP_LABEL,
+    STAR_PAIR_MODE_WIDTH_SAMPLE,
     STAR_PAIR_NAME_COLUMN,
     STAR_PAIR_POSITION_COLUMN,
     STAR_PAIR_QUALITY_COLUMN,
@@ -42,17 +46,50 @@ class StarPairTableGroupsMixin:
         header_item = table.horizontalHeaderItem(STAR_PAIR_RESIDUAL_COLUMN)
         header_text = header_item.text() if header_item is not None else "残差"
         header_width = table.horizontalHeader().fontMetrics().horizontalAdvance(header_text)
-        return max(digit_width + 18, header_width + 18, 56)
+        return max(digit_width + 8, header_width + 8, 56)
 
     def _star_pair_quality_column_width(self) -> int:
         table = self.ui.tableWidgetStarPairs
         digit_width = table.fontMetrics().horizontalAdvance(STAR_PAIR_QUALITY_WIDTH_SAMPLE)
         header_item = table.horizontalHeaderItem(STAR_PAIR_QUALITY_COLUMN)
-        header_text = header_item.text() if header_item is not None else "PSF质量"
+        header_text = header_item.text() if header_item is not None else "PSF"
         header_width = table.horizontalHeader().fontMetrics().horizontalAdvance(header_text)
-        return max(digit_width + 18, header_width + 18, 64)
+        return max(digit_width + 6, header_width + 6, 44)
+
+    def _star_pair_index_column_width(self) -> int:
+        table = self.ui.tableWidgetStarPairs
+        sample_width = table.fontMetrics().horizontalAdvance(STAR_PAIR_INDEX_WIDTH_SAMPLE)
+        header_item = table.horizontalHeaderItem(STAR_PAIR_INDEX_COLUMN)
+        header_text = header_item.text() if header_item is not None else "序号"
+        header_width = table.horizontalHeader().fontMetrics().horizontalAdvance(header_text)
+        return max(sample_width + 4, header_width + 4, 36)
+
+    def _star_pair_mode_column_width(self) -> int:
+        """把模式列限制为约七个英文字符，给标注列腾出空间。"""
+
+        table = self.ui.tableWidgetStarPairs
+        sample_width = table.fontMetrics().horizontalAdvance(STAR_PAIR_MODE_WIDTH_SAMPLE)
+        header_item = table.horizontalHeaderItem(STAR_PAIR_POSITION_COLUMN)
+        header_text = header_item.text() if header_item is not None else "模式"
+        header_width = table.horizontalHeader().fontMetrics().horizontalAdvance(header_text)
+        return max(sample_width + 4, header_width + 4, 52)
+
+    def _star_pair_annotation_column_width(self) -> int:
+        table = self.ui.tableWidgetStarPairs
+        header_item = table.horizontalHeaderItem(STAR_PAIR_ANNOTATION_COLUMN)
+        header_text = header_item.text() if header_item is not None else "标注"
+        header_width = table.horizontalHeader().fontMetrics().horizontalAdvance(header_text)
+        return max(header_width + 4, 38)
 
     def _apply_star_pair_table_column_widths(self) -> None:
+        self.ui.tableWidgetStarPairs.setColumnWidth(
+            STAR_PAIR_INDEX_COLUMN,
+            self._star_pair_index_column_width(),
+        )
+        self.ui.tableWidgetStarPairs.setColumnWidth(
+            STAR_PAIR_POSITION_COLUMN,
+            self._star_pair_mode_column_width(),
+        )
         self.ui.tableWidgetStarPairs.setColumnWidth(
             STAR_PAIR_QUALITY_COLUMN,
             self._star_pair_quality_column_width(),
@@ -61,17 +98,22 @@ class StarPairTableGroupsMixin:
             STAR_PAIR_RESIDUAL_COLUMN,
             self._star_pair_residual_column_width(),
         )
+        self.ui.tableWidgetStarPairs.setColumnWidth(
+            STAR_PAIR_ANNOTATION_COLUMN,
+            self._star_pair_annotation_column_width(),
+        )
 
     def _configure_star_pair_table_columns(self) -> None:
         table = self.ui.tableWidgetStarPairs
         header = table.horizontalHeader()
         header.setSectionsClickable(True)
         header.setStretchLastSection(False)
-        header.setSectionResizeMode(STAR_PAIR_INDEX_COLUMN, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(STAR_PAIR_INDEX_COLUMN, QHeaderView.Fixed)
         header.setSectionResizeMode(STAR_PAIR_NAME_COLUMN, QHeaderView.Stretch)
-        header.setSectionResizeMode(STAR_PAIR_POSITION_COLUMN, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(STAR_PAIR_POSITION_COLUMN, QHeaderView.Fixed)
         header.setSectionResizeMode(STAR_PAIR_QUALITY_COLUMN, QHeaderView.Fixed)
         header.setSectionResizeMode(STAR_PAIR_RESIDUAL_COLUMN, QHeaderView.Fixed)
+        header.setSectionResizeMode(STAR_PAIR_ANNOTATION_COLUMN, QHeaderView.Fixed)
         self._apply_star_pair_table_column_widths()
         self._update_star_pair_sort_indicator()
 
@@ -266,7 +308,7 @@ class StarPairTableGroupsMixin:
             return ""
         mode, fit_weight = self._star_pair_fit_constraint(row)
         if mode == AUTO_MATCH_CONSTRAINT_SOFT:
-            return f"软约束({fit_weight:.2f})"
+            return f"({fit_weight:.2f})"
         return "锚点"
 
     def _star_pair_constraint_tooltip(self, row: int) -> str:
@@ -470,32 +512,19 @@ class StarPairTableGroupsMixin:
                 return row
         return None
 
-    def _manual_match_group_counts(self) -> tuple[int, int]:
-        total_count = 0
-        paired_count = 0
-        table = self.ui.tableWidgetStarPairs
-        for row in range(table.rowCount()):
-            if self._star_pair_row_type(row) != STAR_PAIR_ROW_TYPE_MANUAL:
-                continue
-            total_count += 1
-            if self._star_pair_position_text(row):
-                paired_count += 1
-        return total_count, paired_count
-
     def _update_manual_match_group_row_text(self) -> None:
         group_row = self._manual_match_group_row()
         if group_row is None:
             return
         table = self.ui.tableWidgetStarPairs
-        total_count, paired_count = self._manual_match_group_counts()
         arrow_text = "▼" if self._manual_match_group_expanded else "▶"
-        mode_text = f"已匹配 {paired_count}/{total_count}"
         values = {
             STAR_PAIR_INDEX_COLUMN: arrow_text,
             STAR_PAIR_NAME_COLUMN: STAR_PAIR_MANUAL_GROUP_LABEL,
-            STAR_PAIR_POSITION_COLUMN: mode_text,
+            STAR_PAIR_POSITION_COLUMN: "",
             STAR_PAIR_QUALITY_COLUMN: "",
             STAR_PAIR_RESIDUAL_COLUMN: "",
+            STAR_PAIR_ANNOTATION_COLUMN: "",
         }
         signals_were_blocked = table.blockSignals(True)
         for column, text in values.items():
@@ -513,18 +542,6 @@ class StarPairTableGroupsMixin:
                 return row
         return None
 
-    def _auto_match_group_counts(self, group_id: str) -> tuple[int, int]:
-        total_count = 0
-        paired_count = 0
-        table = self.ui.tableWidgetStarPairs
-        for row in range(table.rowCount()):
-            if not self._is_auto_match_row(row) or self._row_auto_match_group_id(row) != group_id:
-                continue
-            total_count += 1
-            if self._star_pair_position_text(row):
-                paired_count += 1
-        return total_count, paired_count
-
     def _update_auto_match_group_row_text(self, group_id: str | None = None) -> None:
         if group_id is None:
             self._update_manual_match_group_row_text()
@@ -535,15 +552,14 @@ class StarPairTableGroupsMixin:
         if group_row is None:
             return
         table = self.ui.tableWidgetStarPairs
-        total_count, paired_count = self._auto_match_group_counts(group_id)
         arrow_text = "▼" if self._auto_match_group_expanded_by_id.get(group_id, True) else "▶"
-        mode_text = f"已匹配 {paired_count}/{total_count}"
         values = {
             STAR_PAIR_INDEX_COLUMN: arrow_text,
             STAR_PAIR_NAME_COLUMN: self._auto_match_group_label(group_id),
-            STAR_PAIR_POSITION_COLUMN: mode_text,
+            STAR_PAIR_POSITION_COLUMN: "",
             STAR_PAIR_QUALITY_COLUMN: "",
             STAR_PAIR_RESIDUAL_COLUMN: "",
+            STAR_PAIR_ANNOTATION_COLUMN: "",
         }
         signals_were_blocked = table.blockSignals(True)
         for column, text in values.items():
@@ -620,6 +636,161 @@ class StarPairTableGroupsMixin:
             item.setData(Qt.UserRole, star_id)
         return item
 
+    def _hidden_star_pair_annotations(self) -> set[str]:
+        """返回当前会话中被用户隐藏标注的星表编号集合。"""
+
+        hidden_ids = getattr(self, "_hidden_star_pair_annotation_ids", None)
+        if not isinstance(hidden_ids, set):
+            hidden_ids = set(hidden_ids or ())
+            self._hidden_star_pair_annotation_ids = hidden_ids
+        return hidden_ids
+
+    def _star_pair_annotation_is_enabled_for_id(self, star_id: str) -> bool:
+        return bool(star_id) and star_id not in self._hidden_star_pair_annotations()
+
+    def _make_star_pair_annotation_item(self, row_type: str, star_id: str) -> QTableWidgetItem:
+        item = self._make_star_pair_table_item("", row_type, star_id)
+        item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+        item.setCheckState(
+            Qt.Checked if self._star_pair_annotation_is_enabled_for_id(star_id) else Qt.Unchecked
+        )
+        item.setTextAlignment(Qt.AlignCenter)
+        item.setToolTip("控制该星在参考星图和真实图像中的标注显示。")
+        return item
+
+    def _star_pair_annotation_is_enabled(self, row: int) -> bool:
+        if row < 0 or row >= self.ui.tableWidgetStarPairs.rowCount():
+            return False
+        if self._is_star_pair_group_row(row):
+            return False
+        item = self.ui.tableWidgetStarPairs.item(row, STAR_PAIR_ANNOTATION_COLUMN)
+        if item is not None and item.flags() & Qt.ItemIsUserCheckable:
+            return item.checkState() == Qt.Checked
+        return self._star_pair_annotation_is_enabled_for_id(self._star_pair_star_id(row))
+
+    def _selected_star_pair_annotation_rows(self, changed_row: int) -> list[int]:
+        table = self.ui.tableWidgetStarPairs
+        selected_rows = sorted({index.row() for index in table.selectionModel().selectedRows()})
+        if not selected_rows:
+            selected_rows = sorted({index.row() for index in table.selectedIndexes()})
+        if changed_row not in selected_rows:
+            selected_rows = [changed_row]
+        return [
+            row
+            for row in selected_rows
+            if 0 <= row < table.rowCount() and not self._is_star_pair_group_row(row)
+        ]
+
+    def _restore_star_pair_annotation_selection(
+        self,
+        star_ids: tuple[str, ...],
+        current_star_id: str,
+    ) -> None:
+        """复选框点击完成后恢复原多选行，避免 Qt 在鼠标释放时收窄选区。"""
+
+        table = self.ui.tableWidgetStarPairs
+        try:
+            selection_model = table.selectionModel()
+            model = table.model()
+        except RuntimeError:
+            return
+        requested_ids = set(star_ids)
+        rows_by_star_id = {
+            self._star_pair_star_id(row): row
+            for row in range(table.rowCount())
+            if self._star_pair_star_id(row) in requested_ids
+        }
+        if len(rows_by_star_id) <= 1:
+            return
+
+        selection_model.clearSelection()
+        for star_id in star_ids:
+            row = rows_by_star_id.get(star_id)
+            if row is None:
+                continue
+            selection_model.select(
+                model.index(row, STAR_PAIR_INDEX_COLUMN),
+                QItemSelectionModel.Select | QItemSelectionModel.Rows,
+            )
+        current_row = rows_by_star_id.get(current_star_id)
+        if current_row is not None:
+            selection_model.setCurrentIndex(
+                model.index(current_row, STAR_PAIR_ANNOTATION_COLUMN),
+                QItemSelectionModel.NoUpdate,
+            )
+
+    def _set_star_pair_annotations_for_rows(self, rows: list[int], visible: bool) -> int:
+        """统一更新行级勾选状态，并立即刷新两侧图像标注。"""
+
+        table = self.ui.tableWidgetStarPairs
+        hidden_ids = self._hidden_star_pair_annotations()
+        changed_count = 0
+        signals_were_blocked = table.blockSignals(True)
+        try:
+            for row in sorted(set(rows)):
+                if row < 0 or row >= table.rowCount() or self._is_star_pair_group_row(row):
+                    continue
+                star_id = self._star_pair_star_id(row)
+                if not star_id:
+                    continue
+                was_visible = star_id not in hidden_ids
+                if visible:
+                    hidden_ids.discard(star_id)
+                else:
+                    hidden_ids.add(star_id)
+                item = table.item(row, STAR_PAIR_ANNOTATION_COLUMN)
+                if item is not None:
+                    item.setCheckState(Qt.Checked if visible else Qt.Unchecked)
+                if was_visible != visible:
+                    changed_count += 1
+        finally:
+            table.blockSignals(signals_were_blocked)
+
+        update_real_annotations = getattr(self, "_update_star_pair_annotation_visibility", None)
+        if callable(update_real_annotations):
+            update_real_annotations()
+        update_reference_annotations = getattr(self, "_update_reference_alignment_display", None)
+        if callable(update_reference_annotations):
+            update_reference_annotations()
+        return changed_count
+
+    def _star_pair_group_annotation_rows(self, group_row: int) -> list[int]:
+        table = self.ui.tableWidgetStarPairs
+        if self._is_manual_match_group_row(group_row):
+            return [
+                row
+                for row in range(table.rowCount())
+                if self._star_pair_row_type(row) == STAR_PAIR_ROW_TYPE_MANUAL
+            ]
+        if self._is_auto_match_group_row(group_row):
+            group_id = self._row_auto_match_group_id(group_row)
+            return [
+                row
+                for row in range(table.rowCount())
+                if self._is_auto_match_row(row) and self._row_auto_match_group_id(row) == group_id
+            ]
+        return []
+
+    def _star_pair_group_annotations_are_hidden(self, group_row: int) -> bool:
+        rows = self._star_pair_group_annotation_rows(group_row)
+        return bool(rows) and all(not self._star_pair_annotation_is_enabled(row) for row in rows)
+
+    def _star_pair_group_annotation_action_text(self, group_row: int) -> str:
+        if self._star_pair_group_annotations_are_hidden(group_row):
+            return "显示列表所有标注"
+        return "隐藏列表所有标注"
+
+    def _toggle_star_pair_group_annotations(self, group_row: int) -> int:
+        rows = self._star_pair_group_annotation_rows(group_row)
+        if not rows:
+            return 0
+        visible = self._star_pair_group_annotations_are_hidden(group_row)
+        self._set_star_pair_annotations_for_rows(rows, visible)
+        group_label = self._star_pair_label(group_row)
+        state_text = "显示" if visible else "隐藏"
+        self.ui.statusbar.showMessage(f"已{state_text}{group_label}的全部 {len(rows)} 个标注。")
+        return len(rows)
+
     def _set_star_pair_table_row(
         self,
         row: int,
@@ -643,6 +814,7 @@ class StarPairTableGroupsMixin:
         position_item = self._make_star_pair_table_item("", row_type, star_id)
         quality_item = self._make_star_pair_table_item("", row_type, star_id)
         residual_item = self._make_star_pair_table_item("", row_type, star_id)
+        annotation_item = self._make_star_pair_annotation_item(row_type, star_id)
         if saved_state:
             mode, fit_weight = self._normalized_auto_match_constraint(
                 saved_state.get("fit_constraint_mode"),
@@ -662,7 +834,7 @@ class StarPairTableGroupsMixin:
                 item.setData(STAR_PAIR_AUTO_GROUP_ROLE, group_id)
             item.setToolTip(constraint_tip)
         if position is not None:
-            position_item.setText(f"软约束({fit_weight:.2f})" if mode == AUTO_MATCH_CONSTRAINT_SOFT else "锚点")
+            position_item.setText(f"({fit_weight:.2f})" if mode == AUTO_MATCH_CONSTRAINT_SOFT else "锚点")
         fit_payload = saved_state.get("fit_payload")
         if isinstance(fit_payload, dict):
             try:
@@ -677,6 +849,7 @@ class StarPairTableGroupsMixin:
         table.setItem(row, STAR_PAIR_POSITION_COLUMN, position_item)
         table.setItem(row, STAR_PAIR_QUALITY_COLUMN, quality_item)
         table.setItem(row, STAR_PAIR_RESIDUAL_COLUMN, residual_item)
+        table.setItem(row, STAR_PAIR_ANNOTATION_COLUMN, annotation_item)
 
     def _set_auto_match_group_table_row(self, row: int, group_id: str) -> None:
         table = self.ui.tableWidgetStarPairs
@@ -686,6 +859,7 @@ class StarPairTableGroupsMixin:
             (STAR_PAIR_POSITION_COLUMN, ""),
             (STAR_PAIR_QUALITY_COLUMN, ""),
             (STAR_PAIR_RESIDUAL_COLUMN, ""),
+            (STAR_PAIR_ANNOTATION_COLUMN, ""),
         ):
             item = self._make_star_pair_table_item(text, STAR_PAIR_ROW_TYPE_AUTO_GROUP)
             item.setData(STAR_PAIR_AUTO_GROUP_ROLE, group_id)
@@ -702,6 +876,7 @@ class StarPairTableGroupsMixin:
             (STAR_PAIR_POSITION_COLUMN, ""),
             (STAR_PAIR_QUALITY_COLUMN, ""),
             (STAR_PAIR_RESIDUAL_COLUMN, ""),
+            (STAR_PAIR_ANNOTATION_COLUMN, ""),
         ):
             item = self._make_star_pair_table_item(text, STAR_PAIR_ROW_TYPE_MANUAL_GROUP)
             font = QFont(item.font())
@@ -849,8 +1024,6 @@ class StarPairTableGroupsMixin:
                 )
                 row += 1
         table.blockSignals(signals_were_blocked)
-        table.resizeColumnToContents(STAR_PAIR_INDEX_COLUMN)
-        table.resizeColumnToContents(STAR_PAIR_POSITION_COLUMN)
         self._apply_star_pair_table_column_widths()
         self._apply_auto_match_group_visibility()
         self._sync_star_pair_annotations_to_table()
@@ -859,6 +1032,31 @@ class StarPairTableGroupsMixin:
         self._update_reference_alignment_transform()
 
     def _handle_star_pair_item_changed(self, item: QTableWidgetItem) -> None:
+        if item.column() == STAR_PAIR_ANNOTATION_COLUMN:
+            if self._is_star_pair_group_row(item.row()):
+                return
+            rows = self._selected_star_pair_annotation_rows(item.row())
+            selected_star_ids = tuple(
+                star_id
+                for row in rows
+                if (star_id := self._star_pair_star_id(row))
+            )
+            current_star_id = self._star_pair_star_id(item.row())
+            visible = item.checkState() == Qt.Checked
+            changed_count = self._set_star_pair_annotations_for_rows(rows, visible)
+            if len(selected_star_ids) > 1:
+                QTimer.singleShot(
+                    0,
+                    partial(
+                        self._restore_star_pair_annotation_selection,
+                        selected_star_ids,
+                        current_star_id,
+                    ),
+                )
+            if changed_count > 0:
+                state_text = "显示" if visible else "隐藏"
+                self.ui.statusbar.showMessage(f"已{state_text} {changed_count} 行星点标注。")
+            return
         if item.column() != STAR_PAIR_POSITION_COLUMN:
             return
         if self._is_star_pair_group_row(item.row()):
@@ -873,6 +1071,16 @@ class StarPairTableGroupsMixin:
         if name_item is None:
             return ""
         return str(name_item.data(Qt.UserRole) or "")
+
+    def _reference_stars_with_visible_annotations(self) -> tuple[ReferenceStar, ...]:
+        """仅过滤绘图标注，不改变参与匹配和拟合的参考星集合。"""
+
+        hidden_ids = self._hidden_star_pair_annotations()
+        return tuple(
+            star
+            for star in self._current_reference_stars
+            if star.star_id.strip() not in hidden_ids
+        )
 
     def _star_pair_position_text(self, row: int) -> str:
         position = self._parse_star_pair_position_text(row)
