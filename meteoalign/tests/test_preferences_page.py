@@ -79,6 +79,10 @@ def test_page_groups_controls_and_saves_without_touching_excluded_values(tmp_pat
     assert page.ui.pushButtonClosePreferences.text() == "关闭"
     page.ui.spinBoxStarNameFontSize.setValue(20)
     assert applied and applied[-1].star_name_font_size_pt == 20
+    page.ui.doubleSpinBoxStarPickPsfFitErrorLimit.setValue(0.75)
+    page.ui.doubleSpinBoxStarPickSaturatedPsfFitErrorLimit.setValue(0.90)
+    assert applied[-1].star_pick_psf_fit_error_limit == 0.75
+    assert applied[-1].star_pick_saturated_psf_fit_error_limit == 0.90
     applied_count_before_default_change = len(applied)
     page.ui.doubleSpinBoxDefaultLatitude.setValue(35.5)
     assert len(applied) == applied_count_before_default_change
@@ -87,6 +91,8 @@ def test_page_groups_controls_and_saves_without_touching_excluded_values(tmp_pat
 
     written = _read_jsonc(preference_path)
     assert written["star_name_font_size_pt"] == 20
+    assert written["star_pick_psf_fit_error_limit"] == 0.75
+    assert written["star_pick_saturated_psf_fit_error_limit"] == 0.90
     assert written["default_latitude_deg"] == 35.5
     assert written["controls_font_size_pt"] == 19
     assert written["adjacent_alignment_max_correspondences"] == 88

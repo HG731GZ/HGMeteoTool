@@ -185,6 +185,8 @@ def test_linked_auto_pair_failure_keeps_blue_circle_and_does_not_open_dialog(mon
             auto_pair_search_rms_multiplier=2.0,
             auto_pair_search_base_radius_px=7,
             auto_pair_search_max_radius_px=120,
+            star_pick_psf_fit_error_limit=0.73,
+            star_pick_saturated_psf_fit_error_limit=0.88,
         ),
         ui=SimpleNamespace(
             statusbar=SimpleNamespace(showMessage=status_messages.append),
@@ -204,6 +206,8 @@ def test_linked_auto_pair_failure_keeps_blue_circle_and_does_not_open_dialog(mon
     )
 
     def fail_fit(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        assert _kwargs["fit_error_limit"] == 0.73
+        assert _kwargs["saturated_fit_error_limit"] == 0.88
         raise ValueError("搜索范围内没有可靠星点")
 
     def fail_dialog(*_args, **_kwargs):  # type: ignore[no-untyped-def]
@@ -306,8 +310,14 @@ def test_manual_pair_failure_reactivates_star_pair_assistant(monkeypatch) -> Non
     host._sky_mask_allows_point = lambda _x, _y: True
     host._star_pick_search_radius_px = lambda _position: 12
     host._star_pick_psf_radius_px = lambda _position: 18
+    host.ui_config = StarMapUiConfig(
+        star_pick_psf_fit_error_limit=0.73,
+        star_pick_saturated_psf_fit_error_limit=0.88,
+    )
 
     def fail_fit(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        assert _kwargs["fit_error_limit"] == 0.73
+        assert _kwargs["saturated_fit_error_limit"] == 0.88
         raise ValueError("搜索范围内没有可靠星点")
 
     def show_warning(parent, title, message):  # type: ignore[no-untyped-def]

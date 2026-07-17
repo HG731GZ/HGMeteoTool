@@ -409,6 +409,8 @@ def _fit_selected_candidate(
     selected: StarSourceCandidate,
     *,
     max_fit_radius_px: int,
+    fit_error_limit: float | None = None,
+    saturated_fit_error_limit: float | None = None,
 ) -> FittedStarPosition:
     height, width = image.shape
     adaptive_radius = int(
@@ -571,7 +573,17 @@ def _fit_selected_candidate(
         raise StarFitError("候选目标过于狭长，不符合可用星点形态。", code="elongated")
     if max(fwhm_x, fwhm_y) >= fit_radius * 1.35:
         raise StarFitError("PSF 尺寸触及拟合窗口边界，结果不可靠。", code="size_at_bound")
-    residual_limit = 0.52 if selected.saturated else 0.42
+    default_residual_limit = 0.52 if selected.saturated else 0.42
+    configured_residual_limit = (
+        saturated_fit_error_limit if selected.saturated else fit_error_limit
+    )
+    residual_limit = (
+        float(configured_residual_limit)
+        if configured_residual_limit is not None
+        and math.isfinite(float(configured_residual_limit))
+        and float(configured_residual_limit) > 0.0
+        else default_residual_limit
+    )
     if fit_error > residual_limit:
         raise StarFitError("候选目标无法被稳定的恒星 PSF 描述。", code="poor_fit")
     if monotonicity < (0.55 if selected.saturated else 0.65):
@@ -624,6 +636,8 @@ def fit_star_position_from_array(
     reject_ambiguous: bool = False,
     saturation_level: float | None = None,
     selection_mode: str = "manual",
+    fit_error_limit: float | None = None,
+    saturated_fit_error_limit: float | None = None,
 ) -> FittedStarPosition:
     """先检测/去混叠，再用独立自适应窗口拟合单颗恒星。"""
 
@@ -657,4 +671,6 @@ def fit_star_position_from_array(
         detection,
         selected,
         max_fit_radius_px=fit_radius_limit,
+        fit_error_limit=fit_error_limit,
+        saturated_fit_error_limit=saturated_fit_error_limit,
     )

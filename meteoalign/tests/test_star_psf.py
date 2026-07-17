@@ -79,6 +79,23 @@ def test_saturated_star_uses_unsaturated_wings() -> None:
     assert fitted.quality_score >= 0.75
 
 
+def test_psf_fit_error_limit_can_be_tightened_for_manual_picking() -> None:
+    """可配置拟合残差门槛应直接控制 poor_fit 拒绝条件。"""
+
+    image = _gaussian_scene([(40.0, 40.0, 100.0, 2.0)])
+
+    with pytest.raises(StarFitError) as error:
+        fit_star_position_from_array(
+            image,
+            40.0,
+            40.0,
+            18,
+            fit_error_limit=0.000001,
+        )
+
+    assert error.value.code == "poor_fit"
+
+
 def test_uint16_array_preserves_native_saturation_level() -> None:
     """纯数值接口应识别 16-bit 上限，不把局部最大值误当作位深上限。"""
 

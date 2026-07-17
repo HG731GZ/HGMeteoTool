@@ -36,6 +36,8 @@ EDITABLE_PREFERENCE_KEYS = frozenset(
         "star_pick_circle_min_diameter_px",
         "star_pick_circle_max_diameter_px",
         "star_pick_psf_max_radius_px",
+        "star_pick_psf_fit_error_limit",
+        "star_pick_saturated_psf_fit_error_limit",
         "star_pair_psf_outer_diameter_multiplier",
         "auto_pair_search_rms_multiplier",
         "auto_pair_search_base_radius_px",
@@ -161,6 +163,12 @@ class PreferencesPage(QWidget):
             ui.spinBoxStarPickMinDiameter.setValue(config.star_pick_circle_min_diameter_px)
             ui.spinBoxStarPickMaxDiameter.setValue(config.star_pick_circle_max_diameter_px)
             ui.spinBoxStarPickPsfMaxRadius.setValue(config.star_pick_psf_max_radius_px)
+            ui.doubleSpinBoxStarPickPsfFitErrorLimit.setValue(
+                config.star_pick_psf_fit_error_limit
+            )
+            ui.doubleSpinBoxStarPickSaturatedPsfFitErrorLimit.setValue(
+                config.star_pick_saturated_psf_fit_error_limit
+            )
             ui.doubleSpinBoxStarPairPsfOuterDiameterMultiplier.setValue(
                 config.star_pair_psf_outer_diameter_multiplier
             )
@@ -227,6 +235,8 @@ class PreferencesPage(QWidget):
             ui.spinBoxStarPickMinDiameter,
             ui.spinBoxStarPickMaxDiameter,
             ui.spinBoxStarPickPsfMaxRadius,
+            ui.doubleSpinBoxStarPickPsfFitErrorLimit,
+            ui.doubleSpinBoxStarPickSaturatedPsfFitErrorLimit,
             ui.doubleSpinBoxStarPairPsfOuterDiameterMultiplier,
             ui.doubleSpinBoxAutoPairSearchRmsMultiplier,
             ui.spinBoxAutoPairSearchBaseRadius,
@@ -401,6 +411,10 @@ class PreferencesPage(QWidget):
             "star_pick_circle_min_diameter_px": ui.spinBoxStarPickMinDiameter.value(),
             "star_pick_circle_max_diameter_px": ui.spinBoxStarPickMaxDiameter.value(),
             "star_pick_psf_max_radius_px": ui.spinBoxStarPickPsfMaxRadius.value(),
+            "star_pick_psf_fit_error_limit": ui.doubleSpinBoxStarPickPsfFitErrorLimit.value(),
+            "star_pick_saturated_psf_fit_error_limit": (
+                ui.doubleSpinBoxStarPickSaturatedPsfFitErrorLimit.value()
+            ),
             "star_pair_psf_outer_diameter_multiplier": (
                 ui.doubleSpinBoxStarPairPsfOuterDiameterMultiplier.value()
             ),

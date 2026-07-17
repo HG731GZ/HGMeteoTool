@@ -259,6 +259,10 @@ class AutoMatchMixin:
                 radius_px=search_radius_px,
                 max_fit_radius_px=max_fit_radius_px,
                 selection_mode="manual",
+                fit_error_limit=self.ui_config.star_pick_psf_fit_error_limit,
+                saturated_fit_error_limit=(
+                    self.ui_config.star_pick_saturated_psf_fit_error_limit
+                ),
             )
         except Exception as exc:  # noqa: BLE001 - 交互式点选需要把拟合失败原因直接反馈给用户。
             self.ui.statusbar.showMessage(f"PSF 拟合失败: {exc}")
@@ -379,6 +383,10 @@ class AutoMatchMixin:
                 max_fit_radius_px=self.ui_config.star_pick_psf_max_radius_px,
                 reject_ambiguous=True,
                 selection_mode="predicted",
+                fit_error_limit=self.ui_config.star_pick_psf_fit_error_limit,
+                saturated_fit_error_limit=(
+                    self.ui_config.star_pick_saturated_psf_fit_error_limit
+                ),
             )
         except Exception as exc:  # noqa: BLE001 - 自动匹配要把失败原因反馈给用户。
             return self._report_auto_pair_failure(
@@ -944,6 +952,10 @@ class AutoMatchMixin:
                         radius_px=source_fit_search_radius,
                         max_fit_radius_px=self.ui_config.star_pick_psf_max_radius_px,
                         selection_mode="manual",
+                        fit_error_limit=self.ui_config.star_pick_psf_fit_error_limit,
+                        saturated_fit_error_limit=(
+                            self.ui_config.star_pick_saturated_psf_fit_error_limit
+                        ),
                     )
                 except Exception:
                     failed_count += 1

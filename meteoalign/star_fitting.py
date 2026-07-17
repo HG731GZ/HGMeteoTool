@@ -81,6 +81,8 @@ def fit_star_position(
     max_fit_radius_px: int | None = None,
     reject_ambiguous: bool = False,
     selection_mode: str = "manual",
+    fit_error_limit: float | None = None,
+    saturated_fit_error_limit: float | None = None,
 ) -> FittedStarPosition:
     """在搜索圆中选择星源，再用独立的自适应窗口测量 PSF。"""
 
@@ -112,6 +114,8 @@ def fit_star_position(
         reject_ambiguous=reject_ambiguous,
         saturation_level=255.0,
         selection_mode=selection_mode,
+        fit_error_limit=fit_error_limit,
+        saturated_fit_error_limit=saturated_fit_error_limit,
     )
     if not (math.isfinite(fitted.x) and math.isfinite(fitted.y)):
         raise StarFitError("PSF 拟合返回了无效坐标。", code="invalid_result")
