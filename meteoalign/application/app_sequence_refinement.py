@@ -177,6 +177,9 @@ class SequenceRefinementMixin:
             reference_payload=self._preserved_mapping(original_payload, "reference_payload"),
             generated_at_utc=datetime.now(timezone.utc).isoformat(),
         )
+        simulator_time = self._preserved_mapping(original_payload, "simulator_time")
+        if simulator_time is not None:
+            payload["simulator_time"] = simulator_time
         existing_refinement = original_payload.get("sequence_refinement")
         refinement = dict(existing_refinement) if isinstance(existing_refinement, dict) else {}
         existing_results = refinement.get("results")

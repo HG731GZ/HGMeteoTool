@@ -138,3 +138,21 @@ def test_testseq_json_pair_ids_are_recoverable_when_reference_payload_misses_som
 
     assert removed_pair_ids.issubset(missing_pair_ids)
     assert set(pair_lookup).issubset({star.star_id for star in merged_stars})
+
+
+def test_disabled_exif_sync_uses_manual_simulator_time_for_export(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """关闭同步后，导出参考模型不得再用相机 EXIF 时间替代手动时间。"""
+
+    observer = _observer()
+    harness = _Harness(observer)
+    harness.current_image_preview = object()
+    harness._auto_sync_simulator_time_from_exif_enabled = lambda: False
+    monkeypatch.setattr(
+        "meteoalign.application.app_star_pair_reference_payload.read_image_capture_time",
+        lambda _path: (_ for _ in ()).throw(AssertionError("关闭同步后不应读取 EXIF 作为模型时间")),
+    )
+
+    actual_observer, metadata = harness._reference_payload_observer()
+
+    assert actual_observer == observer
+    assert metadata == {"observation_time_source": "star_simulator_ui"}

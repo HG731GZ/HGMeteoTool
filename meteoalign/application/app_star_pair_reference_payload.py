@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta, timezone
 from pathlib import Path
 
 from ..image_sequence import ImageSequenceItem, read_image_capture_time, sequence_item_observation_time_utc
@@ -9,6 +10,28 @@ from ..star_pair_model import StarPairRecord, reference_star_from_pair_payload
 
 class StarPairReferencePayloadMixin:
     """参考星 payload 构建与导入匹配中的参考星合并。"""
+
+    def _simulator_time_payload(self) -> dict[str, object]:
+        """序列化当前星空模拟时间；每次导出都从界面重新生成。"""
+
+        observer = self._observer_settings()
+        utc_offset_hours = float(self.ui.doubleSpinBoxUtcOffset.value())
+        local_timezone = timezone(timedelta(hours=utc_offset_hours))
+        local_time = observer.observation_time_utc.astimezone(local_timezone)
+        return {
+            "observation_time_utc": (
+                observer.observation_time_utc.astimezone(timezone.utc).isoformat()
+            ),
+            "observation_time_local": local_time.isoformat(),
+            "utc_offset_hours": utc_offset_hours,
+            "source": "star_simulator_ui",
+        }
+
+    def _with_current_simulator_time(self, payload: dict[str, object]) -> dict[str, object]:
+        """用当前界面时间覆盖 payload 中已有的模拟器时间记录。"""
+
+        payload["simulator_time"] = self._simulator_time_payload()
+        return payload
 
     def _is_catalog_reference_star(self, star: ReferenceStar) -> bool:
         star_id = star.star_id.strip()
@@ -36,6 +59,11 @@ class StarPairReferencePayloadMixin:
 
     def _reference_payload_observer(self) -> tuple[ObserverSettings, dict[str, object]]:
         base_observer = self._observer_settings()
+        sync_time_enabled = getattr(self, "_auto_sync_simulator_time_from_exif_enabled", None)
+        if callable(sync_time_enabled) and not bool(sync_time_enabled()):
+            return base_observer, {
+                "observation_time_source": "star_simulator_ui",
+            }
         item = self._current_real_image_capture_item()
         if item is None:
             return base_observer, {

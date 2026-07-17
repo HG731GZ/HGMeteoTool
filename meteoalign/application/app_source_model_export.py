@@ -158,13 +158,15 @@ class SourceModelExportMixin:
                 "scene_observer_hint_role": "metadata_only_not_required_for_pixel_icrs_model",
             }
         )
-        return frame_model.to_json_payload(
-            source_image=self._source_image_payload(json_path),
-            mask=self._sky_mask_payload(json_path),
-            matching=self._auto_match_settings_payload(),
-            fit_pairs=fit_pairs,
-            reference_payload=reference_payload,
-            generated_at_utc=datetime.now(timezone.utc).isoformat(),
+        return self._with_current_simulator_time(
+            frame_model.to_json_payload(
+                source_image=self._source_image_payload(json_path),
+                mask=self._sky_mask_payload(json_path),
+                matching=self._auto_match_settings_payload(),
+                fit_pairs=fit_pairs,
+                reference_payload=reference_payload,
+                generated_at_utc=datetime.now(timezone.utc).isoformat(),
+            )
         )
 
     def _write_current_source_model(

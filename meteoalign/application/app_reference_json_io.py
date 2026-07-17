@@ -126,6 +126,7 @@ class ReferenceJsonIOMixin:
         *,
         preserve_reference_star_count: bool = False,
         restore_observation_time: bool = True,
+        simulator_time_payload: object | None = None,
     ) -> None:
         if not isinstance(payload, dict):
             raise ValueError("JSON 根对象必须是字典。")
@@ -139,14 +140,28 @@ class ReferenceJsonIOMixin:
 
         qt_observation_time: QDateTime | None = None
         utc_offset_hours: float | None = None
+        selected_time_payload: dict[str, object] | None = None
         if restore_observation_time:
-            observation_time_utc = self._payload_datetime_utc(observer, "observation_time_utc")
-            utc_offset_hours = self._payload_optional_float(observer, "utc_offset_hours", 0.0)
+            selected_time_payload = observer
+        elif isinstance(simulator_time_payload, dict):
+            selected_time_payload = simulator_time_payload
+        if selected_time_payload is not None:
+            observation_time_utc = self._payload_datetime_utc(
+                selected_time_payload,
+                "observation_time_utc",
+            )
+            utc_offset_hours = self._payload_optional_float(
+                selected_time_payload,
+                "utc_offset_hours",
+                0.0,
+            )
             utc_offset_hours = min(
                 max(utc_offset_hours, self.ui.doubleSpinBoxUtcOffset.minimum()),
                 self.ui.doubleSpinBoxUtcOffset.maximum(),
             )
-            local_observation_time = observation_time_utc.astimezone(timezone(timedelta(hours=utc_offset_hours)))
+            local_observation_time = observation_time_utc.astimezone(
+                timezone(timedelta(hours=utc_offset_hours))
+            )
             local_datetime_text = local_observation_time.strftime("%Y-%m-%d %H:%M:%S")
             qt_observation_time = QDateTime.fromString(local_datetime_text, "yyyy-MM-dd HH:mm:ss")
             if not qt_observation_time.isValid():

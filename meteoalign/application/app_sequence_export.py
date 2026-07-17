@@ -316,6 +316,8 @@ class SequenceExportMixin:
             reference_payload=reference_payload,
             generated_at_utc=generated_at_utc,
         )
+        self._with_current_simulator_time(starpair_payload)
+        self._with_current_simulator_time(source_payload)
 
         starpair_path.write_text(json.dumps(starpair_payload, ensure_ascii=False, indent=2), encoding="utf-8")
         model_path.write_text(json.dumps(source_payload, ensure_ascii=False, indent=2), encoding="utf-8")

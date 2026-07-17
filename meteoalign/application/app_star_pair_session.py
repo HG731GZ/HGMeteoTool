@@ -191,7 +191,7 @@ class StarPairSessionMixin:
             "display_height_px": preview.image.height(),
         }
         real_image_payload.update(self._current_real_image_capture_payload())
-        return {
+        return self._with_current_simulator_time({
             "format": STAR_PAIR_SESSION_FORMAT,
             "version": STAR_PAIR_SESSION_VERSION,
             "generated_at_utc": generated_time.isoformat(),
@@ -206,7 +206,7 @@ class StarPairSessionMixin:
             "pairs": pair_records,
             "mask": self._sky_mask_payload(json_path),
             "matching": self._auto_match_settings_payload(),
-        }
+        })
 
     def _write_current_star_pair_session(self) -> tuple[Path, int] | None:
         """把当前匹配写入默认同名 JSON；用户拒绝覆盖时返回空。"""
@@ -256,7 +256,16 @@ class StarPairSessionMixin:
         if not file_path:
             return
         self._remember_import_path(file_path)
-        self.load_star_pair_session(file_path)
+        sync_time_enabled = getattr(self, "_auto_sync_simulator_time_from_exif_enabled", None)
+        restore_observation_time = (
+            bool(sync_time_enabled())
+            if callable(sync_time_enabled)
+            else True
+        )
+        self.load_star_pair_session(
+            file_path,
+            restore_observation_time=restore_observation_time,
+        )
 
     def load_star_pair_session(
         self,
@@ -600,6 +609,11 @@ class StarPairSessionMixin:
                 source_path,
                 preserve_reference_star_count=True,
                 restore_observation_time=restore_observation_time,
+                simulator_time_payload=(
+                    payload.get("simulator_time")
+                    if not restore_observation_time
+                    else None
+                ),
             )
             if current_tab is not None:
                 self.ui.tabWidgetMain.setCurrentWidget(current_tab)

@@ -10,6 +10,7 @@ from PyQt5.QtCore import QDateTime
 from PyQt5.QtWidgets import QApplication, QMainWindow
 
 from meteoalign.application.app_reference_json_io import ReferenceJsonIOMixin
+from meteoalign.application.app_star_pair_reference_payload import StarPairReferencePayloadMixin
 from meteoalign.simulator import ObserverSettings
 from meteoalign.ui.ui_main_window import Ui_MainWindow
 
@@ -24,7 +25,7 @@ def _qapp() -> QApplication:
     return app
 
 
-class _ReferencePayloadHarness(ReferenceJsonIOMixin):
+class _ReferencePayloadHarness(ReferenceJsonIOMixin, StarPairReferencePayloadMixin):
     """只保留参考 payload 应用所需的界面与回调。"""
 
     def __init__(self) -> None:
@@ -129,8 +130,8 @@ def test_explicit_reference_json_still_restores_its_list_settings() -> None:
     harness.window.close()
 
 
-def test_automatic_pair_session_restore_can_preserve_simulator_time() -> None:
-    """关闭 EXIF 同步时，自动恢复匹配会话不得覆盖模拟器时间和时区。"""
+def test_old_pair_session_without_simulator_time_preserves_current_time() -> None:
+    """关闭 EXIF 同步时，旧匹配会话没有模拟时间字段就保持当前设置。"""
 
     harness = _ReferencePayloadHarness()
     original_time = QDateTime.fromString("2026-01-02 03:04:05", "yyyy-MM-dd HH:mm:ss")
@@ -149,3 +150,59 @@ def test_automatic_pair_session_restore_can_preserve_simulator_time() -> None:
     assert harness.ui.doubleSpinBoxAz.value() == 15.0
     assert harness.render_count == 1
     harness.window.close()
+
+
+def test_pair_session_restores_recorded_simulator_time_when_exif_sync_is_off() -> None:
+    """关闭 EXIF 同步时，新匹配会话应优先恢复独立保存的模拟时间。"""
+
+    harness = _ReferencePayloadHarness()
+    harness.ui.dateTimeEditObservation.setDateTime(
+        QDateTime.fromString("2026-01-02 03:04:05", "yyyy-MM-dd HH:mm:ss")
+    )
+    harness.ui.doubleSpinBoxUtcOffset.setValue(9.0)
+    simulator_time = {
+        "observation_time_utc": "2025-12-14T19:15:45+00:00",
+        "utc_offset_hours": 8.0,
+    }
+
+    harness._apply_reference_payload(
+        _reference_payload(),
+        Path("new_starpairs.json"),
+        preserve_reference_star_count=True,
+        restore_observation_time=False,
+        simulator_time_payload=simulator_time,
+    )
+
+    expected_local_time = QDateTime.fromString("2025-12-15 03:15:45", "yyyy-MM-dd HH:mm:ss")
+    assert harness.ui.dateTimeEditObservation.dateTime() == expected_local_time
+    assert harness.ui.doubleSpinBoxUtcOffset.value() == 8.0
+    harness.window.close()
+
+
+def test_export_overwrites_existing_simulator_time_with_current_ui_value() -> None:
+    """重复导出时必须用当前模拟时间覆盖 payload 中的旧记录。"""
+
+    harness = _ReferencePayloadHarness()
+    harness.ui.doubleSpinBoxUtcOffset.setValue(8.0)
+    current_observer = ObserverSettings(
+        observation_time_utc=datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+        latitude_deg=40.0,
+        longitude_deg=116.0,
+        elevation_m=50.0,
+    )
+    harness._observer_settings = lambda: current_observer
+    payload: dict[str, object] = {
+        "simulator_time": {
+            "observation_time_utc": "2000-01-01T00:00:00+00:00",
+        }
+    }
+
+    result = harness._with_current_simulator_time(payload)
+
+    assert result is payload
+    assert payload["simulator_time"] == {
+        "observation_time_utc": "2026-01-02T03:04:05+00:00",
+        "observation_time_local": "2026-01-02T11:04:05+08:00",
+        "utc_offset_hours": 8.0,
+        "source": "star_simulator_ui",
+    }
