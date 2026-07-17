@@ -25,12 +25,15 @@ from ..fixed_camera_model import (
     estimate_frame_time_correction,
     fit_fixed_camera_model,
 )
-from ..image_preview import ImagePreview
 from ..image_sequence import ImageSequenceItem, sequence_item_observation_time_utc
+from ..psf import StarFitError, detect_star_candidates_from_array, measure_star_candidate_fast
+from ..psf.matching import assign_predicted_sources, merge_source_candidates
 from ..sequence_constants import (
     SEQUENCE_FILL_GRID_COLUMNS,
     SEQUENCE_FILL_GRID_ROWS,
     SEQUENCE_MIN_PAIR_FRACTION,
+    SEQUENCE_PAIR_SAFETY_MARGIN,
+    SEQUENCE_SUPPLEMENTAL_BATCH_SIZE,
     SEQUENCE_SUPPLEMENTAL_FIT_WEIGHT,
     SEQUENCE_SUPPLEMENTAL_PAIR_ORIGIN,
 )
@@ -49,8 +52,6 @@ from ..simulator import (
     local_vectors_from_altaz,
     project_horizontal_catalog,
 )
-from ..psf.matching import assign_predicted_sources, merge_source_candidates
-from ..star_fitting import detect_star_candidates, fit_star_position
 
 class SequenceMatchingMixin:
     """序列批处理中的星点模板、候选匹配和固定相机求解。"""
@@ -91,8 +92,8 @@ class SequenceMatchingMixin:
     def _sequence_pair_targets(self, templates: list[_SequencePairTemplate]) -> tuple[int, int]:
         base_count = len(templates)
         minimum_count = max(MIN_ALIGNMENT_PAIRS, int(math.ceil(base_count * SEQUENCE_MIN_PAIR_FRACTION)))
-        desired_count = max(minimum_count, base_count)
-        return minimum_count, desired_count
+        target_count = min(base_count, minimum_count + SEQUENCE_PAIR_SAFETY_MARGIN)
+        return minimum_count, target_count
 
     def _sequence_source_size(self) -> tuple[int, int]:
         if self._current_star_map is None:
@@ -326,8 +327,15 @@ class SequenceMatchingMixin:
         attempted_star_ids: set[str],
         accepted_positions: list[tuple[float, float]],
         target_size: tuple[int, int],
+        preferred_star_ids: tuple[str, ...] = (),
     ) -> list[_SequenceCandidate]:
         counts = self._sequence_spatial_cell_counts(accepted_positions, target_size)
+        preferred_rank = {
+            star_id: index
+            for index, raw_star_id in enumerate(preferred_star_ids)
+            if (star_id := str(raw_star_id).strip())
+        }
+        preferred: list[_SequenceCandidate] = []
         grouped: dict[int, list[_SequenceCandidate]] = {}
         for candidate in candidates:
             star_id = candidate.reference_star.star_id.strip()
@@ -340,12 +348,22 @@ class SequenceMatchingMixin:
                 or self._sequence_position_is_duplicate(predicted_position, accepted_positions)
             ):
                 continue
+            if star_id in preferred_rank:
+                preferred.append(candidate)
+                continue
             cell_index = self._sequence_spatial_cell_index(
                 predicted_position[0],
                 predicted_position[1],
                 target_size,
             )
             grouped.setdefault(cell_index, []).append(candidate)
+
+        preferred.sort(
+            key=lambda candidate: (
+                preferred_rank[candidate.reference_star.star_id.strip()],
+                float(candidate.reference_star.mag_v),
+            )
+        )
 
         for cell_candidates in grouped.values():
             cell_candidates.sort(
@@ -368,11 +386,11 @@ class SequenceMatchingMixin:
                 counts[cell_index] = counts.get(cell_index, 0) + 1
                 if not cell_candidates:
                     grouped.pop(cell_index, None)
-        return ordered
+        return [*preferred, *ordered]
 
     def _fit_sequence_candidate_plans(
         self,
-        image,
+        luminance: np.ndarray,
         plans: list[_SequenceFitPlan],
         target_count: int,
         search_radius_px: int,
@@ -381,6 +399,8 @@ class SequenceMatchingMixin:
         accepted_positions: list[tuple[float, float]],
         accepted_offsets: list[tuple[float, float]],
         stats: dict[str, int],
+        *,
+        record_missing_target: bool = True,
     ) -> list[_SequenceMatchedPair]:
         matched: list[_SequenceMatchedPair] = []
         if target_count <= 0:
@@ -400,18 +420,19 @@ class SequenceMatchingMixin:
                 or not math.isfinite(search_y)
                 or search_x < 0.0
                 or search_y < 0.0
-                or search_x >= image.width()
-                or search_y >= image.height()
+                or search_x >= luminance.shape[1]
+                or search_y >= luminance.shape[0]
                 or not self._sky_mask_allows_point(search_x, search_y)
             ):
                 continue
             search_by_id[star_id] = (search_x, search_y)
             try:
-                nearby_sources = detect_star_candidates(
-                    image,
+                nearby_sources = detect_star_candidates_from_array(
+                    luminance,
                     click_x=search_x,
                     click_y=search_y,
-                    radius_px=search_radius_px,
+                    search_radius_px=search_radius_px,
+                    saturation_level=255.0,
                 )
             except Exception:
                 continue
@@ -442,8 +463,8 @@ class SequenceMatchingMixin:
                 or not math.isfinite(search_y)
                 or search_x < 0.0
                 or search_y < 0.0
-                or search_x >= image.width()
-                or search_y >= image.height()
+                or search_x >= luminance.shape[1]
+                or search_y >= luminance.shape[0]
             ):
                 stats["skipped_outside"] += 1
                 continue
@@ -456,22 +477,9 @@ class SequenceMatchingMixin:
                     stats["failed_psf"] += 1
                 continue
             try:
-                source_fit_search_radius = max(
-                    4,
-                    min(
-                        self.ui_config.star_pick_psf_max_radius_px,
-                        int(math.ceil(assigned_source.major_axis * 2.8)),
-                    ),
-                )
-                fitted_position = fit_star_position(
-                    image,
-                    click_x=assigned_source.x,
-                    click_y=assigned_source.y,
-                    radius_px=source_fit_search_radius,
-                    max_fit_radius_px=self.ui_config.star_pick_psf_max_radius_px,
-                    selection_mode="manual",
-                )
-            except Exception:
+                # 序列配准使用 SEP 矩心即可，跳过耗时的 Moffat 非线性拟合。
+                fitted_position = measure_star_candidate_fast(assigned_source)
+            except StarFitError:
                 stats["failed_psf"] += 1
                 continue
 
@@ -517,13 +525,13 @@ class SequenceMatchingMixin:
             )
             used_star_ids.add(star_id)
             accepted_positions.append(fitted_xy)
-        if len(matched) < target_count:
+        if record_missing_target and len(matched) < target_count:
             stats["missing_target"] += target_count - len(matched)
         return matched
 
     def _fit_sequence_candidates_for_mode(
         self,
-        image,
+        luminance: np.ndarray,
         candidates: list[_SequenceCandidate],
         templates: list[_SequencePairTemplate],
         mode: str,
@@ -545,7 +553,7 @@ class SequenceMatchingMixin:
             for candidate, template in mode_candidates
         ]
         return self._fit_sequence_candidate_plans(
-            image,
+            luminance,
             plans,
             target_count,
             search_radius_px,
@@ -558,7 +566,7 @@ class SequenceMatchingMixin:
 
     def _fit_sequence_supplemental_candidates(
         self,
-        image,
+        luminance: np.ndarray,
         candidates: list[_SequenceCandidate],
         target_size: tuple[int, int],
         target_total: int,
@@ -568,6 +576,8 @@ class SequenceMatchingMixin:
         accepted_positions: list[tuple[float, float]],
         accepted_offsets: list[tuple[float, float]],
         stats: dict[str, int],
+        *,
+        preferred_star_ids: tuple[str, ...] = (),
     ) -> list[_SequenceMatchedPair]:
         remaining_count = int(target_total) - len(accepted_positions)
         if remaining_count <= 0:
@@ -578,6 +588,7 @@ class SequenceMatchingMixin:
             attempted_star_ids=attempted_star_ids,
             accepted_positions=accepted_positions,
             target_size=target_size,
+            preferred_star_ids=preferred_star_ids,
         )
         plans = [
             _SequenceFitPlan(
@@ -587,17 +598,32 @@ class SequenceMatchingMixin:
             )
             for candidate in ordered_candidates
         ]
-        matched = self._fit_sequence_candidate_plans(
-            image,
-            plans,
-            remaining_count,
-            search_radius_px,
-            used_star_ids,
-            attempted_star_ids,
-            accepted_positions,
-            accepted_offsets,
-            stats,
-        )
+        matched: list[_SequenceMatchedPair] = []
+        stats.setdefault("supplemental_batches", 0)
+        stats.setdefault("supplemental_candidates_attempted", 0)
+        for batch_start in range(0, len(plans), SEQUENCE_SUPPLEMENTAL_BATCH_SIZE):
+            batch_target = remaining_count - len(matched)
+            if batch_target <= 0:
+                break
+            batch = plans[batch_start : batch_start + SEQUENCE_SUPPLEMENTAL_BATCH_SIZE]
+            stats["supplemental_batches"] += 1
+            stats["supplemental_candidates_attempted"] += len(batch)
+            matched.extend(
+                self._fit_sequence_candidate_plans(
+                    luminance,
+                    batch,
+                    batch_target,
+                    search_radius_px,
+                    used_star_ids,
+                    attempted_star_ids,
+                    accepted_positions,
+                    accepted_offsets,
+                    stats,
+                    record_missing_target=False,
+                )
+            )
+        if len(matched) < remaining_count:
+            stats["missing_target"] += remaining_count - len(matched)
         stats["supplemental_matched"] += len(matched)
         return matched
 
@@ -625,13 +651,15 @@ class SequenceMatchingMixin:
     def _sequence_frame_matched_pairs(
         self,
         item: ImageSequenceItem,
-        preview: ImagePreview,
+        luminance: np.ndarray,
         templates: list[_SequencePairTemplate],
         fixed_model: FixedCameraModel,
         target_size: tuple[int, int],
         initial_delta_seconds: float,
-        desired_pair_count: int,
+        target_pair_count: int,
         stats: dict[str, int],
+        *,
+        preferred_supplemental_star_ids: tuple[str, ...] = (),
     ) -> list[_SequenceMatchedPair]:
         visible_mag_limit = max(self._reference_catalog_mag_limit(AUTO_MATCH_SEARCH_MAG_LIMIT), AUTO_MATCH_SEARCH_MAG_LIMIT)
         candidates = self._sequence_candidate_stars(
@@ -650,7 +678,7 @@ class SequenceMatchingMixin:
         search_radius_px = self._sequence_psf_search_radius_px()
 
         anchor_pairs = self._fit_sequence_candidates_for_mode(
-            preview.image,
+            luminance,
             candidates,
             templates,
             "anchor",
@@ -663,7 +691,7 @@ class SequenceMatchingMixin:
             stats,
         )
         soft_pairs = self._fit_sequence_candidates_for_mode(
-            preview.image,
+            luminance,
             candidates,
             templates,
             AUTO_MATCH_CONSTRAINT_SOFT,
@@ -676,31 +704,34 @@ class SequenceMatchingMixin:
             stats,
         )
         supplemental_pairs = self._fit_sequence_supplemental_candidates(
-            preview.image,
+            luminance,
             candidates,
             target_size,
-            desired_pair_count,
+            target_pair_count,
             search_radius_px,
             used_star_ids,
             attempted_star_ids,
             accepted_positions,
             accepted_offsets,
             stats,
+            preferred_star_ids=preferred_supplemental_star_ids,
         )
         return [*anchor_pairs, *soft_pairs, *supplemental_pairs]
 
     def _sequence_fill_frame_pairs_to_target(
         self,
         item: ImageSequenceItem,
-        preview: ImagePreview,
+        luminance: np.ndarray,
         pairs: list[_SequenceMatchedPair],
         fixed_model: FixedCameraModel,
         target_size: tuple[int, int],
         delta_seconds: float,
-        desired_pair_count: int,
+        target_pair_count: int,
         stats: dict[str, int],
+        *,
+        preferred_supplemental_star_ids: tuple[str, ...] = (),
     ) -> list[_SequenceMatchedPair]:
-        if len(pairs) >= desired_pair_count:
+        if len(pairs) >= target_pair_count:
             return pairs
         visible_mag_limit = max(self._reference_catalog_mag_limit(AUTO_MATCH_SEARCH_MAG_LIMIT), AUTO_MATCH_SEARCH_MAG_LIMIT)
         candidates = self._sequence_candidate_stars(
@@ -729,16 +760,17 @@ class SequenceMatchingMixin:
         ]
         search_radius_px = self._sequence_psf_search_radius_px()
         extra_pairs = self._fit_sequence_supplemental_candidates(
-            preview.image,
+            luminance,
             candidates,
             target_size,
-            desired_pair_count,
+            target_pair_count,
             search_radius_px,
             used_star_ids,
             attempted_star_ids,
             accepted_positions,
             accepted_offsets,
             stats,
+            preferred_star_ids=preferred_supplemental_star_ids,
         )
         return [*pairs, *extra_pairs]
 

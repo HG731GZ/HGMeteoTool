@@ -36,9 +36,19 @@ def _model_path(image_path: Path) -> Path:
     return image_path.with_name(f"{image_path.stem}_model.json")
 
 
-def _write_complete_outputs(item: ImageSequenceItem, *, delta_t_seconds: float = 0.0) -> None:
+def _write_complete_outputs(
+    item: ImageSequenceItem,
+    *,
+    delta_t_seconds: float = 0.0,
+    pair_star_ids: tuple[str, ...] = (),
+) -> None:
     _starpair_path(item.path).write_text(
-        json.dumps({"sequence_timing": {"delta_t_seconds": delta_t_seconds}}),
+        json.dumps(
+            {
+                "sequence_timing": {"delta_t_seconds": delta_t_seconds},
+                "pairs": [{"star_id": star_id} for star_id in pair_star_ids],
+            }
+        ),
         encoding="utf-8",
     )
     _model_path(item.path).write_text("{}", encoding="utf-8")
@@ -290,6 +300,7 @@ class _ProcessingHost(SequenceProcessingMixin, SequenceTablePreviewMixin):
         self.ui = SimpleNamespace(statusbar=_StatusBar())
         self.processed_names: list[str] = []
         self.initial_delta_by_name: dict[str, float] = {}
+        self.preferred_supplemental_by_name: dict[str, tuple[str, ...]] = {}
 
     @staticmethod
     def _sequence_starpair_json_path(image_path: Path) -> Path:
@@ -334,10 +345,13 @@ class _ProcessingHost(SequenceProcessingMixin, SequenceTablePreviewMixin):
         _fixed_model: object,
         _target_size: tuple[int, int],
         previous_delta_seconds: float,
-        _desired_pair_count: int,
+        _target_pair_count: int,
         _stats: dict[str, int],
+        *,
+        preferred_supplemental_star_ids: tuple[str, ...] = (),
     ) -> list[object]:
         self.initial_delta_by_name[item.path.name] = previous_delta_seconds
+        self.preferred_supplemental_by_name[item.path.name] = preferred_supplemental_star_ids
         return [object()]
 
     def _sequence_time_fit_for_pairs(self, item: ImageSequenceItem, _pairs: list[object], _fixed_model: object, *, initial_delta_seconds: float) -> object:
@@ -380,16 +394,26 @@ def test_continue_processing_preserves_complete_frames_and_resumes_delta(tmp_pat
     app = QApplication.instance() or QApplication([])
     items = [_sequence_item(tmp_path / f"frame_{index}.jpg") for index in range(1, 5)]
     _write_complete_outputs(items[0])
-    _write_complete_outputs(items[2], delta_t_seconds=7.0)
+    _write_complete_outputs(items[2], delta_t_seconds=7.0, pair_star_ids=("carry-star",))
     host = _ProcessingHost(items)
     preview = SimpleNamespace(image=SimpleNamespace(width=lambda: 64, height=lambda: 48))
+    converted_images: list[object] = []
+
+    def _fake_grayscale_conversion(image: object) -> object:
+        converted_images.append(image)
+        return object()
+
     monkeypatch.setattr(app_sequence_processing, "load_image_preview", lambda *_args, **_kwargs: preview)
+    monkeypatch.setattr(app_sequence_processing, "qimage_to_grayscale_array", _fake_grayscale_conversion)
     monkeypatch.setattr(app_sequence_processing, "QProgressDialog", _FakeProgressDialog)
     monkeypatch.setattr(app_sequence_processing, "QMessageBox", _FakeMessageBox)
 
     host._run_image_sequence_processing(continue_only=True)
 
     assert host.processed_names == ["frame_2.jpg", "frame_4.jpg"]
+    assert len(converted_images) == 2
     assert host.initial_delta_by_name["frame_2.jpg"] == 0.0
     assert host.initial_delta_by_name["frame_4.jpg"] == 7.0
+    assert host.preferred_supplemental_by_name["frame_2.jpg"] == ()
+    assert host.preferred_supplemental_by_name["frame_4.jpg"] == ("carry-star",)
     assert host._sequence_first_unprocessed_index() is None

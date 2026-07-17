@@ -4,6 +4,7 @@ from .fitting import (
     StarFitError,
     detect_star_candidates_from_array,
     fit_star_position_from_array,
+    measure_star_candidate_fast,
 )
 from .models import FittedStarPosition, StarSourceCandidate
 
@@ -13,4 +14,5 @@ __all__ = [
     "StarSourceCandidate",
     "detect_star_candidates_from_array",
     "fit_star_position_from_array",
+    "measure_star_candidate_fast",
 ]

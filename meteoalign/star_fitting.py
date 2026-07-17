@@ -35,6 +35,24 @@ def qimage_to_luminance_array(image: QImage) -> np.ndarray:
     return np.ascontiguousarray(0.2126 * rgb[:, :, 0] + 0.7152 * rgb[:, :, 1] + 0.0722 * rgb[:, :, 2])
 
 
+def qimage_to_grayscale_array(image: QImage) -> np.ndarray:
+    """把整张 QImage 快速转换为序列处理使用的连续 8 位灰度数组。"""
+
+    if image.isNull():
+        raise StarFitError("图像为空，无法进行星点检测。", code="invalid_image")
+
+    gray_image = image.convertToFormat(QImage.Format_Grayscale8)
+    width = gray_image.width()
+    height = gray_image.height()
+    bytes_per_line = gray_image.bytesPerLine()
+    buffer_size = gray_image.sizeInBytes() if hasattr(gray_image, "sizeInBytes") else gray_image.byteCount()
+    image_bits = gray_image.bits()
+    image_bits.setsize(buffer_size)
+    rows = np.frombuffer(image_bits, dtype=np.uint8).reshape((height, bytes_per_line))
+    # 临时 QImage 会在函数返回后销毁，必须强制复制，不能返回其底层内存视图。
+    return rows[:, :width].copy()
+
+
 def _fit_crop_geometry(
     image: QImage,
     click_x: float,
@@ -175,5 +193,6 @@ __all__ = [
     "detect_star_candidates",
     "fit_star_position",
     "fit_star_position_from_array",
+    "qimage_to_grayscale_array",
     "qimage_to_luminance_array",
 ]

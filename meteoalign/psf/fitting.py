@@ -196,14 +196,11 @@ def detect_star_candidates_from_array(
 
     source_array = np.asarray(luminance)
     resolved_saturation = _resolve_array_saturation_level(source_array, saturation_level)
-    image = np.asarray(source_array, dtype=np.float64)
-    if image.ndim != 2:
+    if source_array.ndim != 2:
         raise StarFitError("星点检测需要二维亮度图像。", code="invalid_image")
     if search_radius_px < 4:
         raise StarFitError("星点搜索半径过小。", code="invalid_radius")
-    if not np.all(np.isfinite(image)):
-        raise StarFitError("星点搜索窗口内存在无效像素。", code="invalid_image")
-    height, width = image.shape
+    height, width = source_array.shape
     if not (0.0 <= click_x < width and 0.0 <= click_y < height):
         raise StarFitError("点击位置不在真实图像范围内。", code="outside_image")
 
@@ -215,9 +212,12 @@ def detect_star_candidates_from_array(
     x1 = min(width, center_x + crop_radius + 1)
     y0 = max(0, center_y - crop_radius)
     y1 = min(height, center_y + crop_radius + 1)
-    patch = image[y0:y1, x0:x1]
+    # 序列处理会传入整帧灰度图；先裁剪再转浮点，避免每颗星都复制整张照片。
+    patch = np.asarray(source_array[y0:y1, x0:x1], dtype=np.float64)
     if min(patch.shape) < 7:
         raise StarFitError("点击位置太靠近图像边缘，无法检测星点。", code="edge")
+    if not np.all(np.isfinite(patch)):
+        raise StarFitError("星点搜索窗口内存在无效像素。", code="invalid_image")
 
     detection = _detect_sources(patch, saturation_level=resolved_saturation)
     candidates: list[StarSourceCandidate] = []
@@ -247,6 +247,57 @@ def detect_star_candidates_from_array(
         )
     candidates.sort(key=lambda item: (float(np.hypot(item.x - click_x, item.y - click_y)), -item.quality_score))
     return candidates
+
+
+def measure_star_candidate_fast(candidate: StarSourceCandidate) -> FittedStarPosition:
+    """用 SEP 的亚像素矩心和二阶矩快速生成序列星点测量结果。"""
+
+    if not all(
+        math.isfinite(float(value))
+        for value in (
+            candidate.x,
+            candidate.y,
+            candidate.major_axis,
+            candidate.minor_axis,
+            candidate.theta_rad,
+            candidate.peak,
+            candidate.snr,
+        )
+    ):
+        raise StarFitError("快速星点测量收到无效候选数据。", code="invalid_candidate")
+    sigma_x = max(abs(float(candidate.major_axis)), 0.35)
+    sigma_y = max(abs(float(candidate.minor_axis)), 0.35)
+    theta = float(candidate.theta_rad)
+    if sigma_y > sigma_x:
+        sigma_x, sigma_y = sigma_y, sigma_x
+        theta += math.pi * 0.5
+    theta = (theta + math.pi) % math.pi
+    axis_ratio = sigma_x / max(sigma_y, 1e-6)
+    if float(candidate.snr) < 3.5:
+        raise StarFitError("候选目标相对于局部背景过弱。", code="low_snr")
+    if axis_ratio > (5.0 if candidate.saturated else 3.8):
+        raise StarFitError("候选目标过于狭长，不符合可用星点形态。", code="elongated")
+    snr_quality = min(max(float(candidate.snr) / 20.0, 0.0), 1.0)
+    shape_quality = min(max(1.0 - max(axis_ratio - 1.0, 0.0) / 4.0, 0.0), 1.0)
+    quality_score = 0.75 * snr_quality + 0.25 * shape_quality
+    return FittedStarPosition(
+        x=float(candidate.x),
+        y=float(candidate.y),
+        amplitude=max(float(candidate.peak), 0.0),
+        background=0.0,
+        sigma_x=sigma_x,
+        sigma_y=sigma_y,
+        theta_rad=theta,
+        fwhm_x=sigma_x * _GAUSSIAN_FWHM_SCALE,
+        fwhm_y=sigma_y * _GAUSSIAN_FWHM_SCALE,
+        snr=max(float(candidate.snr), 0.0),
+        # 快速路径没有模型残差，沿用结果结构的兼容默认值。
+        fit_error=0.0,
+        saturated=bool(candidate.saturated),
+        saturation_fraction=float(candidate.saturation_fraction),
+        blended=bool(candidate.blended),
+        quality_score=quality_score,
+    )
 
 
 def _select_candidate(

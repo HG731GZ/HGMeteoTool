@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import numpy as np
+
 from meteoalign.application.app_constants import AUTO_MATCH_CONSTRAINT_SOFT
 from meteoalign.application.app_sequence import SequenceBatchMixin, _SequenceCandidate, _SequencePairTemplate
 from meteoalign.simulator import ReferenceStar
@@ -83,10 +85,10 @@ def test_sequence_pair_target_keeps_eighty_percent_floor() -> None:
     harness = SequenceBatchMixin()
     templates = [_template(f"HR{index}") for index in range(100)]
 
-    minimum_count, desired_count = harness._sequence_pair_targets(templates)
+    minimum_count, target_count = harness._sequence_pair_targets(templates)
 
     assert minimum_count == 80
-    assert desired_count == 100
+    assert target_count == 86
 
 
 def test_sequence_supplemental_candidates_prefer_sparse_cells_over_brightness() -> None:
@@ -107,3 +109,75 @@ def test_sequence_supplemental_candidates_prefer_sparse_cells_over_brightness() 
     )
 
     assert [candidate.reference_star.star_id for candidate in ordered[:2]] == ["faint-empty", "mid-empty"]
+
+
+def test_sequence_supplemental_candidates_prioritize_previous_frame_ids() -> None:
+    """上一帧成功的补充星应排在普通空间均衡候选之前。"""
+
+    harness = SequenceBatchMixin()
+    candidates = [
+        _candidate("ordinary", 120.0, 120.0, mag_v=1.0),
+        _candidate("previous", 860.0, 180.0, mag_v=4.0),
+    ]
+
+    ordered = harness._sequence_order_supplemental_candidates(
+        candidates,
+        used_star_ids=set(),
+        attempted_star_ids=set(),
+        accepted_positions=[(850.0, 100.0)],
+        target_size=(1000, 800),
+        preferred_star_ids=("previous",),
+    )
+
+    assert [candidate.reference_star.star_id for candidate in ordered] == ["previous", "ordinary"]
+
+
+def test_sequence_supplemental_candidates_use_batches_and_stop_early() -> None:
+    """补星应逐批尝试，并在达到目标后不再扫描剩余候选。"""
+
+    harness = SequenceBatchMixin()
+    candidates = [
+        _candidate(f"HR{index}", float(index % 20) * 40.0 + 10.0, float(index // 20) * 40.0 + 10.0)
+        for index in range(130)
+    ]
+    calls: list[tuple[int, int, bool]] = []
+
+    def _fake_fit(
+        _luminance,
+        plans,
+        target_count,
+        _search_radius_px,
+        _used_star_ids,
+        _attempted_star_ids,
+        _accepted_positions,
+        _accepted_offsets,
+        _stats,
+        *,
+        record_missing_target=True,
+    ):
+        calls.append((len(plans), target_count, record_missing_target))
+        if len(calls) == 1:
+            return []
+        return [object()] * target_count
+
+    harness._fit_sequence_candidate_plans = _fake_fit
+    stats = {"missing_target": 0, "supplemental_matched": 0}
+
+    matched = harness._fit_sequence_supplemental_candidates(
+        np.zeros((800, 1000), dtype=np.uint8),
+        candidates,
+        (1000, 800),
+        3,
+        20,
+        set(),
+        set(),
+        [],
+        [],
+        stats,
+    )
+
+    assert len(matched) == 3
+    assert calls == [(64, 3, False), (64, 3, False)]
+    assert stats["supplemental_batches"] == 2
+    assert stats["supplemental_candidates_attempted"] == 128
+    assert stats["missing_target"] == 0

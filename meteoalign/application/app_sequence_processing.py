@@ -9,6 +9,7 @@ from PyQt5.QtWidgets import QApplication, QMessageBox, QProgressDialog
 
 from ..image_preview import load_image_preview
 from ..image_sequence import ImageSequenceItem
+from ..star_fitting import qimage_to_grayscale_array
 
 class SequenceProcessingMixin:
     """图像序列批处理主流程编排。"""
@@ -33,19 +34,62 @@ class SequenceProcessingMixin:
             return
         self._run_image_sequence_processing(continue_only=True)
 
-    def _sequence_output_delta_seconds(self, item: ImageSequenceItem) -> float | None:
-        """读取已有匹配 JSON 的时间偏移，供继续处理下一帧时作为初值。"""
+    def _sequence_output_resume_state(
+        self,
+        item: ImageSequenceItem,
+        base_star_ids: frozenset[str],
+    ) -> tuple[float | None, tuple[str, ...]]:
+        """读取已有匹配 JSON 的时间偏移和补充星顺序。"""
 
         try:
             json_path = self._sequence_starpair_json_path(item.path)
             payload = json.loads(json_path.read_text(encoding="utf-8"))
-            timing = payload.get("sequence_timing")
-            if not isinstance(timing, dict):
-                return None
-            value = float(timing.get("delta_t_seconds"))
         except (AttributeError, OSError, json.JSONDecodeError, TypeError, ValueError):
-            return None
-        return value if math.isfinite(value) else None
+            return None, ()
+        if not isinstance(payload, dict):
+            return None, ()
+
+        delta_seconds: float | None = None
+        timing = payload.get("sequence_timing")
+        if isinstance(timing, dict):
+            try:
+                value = float(timing.get("delta_t_seconds"))
+            except (TypeError, ValueError):
+                value = float("nan")
+            if math.isfinite(value):
+                delta_seconds = value
+
+        supplemental_star_ids: list[str] = []
+        seen_star_ids: set[str] = set()
+        pairs = payload.get("pairs")
+        if isinstance(pairs, list):
+            for pair in pairs:
+                if not isinstance(pair, dict):
+                    continue
+                star_id = str(pair.get("star_id", "")).strip()
+                if not star_id or star_id in base_star_ids or star_id in seen_star_ids:
+                    continue
+                seen_star_ids.add(star_id)
+                supplemental_star_ids.append(star_id)
+        return delta_seconds, tuple(supplemental_star_ids)
+
+    @staticmethod
+    def _sequence_supplemental_star_ids_for_pairs(
+        pairs: list[object],
+        base_star_ids: frozenset[str],
+    ) -> tuple[str, ...]:
+        """按当前帧匹配顺序提取不属于第一帧模板的补充星。"""
+
+        supplemental_star_ids: list[str] = []
+        seen_star_ids: set[str] = set()
+        for pair in pairs:
+            reference_star = getattr(pair, "reference_star", None)
+            star_id = str(getattr(reference_star, "star_id", "")).strip()
+            if not star_id or star_id in base_star_ids or star_id in seen_star_ids:
+                continue
+            seen_star_ids.add(star_id)
+            supplemental_star_ids.append(star_id)
+        return tuple(supplemental_star_ids)
 
     def _run_image_sequence_processing(self, *, continue_only: bool) -> None:
         if getattr(self, "_sequence_processing_active", False):
@@ -70,7 +114,12 @@ class SequenceProcessingMixin:
             self.render_now()
             QApplication.processEvents()
             templates = self._sequence_base_templates()
-            minimum_pair_count, desired_pair_count = self._sequence_pair_targets(templates)
+            minimum_pair_count, target_pair_count = self._sequence_pair_targets(templates)
+            base_star_ids = frozenset(
+                star_id
+                for template in templates
+                if (star_id := str(getattr(template, "star_id", "")).strip())
+            )
             assert self.current_image_preview is not None
             target_size = (self.current_image_preview.image.width(), self.current_image_preview.image.height())
             fixed_model = self._fit_sequence_fixed_camera_model(templates, target_size)
@@ -101,10 +150,15 @@ class SequenceProcessingMixin:
         processed: list[tuple[Path, Path]] = []
         failures: list[str] = []
         previous_delta_seconds = 0.0
+        preferred_supplemental_star_ids: tuple[str, ...] = ()
         for previous_item in items[1:start_index]:
-            saved_delta_seconds = self._sequence_output_delta_seconds(previous_item)
+            saved_delta_seconds, saved_supplemental_star_ids = self._sequence_output_resume_state(
+                previous_item,
+                base_star_ids,
+            )
             if saved_delta_seconds is not None:
                 previous_delta_seconds = saved_delta_seconds
+            preferred_supplemental_star_ids = saved_supplemental_star_ids
         self._sequence_processing_active = True
         self._set_image_import_controls_enabled(False)
         self._update_image_sequence_controls()
@@ -117,9 +171,13 @@ class SequenceProcessingMixin:
         try:
             for sequence_index, item in enumerate(items[start_index:], start=start_index):
                 if continue_only and self._sequence_item_has_outputs(item):
-                    saved_delta_seconds = self._sequence_output_delta_seconds(item)
+                    saved_delta_seconds, saved_supplemental_star_ids = self._sequence_output_resume_state(
+                        item,
+                        base_star_ids,
+                    )
                     if saved_delta_seconds is not None:
                         previous_delta_seconds = saved_delta_seconds
+                    preferred_supplemental_star_ids = saved_supplemental_star_ids
                     continue
                 if progress.wasCanceled():
                     failures.append("用户取消了后续处理。")
@@ -147,6 +205,7 @@ class SequenceProcessingMixin:
                                 h=preview.image.height(),
                             )
                         )
+                    sequence_luminance = qimage_to_grayscale_array(preview.image)
                     stats = {
                         "failed_psf": 0,
                         "skipped_mask": 0,
@@ -157,13 +216,14 @@ class SequenceProcessingMixin:
                     }
                     pairs = self._sequence_frame_matched_pairs(
                         item,
-                        preview,
+                        sequence_luminance,
                         templates,
                         fixed_model,
                         target_size,
                         previous_delta_seconds,
-                        desired_pair_count,
+                        target_pair_count,
                         stats,
+                        preferred_supplemental_star_ids=preferred_supplemental_star_ids,
                     )
                     time_fit = self._sequence_time_fit_for_pairs(
                         item,
@@ -180,13 +240,14 @@ class SequenceProcessingMixin:
                         stats["second_pass_fill"] = 1
                         pairs = self._sequence_fill_frame_pairs_to_target(
                             item,
-                            preview,
+                            sequence_luminance,
                             pairs,
                             fixed_model,
                             target_size,
                             float(time_fit.delta_t_seconds),
-                            desired_pair_count,
+                            target_pair_count,
                             stats,
+                            preferred_supplemental_star_ids=preferred_supplemental_star_ids,
                         )
                         time_fit = self._sequence_time_fit_for_pairs(
                             item,
@@ -216,6 +277,10 @@ class SequenceProcessingMixin:
                         time_fit,
                     )
                     processed.append(output_paths)
+                    preferred_supplemental_star_ids = self._sequence_supplemental_star_ids_for_pairs(
+                        pairs,
+                        base_star_ids,
+                    )
                     self._refresh_image_sequence_table()
                     self._set_image_sequence_processing_index(sequence_index)
                     previous_delta_seconds = float(time_fit.delta_t_seconds)

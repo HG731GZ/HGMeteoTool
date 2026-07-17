@@ -5,13 +5,19 @@ from __future__ import annotations
 import numpy as np
 import pytest
 from PyQt5.QtCore import QPointF
-from PyQt5.QtGui import QImage
+from PyQt5.QtGui import QColor, QImage
 
 from meteoalign.application import app_auto_match
 from meteoalign.application.app_auto_match import AutoMatchMixin
+from meteoalign.psf import measure_star_candidate_fast
 from meteoalign.psf.matching import assign_predicted_sources
 from meteoalign.psf.models import StarSourceCandidate
-from meteoalign.star_fitting import StarFitError, fit_star_position_from_array
+from meteoalign.star_fitting import (
+    StarFitError,
+    detect_star_candidates_from_array,
+    fit_star_position_from_array,
+    qimage_to_grayscale_array,
+)
 
 
 def _gaussian_scene(
@@ -91,6 +97,41 @@ def test_uint16_array_preserves_native_saturation_level() -> None:
     saturated_fit = fit_star_position_from_array(saturated, 40.0, 40.0, 20)
     assert saturated_fit.saturated
     assert saturated_fit.x == pytest.approx(40.0, abs=0.3)
+
+
+def test_fast_sequence_measurement_uses_sep_subpixel_moments() -> None:
+    """序列快速测量应保留可靠的亚像素中心和近似星点尺寸。"""
+
+    image = _gaussian_scene([(40.25, 39.70, 100.0, 1.8)])
+    candidates = detect_star_candidates_from_array(
+        image,
+        40.0,
+        40.0,
+        12,
+        saturation_level=255.0,
+    )
+
+    fitted = measure_star_candidate_fast(candidates[0])
+
+    assert fitted.x == pytest.approx(40.25, abs=0.08)
+    assert fitted.y == pytest.approx(39.70, abs=0.08)
+    assert fitted.fwhm_x == pytest.approx(4.24, abs=0.55)
+    assert fitted.fwhm_y == pytest.approx(4.24, abs=0.55)
+    assert 0.0 <= fitted.quality_score <= 1.0
+
+
+def test_sequence_grayscale_array_owns_its_memory() -> None:
+    """整帧灰度数组不得引用函数返回后已销毁的临时 QImage。"""
+
+    image = QImage(8, 4, QImage.Format_RGB888)
+    image.fill(QColor(255, 0, 0))
+
+    luminance = qimage_to_grayscale_array(image)
+
+    assert luminance.shape == (4, 8)
+    assert luminance.dtype == np.uint8
+    assert luminance.flags.owndata
+    assert np.all(luminance > 0)
 
 
 def test_landscape_edge_is_rejected_as_non_stellar() -> None:
