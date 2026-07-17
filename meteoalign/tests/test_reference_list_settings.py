@@ -6,6 +6,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PyQt5.QtCore import QDateTime
 from PyQt5.QtWidgets import QApplication, QMainWindow
 
 from meteoalign.application.app_reference_json_io import ReferenceJsonIOMixin
@@ -124,5 +125,27 @@ def test_explicit_reference_json_still_restores_its_list_settings() -> None:
     assert harness.ui.comboBoxReferenceLabelMode.currentIndex() == 0
     assert harness.ui.spinBoxReferenceStarCount.value() == 40
     assert harness.ui.doubleSpinBoxReferenceMagLimit.value() == 5.0
+    assert harness.render_count == 1
+    harness.window.close()
+
+
+def test_automatic_pair_session_restore_can_preserve_simulator_time() -> None:
+    """关闭 EXIF 同步时，自动恢复匹配会话不得覆盖模拟器时间和时区。"""
+
+    harness = _ReferencePayloadHarness()
+    original_time = QDateTime.fromString("2026-01-02 03:04:05", "yyyy-MM-dd HH:mm:ss")
+    harness.ui.dateTimeEditObservation.setDateTime(original_time)
+    harness.ui.doubleSpinBoxUtcOffset.setValue(9.0)
+
+    harness._apply_reference_payload(
+        _reference_payload(),
+        Path("auto_starpairs.json"),
+        preserve_reference_star_count=True,
+        restore_observation_time=False,
+    )
+
+    assert harness.ui.dateTimeEditObservation.dateTime() == original_time
+    assert harness.ui.doubleSpinBoxUtcOffset.value() == 9.0
+    assert harness.ui.doubleSpinBoxAz.value() == 15.0
     assert harness.render_count == 1
     harness.window.close()

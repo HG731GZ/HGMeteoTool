@@ -18,9 +18,7 @@ class StarPairJsonTaskMixin:
                 status_text="输入已重置，请重新计算粗略取景",
                 refresh_alignment=False,
             )
-        pair_count, row_count, _rebuilt_count = self.reset_reference_star_list(
-            use_native_reference_map=True,
-        )
+        pair_count, row_count, _rebuilt_count = self.reset_reference_star_list()
 
         if pair_count > 0:
             self.ui.statusbar.showMessage(f"导入{input_name}前已清除 {pair_count} 个已有匹配。")
@@ -53,6 +51,7 @@ class StarPairJsonTaskMixin:
         self._json_import_progress = None
         self._star_pair_session_import_switch_to_reference = True
         self._star_pair_session_import_clear_input_name = "新的匹配 JSON"
+        self._star_pair_session_import_restore_observation_time = True
         self._set_json_import_controls_enabled(True)
         if hasattr(self, "_update_image_sequence_controls"):
             self._update_image_sequence_controls()

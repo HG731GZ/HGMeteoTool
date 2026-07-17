@@ -106,36 +106,6 @@ class SourceModelExportMixin:
             max_iterations=0,
         )
 
-    def _single_image_dynamic_sky_payload(
-        self,
-        observer: ObserverSettings,
-        observer_time_payload: dict[str, object],
-    ) -> dict[str, object]:
-        payload: dict[str, object] = {
-            "observation_time_utc": observer.observation_time_utc.astimezone(timezone.utc).isoformat(),
-            "latitude_deg": observer.latitude_deg,
-            "longitude_deg": observer.longitude_deg,
-            "elevation_m": observer.elevation_m,
-            "utc_offset_hours": self.ui.doubleSpinBoxUtcOffset.value(),
-        }
-        payload.update(observer_time_payload)
-        return payload
-
-    def _single_image_fixed_camera_diagnostics(
-        self,
-        records: list[dict[str, object]],
-        time_fit: FixedCameraTimeFitResult,
-    ) -> dict[str, object]:
-        return {
-            "pair_count": len(records),
-            "accepted_count": time_fit.accepted_count,
-            "inlier_ratio": float(time_fit.inlier_ratio),
-            "rms_px": float(time_fit.rms_px),
-            "median_residual_px": float(time_fit.median_residual_px),
-            "max_residual_px": float(time_fit.max_residual_px),
-            "projected_motion_px_per_s_median": float(time_fit.projected_motion_px_per_s_median),
-        }
-
     def _single_image_fixed_camera_export_bundle(self) -> dict[str, object]:
         if self.current_image_preview is None:
             raise ValueError("请先导入真实图像。")
@@ -151,8 +121,8 @@ class SourceModelExportMixin:
         preview = self.current_image_preview
         templates = self._sequence_base_templates()
         target_size = (preview.image.width(), preview.image.height())
-        fixed_model = self._fit_sequence_fixed_camera_model(templates, target_size)
         observer, observer_time_payload = self._reference_payload_observer()
+        fixed_model = self._fit_sequence_fixed_camera_model(templates, target_size, observer)
         pairs = self._first_frame_matched_pairs(templates)
         time_fit = self._single_image_time_fit_for_pairs(pairs, fixed_model, observer)
         pairs = self._apply_sequence_time_fit(pairs, time_fit, require_accepted=False)

@@ -49,6 +49,7 @@ from ..simulator import (
     ProjectedStarMap,
     ReferenceStar,
     camera_basis_from_view,
+    compute_altaz_from_radec,
     local_vectors_from_altaz,
     project_horizontal_catalog,
 )
@@ -131,10 +132,15 @@ class SequenceMatchingMixin:
         self,
         templates: list[_SequencePairTemplate],
         target_size: tuple[int, int],
+        observer: ObserverSettings,
     ) -> FixedCameraModel:
+        # 模板内的 Alt/Az 可能仍对应先前的模拟时刻；固定相机姿态必须使用当前照片时刻。
+        ra_deg = np.asarray([template.reference_star.ra_deg for template in templates], dtype=np.float64)
+        dec_deg = np.asarray([template.reference_star.dec_deg for template in templates], dtype=np.float64)
+        alt_deg, az_deg = compute_altaz_from_radec(ra_deg, dec_deg, observer)
         local_vectors = local_vectors_from_altaz(
-            np.asarray([template.reference_star.alt_deg for template in templates], dtype=np.float64),
-            np.asarray([template.reference_star.az_deg for template in templates], dtype=np.float64),
+            alt_deg,
+            az_deg,
         )
         pixel_points = np.asarray(
             [(template.fitted_position.x, template.fitted_position.y) for template in templates],

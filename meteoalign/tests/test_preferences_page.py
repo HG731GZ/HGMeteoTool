@@ -13,6 +13,7 @@ from PyQt5.QtWidgets import QApplication, QGroupBox
 import pytest
 
 from meteoalign.application.app_image import ImageMixin
+from meteoalign.application.app_star_pair_session import StarPairSessionMixin
 from meteoalign.application.preferences_page import (
     DEFAULT_ONLY_PREFERENCE_KEYS,
     EDITABLE_PREFERENCE_KEYS,
@@ -233,6 +234,28 @@ def test_disabling_exif_time_sync_does_not_read_image_capture_time(monkeypatch) 
     )
 
     assert host._apply_single_image_exif_observation_time("image.jpg") == ""
+
+
+@pytest.mark.parametrize("sync_enabled", (False, True))
+def test_exif_time_sync_option_controls_automatic_pair_import(tmp_path, sync_enabled: bool) -> None:  # type: ignore[no-untyped-def]
+    """同名匹配 JSON 的自动恢复必须服从 EXIF 时间同步开关。"""
+
+    class AutomaticPairImportHarness(ImageMixin, StarPairSessionMixin):
+        pass
+
+    image_path = tmp_path / "image.jpg"
+    pair_path = tmp_path / "image_starpairs.json"
+    pair_path.write_text("{}", encoding="utf-8")
+    calls: list[tuple[object, dict[str, object]]] = []
+    host = AutomaticPairImportHarness()
+    host.ui_config = StarMapUiConfig(auto_sync_simulator_time_from_exif=sync_enabled)
+    host._json_import_thread = None
+    host.ui = SimpleNamespace(statusbar=SimpleNamespace(showMessage=lambda _message: None))
+    host.load_star_pair_session = lambda path, **kwargs: calls.append((path, kwargs))
+
+    host._maybe_auto_import_star_pair_session_for_image(image_path)
+
+    assert calls == [(pair_path.resolve(), {"restore_observation_time": sync_enabled})]
 
 
 def test_preferences_dialog_is_non_modal_and_launcher_uses_text_buttons(tmp_path) -> None:  # type: ignore[no-untyped-def]

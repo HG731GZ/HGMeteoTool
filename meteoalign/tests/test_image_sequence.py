@@ -72,6 +72,7 @@ def test_sequence_first_session_import_does_not_reuse_previous_loaded_image(tmp_
 
     harness = SimpleNamespace(
         _json_import_thread=None,
+        _auto_sync_simulator_time_from_exif_enabled=lambda: False,
         ui=SimpleNamespace(statusbar=SimpleNamespace(showMessage=lambda _message: None)),
         load_star_pair_session=_load_star_pair_session,
     )
@@ -87,6 +88,7 @@ def test_sequence_first_session_import_does_not_reuse_previous_loaded_image(tmp_
                 "show_progress": False,
                 "clear_input_name": "第一帧匹配 JSON",
                 "reuse_current_image": False,
+                "restore_observation_time": False,
             },
         )
     ]

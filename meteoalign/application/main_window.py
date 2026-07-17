@@ -319,6 +319,7 @@ class MainWindow(
         self._rough_source_astrometric_model = None
         self._star_pair_session_import_switch_to_reference = True
         self._star_pair_session_import_clear_input_name = "新的匹配 JSON"
+        self._star_pair_session_import_restore_observation_time = True
         self._mask_import_thread: object | None = None
         self._mask_import_worker: QObject | None = None
         self._mask_import_progress: QProgressDialog | None = None

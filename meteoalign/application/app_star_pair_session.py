@@ -151,7 +151,16 @@ class StarPairSessionMixin:
         if not json_path.exists():
             return
         self.ui.statusbar.showMessage(f"发现同名匹配 JSON，正在自动导入: {json_path}")
-        self.load_star_pair_session(json_path)
+        sync_time_enabled = getattr(self, "_auto_sync_simulator_time_from_exif_enabled", None)
+        restore_observation_time = (
+            bool(sync_time_enabled())
+            if callable(sync_time_enabled)
+            else True
+        )
+        self.load_star_pair_session(
+            json_path,
+            restore_observation_time=restore_observation_time,
+        )
 
     def _build_star_pair_session_payload(self, json_path: Path) -> dict[str, object]:
         if self.current_image_preview is None:
@@ -257,6 +266,7 @@ class StarPairSessionMixin:
         show_progress: bool = True,
         clear_input_name: str = "新的匹配 JSON",
         reuse_current_image: bool = True,
+        restore_observation_time: bool = True,
     ) -> None:
         if self._json_import_thread is not None:
             QMessageBox.information(self, "正在导入 JSON", "当前已有 JSON 正在导入，请稍候。")
@@ -265,6 +275,7 @@ class StarPairSessionMixin:
         self._set_json_import_controls_enabled(False)
         self._star_pair_session_import_switch_to_reference = bool(switch_to_reference)
         self._star_pair_session_import_clear_input_name = clear_input_name
+        self._star_pair_session_import_restore_observation_time = bool(restore_observation_time)
         if show_progress:
             self._json_import_progress = self._show_json_import_progress(
                 title="正在导入匹配 JSON",
@@ -528,6 +539,7 @@ class StarPairSessionMixin:
                 source_path,
                 preview=preview,
                 switch_to_reference=self._star_pair_session_import_switch_to_reference,
+                restore_observation_time=self._star_pair_session_import_restore_observation_time,
             )
         except Exception as exc:  # noqa: BLE001 - 主线程恢复界面时也需要把错误反馈给用户。
             self.ui.statusbar.showMessage(f"导入星点匹配 JSON 失败: {exc}")
@@ -544,6 +556,7 @@ class StarPairSessionMixin:
         preview: ImagePreview | None = None,
         *,
         switch_to_reference: bool = True,
+        restore_observation_time: bool = True,
     ) -> None:
         if not isinstance(payload, dict):
             raise ValueError("JSON 根对象必须是字典。")
@@ -586,6 +599,7 @@ class StarPairSessionMixin:
                 reference_payload,
                 source_path,
                 preserve_reference_star_count=True,
+                restore_observation_time=restore_observation_time,
             )
             if current_tab is not None:
                 self.ui.tabWidgetMain.setCurrentWidget(current_tab)

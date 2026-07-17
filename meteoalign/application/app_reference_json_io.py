@@ -125,6 +125,7 @@ class ReferenceJsonIOMixin:
         source_path: Path,
         *,
         preserve_reference_star_count: bool = False,
+        restore_observation_time: bool = True,
     ) -> None:
         if not isinstance(payload, dict):
             raise ValueError("JSON 根对象必须是字典。")
@@ -136,17 +137,20 @@ class ReferenceJsonIOMixin:
         view = self._payload_section(payload, "view")
         render = self._payload_section(payload, "render")
 
-        observation_time_utc = self._payload_datetime_utc(observer, "observation_time_utc")
-        utc_offset_hours = self._payload_optional_float(observer, "utc_offset_hours", 0.0)
-        utc_offset_hours = min(
-            max(utc_offset_hours, self.ui.doubleSpinBoxUtcOffset.minimum()),
-            self.ui.doubleSpinBoxUtcOffset.maximum(),
-        )
-        local_observation_time = observation_time_utc.astimezone(timezone(timedelta(hours=utc_offset_hours)))
-        local_datetime_text = local_observation_time.strftime("%Y-%m-%d %H:%M:%S")
-        qt_observation_time = QDateTime.fromString(local_datetime_text, "yyyy-MM-dd HH:mm:ss")
-        if not qt_observation_time.isValid():
-            raise ValueError("JSON 中的观测时间无法转换为界面时间。")
+        qt_observation_time: QDateTime | None = None
+        utc_offset_hours: float | None = None
+        if restore_observation_time:
+            observation_time_utc = self._payload_datetime_utc(observer, "observation_time_utc")
+            utc_offset_hours = self._payload_optional_float(observer, "utc_offset_hours", 0.0)
+            utc_offset_hours = min(
+                max(utc_offset_hours, self.ui.doubleSpinBoxUtcOffset.minimum()),
+                self.ui.doubleSpinBoxUtcOffset.maximum(),
+            )
+            local_observation_time = observation_time_utc.astimezone(timezone(timedelta(hours=utc_offset_hours)))
+            local_datetime_text = local_observation_time.strftime("%Y-%m-%d %H:%M:%S")
+            qt_observation_time = QDateTime.fromString(local_datetime_text, "yyyy-MM-dd HH:mm:ss")
+            if not qt_observation_time.isValid():
+                raise ValueError("JSON 中的观测时间无法转换为界面时间。")
 
         widgets_to_block = (
             self.ui.dateTimeEditObservation,
@@ -173,8 +177,9 @@ class ReferenceJsonIOMixin:
         previous_syncing = self._syncing_camera_dimensions
         self._syncing_camera_dimensions = True
         try:
-            self.ui.dateTimeEditObservation.setDateTime(qt_observation_time)
-            self.ui.doubleSpinBoxUtcOffset.setValue(utc_offset_hours)
+            if qt_observation_time is not None and utc_offset_hours is not None:
+                self.ui.dateTimeEditObservation.setDateTime(qt_observation_time)
+                self.ui.doubleSpinBoxUtcOffset.setValue(utc_offset_hours)
             self.ui.doubleSpinBoxLatitude.setValue(self._payload_float(observer, "latitude_deg"))
             self.ui.doubleSpinBoxLongitude.setValue(self._payload_float(observer, "longitude_deg"))
             self.ui.doubleSpinBoxElevation.setValue(self._payload_float(observer, "elevation_m"))

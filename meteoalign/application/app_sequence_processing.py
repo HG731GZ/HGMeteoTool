@@ -122,7 +122,11 @@ class SequenceProcessingMixin:
             )
             assert self.current_image_preview is not None
             target_size = (self.current_image_preview.image.width(), self.current_image_preview.image.height())
-            fixed_model = self._fit_sequence_fixed_camera_model(templates, target_size)
+            fixed_model = self._fit_sequence_fixed_camera_model(
+                templates,
+                target_size,
+                self._sequence_observer_for_item(first_item),
+            )
         except Exception as exc:  # noqa: BLE001 - 批处理入口要把缺失条件直接反馈给用户。
             QMessageBox.warning(self, "无法处理图像序列", str(exc))
             self.ui.statusbar.showMessage(f"无法处理图像序列: {exc}")

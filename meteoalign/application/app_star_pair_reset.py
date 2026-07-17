@@ -4,11 +4,7 @@ from __future__ import annotations
 class StarPairResetMixin:
     """统一重置参考星列表及其匹配派生状态。"""
 
-    def reset_reference_star_list(
-        self,
-        *,
-        use_native_reference_map: bool = False,
-    ) -> tuple[int, int, int]:
+    def reset_reference_star_list(self) -> tuple[int, int, int]:
         """清空匹配状态并按当前标注设置重建列表，不改动标注数量等界面参数。
 
         返回清除的有效匹配数、移除的参考星行数和重建后的参考星行数。
@@ -62,8 +58,8 @@ class StarPairResetMixin:
         self._sky_alignment_error_message = ""
         self._source_model_error_message = ""
 
-        if use_native_reference_map:
-            self._current_reference_star_map = getattr(self, "_current_star_map", None)
+        # 配准已经清空，不能再用对齐到真实图像的旧参考图重建列表。
+        self._current_reference_star_map = getattr(self, "_current_star_map", None)
         reference_map = getattr(self, "_current_reference_star_map", None) or getattr(
             self,
             "_current_star_map",

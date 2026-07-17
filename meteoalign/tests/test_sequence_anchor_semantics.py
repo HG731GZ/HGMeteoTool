@@ -1,10 +1,21 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import datetime, timezone
+
 import numpy as np
 
+from meteoalign.alignment import SKY_MATCHING_MODEL_RECTILINEAR
+from meteoalign.application import app_sequence_matching
 from meteoalign.application.app_constants import AUTO_MATCH_CONSTRAINT_SOFT
 from meteoalign.application.app_sequence import SequenceBatchMixin, _SequenceCandidate, _SequencePairTemplate
-from meteoalign.simulator import ReferenceStar
+from meteoalign.simulator import (
+    ObserverSettings,
+    ReferenceStar,
+    ViewSettings,
+    compute_altaz_from_radec,
+    local_vectors_from_altaz,
+)
 from meteoalign.star_fitting import FittedStarPosition
 
 
@@ -89,6 +100,56 @@ def test_sequence_pair_target_keeps_eighty_percent_floor() -> None:
 
     assert minimum_count == 80
     assert target_count == 86
+
+
+def test_fixed_camera_fit_recomputes_altaz_for_current_observation_time(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """固定相机拟合不能复用记录中可能过期的地平坐标。"""
+
+    observer = ObserverSettings(
+        observation_time_utc=datetime(2017, 12, 31, 16, 18, 33, tzinfo=timezone.utc),
+        latitude_deg=40.0,
+        longitude_deg=116.0,
+        elevation_m=200.0,
+    )
+    templates = [
+        replace(
+            _template(f"HR{index}"),
+            reference_star=replace(
+                _star(f"HR{index}"),
+                ra_deg=10.0 + index * 12.0,
+                dec_deg=20.0 + index * 3.0,
+                alt_deg=-70.0 + index,
+                az_deg=270.0 + index,
+            ),
+        )
+        for index in range(4)
+    ]
+    captured: dict[str, object] = {}
+    expected_model = object()
+
+    def _capture_fixed_camera_fit(**kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        return expected_model
+
+    monkeypatch.setattr(app_sequence_matching, "fit_fixed_camera_model", _capture_fixed_camera_fit)
+    harness = SequenceBatchMixin()
+    harness._sequence_fixed_lens_model = lambda _target_size: SKY_MATCHING_MODEL_RECTILINEAR
+    harness._view_settings = lambda: ViewSettings(center_az_deg=35.0, center_alt_deg=25.0)
+
+    result = harness._fit_sequence_fixed_camera_model(templates, (6000, 4000), observer)
+
+    ra_deg = np.asarray([template.reference_star.ra_deg for template in templates], dtype=np.float64)
+    dec_deg = np.asarray([template.reference_star.dec_deg for template in templates], dtype=np.float64)
+    expected_alt_deg, expected_az_deg = compute_altaz_from_radec(ra_deg, dec_deg, observer)
+    expected_vectors = local_vectors_from_altaz(expected_alt_deg, expected_az_deg)
+    stale_vectors = local_vectors_from_altaz(
+        np.asarray([template.reference_star.alt_deg for template in templates], dtype=np.float64),
+        np.asarray([template.reference_star.az_deg for template in templates], dtype=np.float64),
+    )
+
+    assert result is expected_model
+    assert np.allclose(captured["enu_vectors"], expected_vectors)
+    assert not np.allclose(captured["enu_vectors"], stale_vectors)
 
 
 def test_sequence_supplemental_candidates_prefer_sparse_cells_over_brightness() -> None:

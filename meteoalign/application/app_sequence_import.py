@@ -186,6 +186,7 @@ class SequenceImportMixin:
             clear_input_name="第一帧匹配 JSON",
             # 新序列必须按 JSON 记录载入第一帧，不能拿上一序列遗留的图像做一致性校验。
             reuse_current_image=False,
+            restore_observation_time=self._auto_sync_simulator_time_from_exif_enabled(),
         )
 
     def _rejected_sequence_summary(self, rejected: list[RejectedSequenceImage], limit: int = 10) -> str:

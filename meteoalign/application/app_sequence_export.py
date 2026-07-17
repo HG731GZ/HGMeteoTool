@@ -405,6 +405,7 @@ class SequenceExportMixin:
                 json_path,
                 preview=preview,
                 switch_to_reference=False,
+                restore_observation_time=self._auto_sync_simulator_time_from_exif_enabled(),
             )
             if current_tab is not None:
                 self.ui.tabWidgetMain.setCurrentWidget(current_tab)

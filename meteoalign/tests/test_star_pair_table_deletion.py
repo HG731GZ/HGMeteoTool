@@ -331,6 +331,8 @@ def test_reset_all_rows_rebuilds_startup_reference_list() -> None:
     harness._auto_match_group_by_star_id = {"auto-1": "A"}
     harness._auto_match_group_expanded_by_id = {"A": False}
     harness._excluded_reference_star_ids = ["manual-2"]
+    stale_aligned_reference_map = object()
+    harness._current_reference_star_map = stale_aligned_reference_map
     harness._update_star_pair_table((harness.reference_stars[0], harness.reference_stars[2]))
     _set_matched_position(harness, "manual-1")
     _set_matched_position(harness, "auto-1")
@@ -349,6 +351,8 @@ def test_reset_all_rows_rebuilds_startup_reference_list() -> None:
     assert harness._auto_match_group_expanded_by_id == {}
     assert harness._excluded_reference_star_ids == []
     assert harness._mask_excluded_reference_star_ids == set()
+    assert harness._current_reference_star_map is harness._current_star_map
+    assert harness._current_reference_star_map is not stale_aligned_reference_map
     assert harness.ui.spinBoxReferenceStarCount.value() == 12
 
 

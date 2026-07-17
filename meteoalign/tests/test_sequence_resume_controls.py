@@ -334,7 +334,15 @@ class _ProcessingHost(SequenceProcessingMixin, SequenceTablePreviewMixin):
     def _sequence_pair_targets(self, _templates: list[object]) -> tuple[int, int]:
         return 1, 1
 
-    def _fit_sequence_fixed_camera_model(self, _templates: list[object], _target_size: tuple[int, int]) -> object:
+    def _sequence_observer_for_item(self, _item: ImageSequenceItem) -> object:
+        return object()
+
+    def _fit_sequence_fixed_camera_model(
+        self,
+        _templates: list[object],
+        _target_size: tuple[int, int],
+        _observer: object,
+    ) -> object:
         return object()
 
     def _sequence_frame_matched_pairs(

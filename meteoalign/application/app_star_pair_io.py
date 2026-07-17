@@ -25,6 +25,7 @@ class StarPairIOMixin(
     _json_import_progress: QProgressDialog | None
     _star_pair_session_import_switch_to_reference: bool
     _star_pair_session_import_clear_input_name: str
+    _star_pair_session_import_restore_observation_time: bool
     _alignment_model: object  # 方法
     _set_alignment_model: object  # 方法
     _auto_match_constraint_for_star_id: object  # 方法
