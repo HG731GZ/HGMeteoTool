@@ -5,10 +5,12 @@ from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtCore import QItemSelectionModel, QPoint, Qt
+from PyQt5.QtCore import QEvent, QItemSelectionModel, QPoint, QPointF, Qt
+from PyQt5.QtGui import QMouseEvent
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import (
     QApplication,
+    QGraphicsView,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -17,6 +19,7 @@ from PyQt5.QtWidgets import (
 
 from meteoalign.application.app_auto_match import AutoMatchMixin
 from meteoalign.application.app_rendering import RenderingMixin
+from meteoalign.application.app_view_controls import ViewControlsMixin
 
 
 _QT_APP: QApplication | None = None
@@ -68,6 +71,7 @@ class _ReferenceClickHarness(AutoMatchMixin, RenderingMixin):
         self._excluded_reference_star_ids: list[str] = []
         self._picked_star_id = picked_star_id
         self.assistant_show_count = 0
+        self.pick_mode_rows: list[int] = []
         self._set_table_stars(star_ids)
         self.container.show()
         self.reference_click_surface.setFocus(Qt.OtherFocusReason)
@@ -95,6 +99,9 @@ class _ReferenceClickHarness(AutoMatchMixin, RenderingMixin):
 
     def _show_star_pair_assistant(self) -> None:
         self.assistant_show_count += 1
+
+    def _enter_star_pick_mode(self, row: int) -> None:
+        self.pick_mode_rows.append(row)
 
     def select_table_rows(self, rows: list[int]) -> None:
         selection_model = self.table.selectionModel()
@@ -127,6 +134,7 @@ def test_reference_click_activates_existing_star_row() -> None:
         _assert_active_row(harness, "HR3")
         assert harness._manual_reference_star_ids == ["HR1", "HR2", "HR3"]
         assert harness.assistant_show_count == 1
+        assert harness.pick_mode_rows == [harness._row_for_star_id("HR3")]
     finally:
         harness.container.close()
 
@@ -141,5 +149,70 @@ def test_reference_click_activates_new_star_row() -> None:
         _assert_active_row(harness, "HR3")
         assert harness._manual_reference_star_ids == ["HR1", "HR2", "HR3"]
         assert harness.assistant_show_count == 1
+        assert harness.pick_mode_rows == [harness._row_for_star_id("HR3")]
     finally:
         harness.container.close()
+
+
+class _RealImagePickEventHarness(ViewControlsMixin):
+    """提供真实图像点选事件过滤所需的最小控件集合。"""
+
+    def __init__(self) -> None:
+        self.container = QWidget()
+        self.ui = SimpleNamespace(
+            splitterReferenceAndRealImage=QWidget(self.container),
+            labelImportedImagePath=QWidget(self.container),
+            labelSkyMaskStatus=QWidget(self.container),
+            labelAlignmentTransformStatus=QWidget(self.container),
+            starMapView=QGraphicsView(self.container),
+            referenceImageView=QGraphicsView(self.container),
+            realImageView=QGraphicsView(self.container),
+            statusbar=_StatusBar(),
+        )
+        self._active_star_pair_row = 2
+        self.picked_positions: list[QPoint] = []
+        self.leave_count = 0
+
+    def _is_wheel_value_control(self, _watched) -> bool:  # type: ignore[no-untyped-def]
+        return False
+
+    def _event_ctrl_pressed(self, event) -> bool:  # type: ignore[no-untyped-def]
+        return bool(event.modifiers() & Qt.ControlModifier)
+
+    def _handle_real_image_pick_click(self, position: QPoint) -> None:
+        self.picked_positions.append(position)
+
+    def _leave_star_pick_mode(self) -> None:
+        self._active_star_pair_row = None
+        self.leave_count += 1
+
+
+def test_active_reference_pick_accepts_ctrl_left_and_cancels_with_right_click() -> None:
+    """参考星进入点选状态后，真实图像应支持 Ctrl+左键确认和右键取消提示。"""
+
+    _qapp()
+    harness = _RealImagePickEventHarness()
+    viewport = harness.ui.realImageView.viewport()
+    ctrl_left_event = QMouseEvent(
+        QEvent.MouseButtonPress,
+        QPointF(12.0, 18.0),
+        Qt.LeftButton,
+        Qt.LeftButton,
+        Qt.ControlModifier,
+    )
+
+    assert harness.eventFilter(viewport, ctrl_left_event)
+    assert harness.picked_positions == [QPoint(12, 18)]
+
+    right_click_event = QMouseEvent(
+        QEvent.MouseButtonPress,
+        QPointF(20.0, 22.0),
+        Qt.RightButton,
+        Qt.RightButton,
+        Qt.NoModifier,
+    )
+    assert harness.eventFilter(viewport, right_click_event)
+    assert harness._active_star_pair_row is None
+    assert harness.leave_count == 1
+    assert harness.ui.statusbar.message == "已取消当前星点位置点选。"
+    harness.container.close()

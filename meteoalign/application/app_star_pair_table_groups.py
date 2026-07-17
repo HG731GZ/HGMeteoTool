@@ -60,7 +60,7 @@ class StarPairTableGroupsMixin:
         table = self.ui.tableWidgetStarPairs
         digit_width = table.fontMetrics().horizontalAdvance(STAR_PAIR_QUALITY_WIDTH_SAMPLE)
         header_item = table.horizontalHeaderItem(STAR_PAIR_QUALITY_COLUMN)
-        header_text = header_item.text() if header_item is not None else "匹配质量"
+        header_text = header_item.text() if header_item is not None else "质量"
         header_width = table.horizontalHeader().fontMetrics().horizontalAdvance(header_text)
         return max(digit_width + 6, header_width + 6, 44)
 
@@ -70,7 +70,7 @@ class StarPairTableGroupsMixin:
         header_item = table.horizontalHeaderItem(STAR_PAIR_INDEX_COLUMN)
         header_text = header_item.text() if header_item is not None else "序号"
         header_width = table.horizontalHeader().fontMetrics().horizontalAdvance(header_text)
-        return max(sample_width + 4, header_width + 4, 36)
+        return max(sample_width + 8, header_width + 4, 36)
 
     def _star_pair_mode_column_width(self) -> int:
         """把模式列限制为约七个英文字符，给标注列腾出空间。"""

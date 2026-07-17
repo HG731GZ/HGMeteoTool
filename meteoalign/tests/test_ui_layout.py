@@ -252,7 +252,7 @@ def test_star_pair_assistant_owns_moved_controls_and_uses_normal_window_layer() 
     assert dialog.ui.horizontalLayoutStarPairResetButtons.itemAt(1).widget() is dialog.ui.pushButtonDeleteStarPairs
     assert dialog.ui.formLayoutAutoMatch.fieldGrowthPolicy() == QFormLayout.AllNonFixedFieldsGrow
     assert dialog.ui.tableWidgetStarPairs.columnCount() == 6
-    assert dialog.ui.tableWidgetStarPairs.horizontalHeaderItem(3).text() == "匹配质量"
+    assert dialog.ui.tableWidgetStarPairs.horizontalHeaderItem(3).text() == "质量"
     assert dialog.ui.tableWidgetStarPairs.horizontalHeaderItem(5).text() == "标注"
     assert dialog.ui.tableWidgetStarPairs.verticalHeader().isHidden()
 
@@ -283,6 +283,9 @@ def test_star_pair_assistant_owns_moved_controls_and_uses_normal_window_layer() 
     assert reshow_calls == []
     dialog.show = original_show  # type: ignore[method-assign]
     table = dialog.ui.tableWidgetStarPairs
+    assert table.columnWidth(0) >= table.fontMetrics().horizontalAdvance("A000") + 8
+    assert table.columnWidth(3) == table_host._star_pair_quality_column_width()
+    assert table.columnWidth(3) >= table.fontMetrics().horizontalAdvance("0.00") + 6
     assert table.columnWidth(0) < table.columnWidth(4)
     assert table.columnWidth(2) < table.columnWidth(4)
     assert table.columnWidth(5) < table.columnWidth(4)

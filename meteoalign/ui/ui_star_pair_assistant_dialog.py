@@ -142,7 +142,7 @@ class Ui_StarPairAssistantDialog(object):
         item = self.tableWidgetStarPairs.horizontalHeaderItem(2)
         item.setText(_translate("StarPairAssistantDialog", "模式"))
         item = self.tableWidgetStarPairs.horizontalHeaderItem(3)
-        item.setText(_translate("StarPairAssistantDialog", "匹配质量"))
+        item.setText(_translate("StarPairAssistantDialog", "质量"))
         item = self.tableWidgetStarPairs.horizontalHeaderItem(4)
         item.setText(_translate("StarPairAssistantDialog", "残差"))
         item = self.tableWidgetStarPairs.horizontalHeaderItem(5)

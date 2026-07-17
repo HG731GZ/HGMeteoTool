@@ -94,6 +94,7 @@ class AutoMatchMixin:
     _build_aligned_reference_star_map: object  # method
     _reference_selection_star_map: object  # method
     _focus_star_pair_image_point: object  # method
+    _enter_star_pick_mode: object  # method
     _star_pair_position_count: object  # method
 
     def _scene_radius_from_screen_radius(
@@ -187,15 +188,13 @@ class AutoMatchMixin:
             self.ui.statusbar.showMessage("参考星图点击位置附近没有可用亮星，请稍微靠近星点再试。")
             return
 
-        star_id, star_name, distance_px = picked
+        star_id, star_name, _distance_px = picked
         if star_id in self._excluded_reference_star_ids:
             self._excluded_reference_star_ids.remove(star_id)
         existing_row = self._select_star_pair_row_by_id(star_id)
         if existing_row is not None:
-            self.ui.statusbar.showMessage(
-                f"已选中参考星 {self._star_pair_label(existing_row)}；可在真实图像中点选对应星点。"
-            )
             self._show_star_pair_assistant()
+            self._enter_star_pick_mode(existing_row)
             return
 
         if star_id not in self._manual_reference_star_ids:
@@ -206,10 +205,8 @@ class AutoMatchMixin:
             self.ui.statusbar.showMessage(f"未能添加参考星 {star_name or star_id}，请检查当前星等上限和视野。")
             self._show_star_pair_assistant()
             return
-        self.ui.statusbar.showMessage(
-            f"已添加待匹配参考星 {self._star_pair_label(row)}；点击偏差约 {distance_px:.1f} px。"
-        )
         self._show_star_pair_assistant()
+        self._enter_star_pick_mode(row)
 
     def _handle_real_image_pick_click(self, viewport_pos: QPoint) -> None:
         if self._active_star_pair_row is None or self.current_image_preview is None:
