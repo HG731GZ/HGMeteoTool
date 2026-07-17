@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 from meteoalign.config import StarMapUiConfig, default_config_path, load_star_map_ui_config
-from meteoalign.runtime_paths import runtime_catalog_dir, runtime_icon_path
+from meteoalign.runtime_paths import runtime_catalog_dir, runtime_icon_path, runtime_qrcode_dir
 
 
 def test_default_config_path_uses_source_project_root() -> None:
@@ -17,6 +17,12 @@ def test_runtime_icon_path_uses_source_project_root() -> None:
     expected = Path(__file__).resolve().parents[2] / "icon256.png"
 
     assert runtime_icon_path() == expected
+
+
+def test_runtime_qrcode_dir_uses_source_project_root() -> None:
+    expected = Path(__file__).resolve().parents[2] / "qrcode"
+
+    assert runtime_qrcode_dir() == expected
 
 
 def test_star_color_mag_limit_defaults_to_six() -> None:
@@ -109,3 +115,18 @@ def test_runtime_icon_path_uses_pyinstaller_meipass_resource(
     monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path / "bundle"), raising=False)
 
     assert runtime_icon_path() == icon_path
+
+
+def test_runtime_qrcode_dir_uses_pyinstaller_meipass_resource(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    app_dir = tmp_path / "release" / "HoshinoPanoAssistant"
+    qrcode_dir = tmp_path / "bundle" / "qrcode"
+    qrcode_dir.mkdir(parents=True)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sys, "executable", str(app_dir / "HoshinoPanoAssistant.exe"))
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path / "bundle"), raising=False)
+
+    assert runtime_qrcode_dir() == qrcode_dir

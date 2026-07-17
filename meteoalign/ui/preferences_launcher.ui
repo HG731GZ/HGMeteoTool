@@ -6,7 +6,7 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>72</width>
+    <width>134</width>
     <height>30</height>
    </rect>
   </property>
@@ -39,6 +39,25 @@
      </property>
      <property name="text">
       <string>选项</string>
+     </property>
+   </widget>
+   </item>
+   <item>
+    <widget class="QPushButton" name="pushButtonOpenAbout">
+     <property name="minimumSize">
+      <size>
+       <width>56</width>
+       <height>0</height>
+      </size>
+     </property>
+     <property name="toolTip">
+      <string>查看软件介绍、二维码和项目链接</string>
+     </property>
+     <property name="accessibleName">
+      <string>打开关于窗口</string>
+     </property>
+     <property name="text">
+      <string>关于</string>
      </property>
     </widget>
    </item>

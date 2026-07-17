@@ -28,15 +28,17 @@ class PreferencesDialog(QDialog):
 
 
 class PreferencesLauncher(QWidget):
-    """放置在主标签栏右上角的软件选项入口。"""
+    """放置在主标签栏右上角的软件选项和关于入口。"""
 
     clicked = pyqtSignal()
+    about_clicked = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.ui = Ui_PreferencesLauncher()
         self.ui.setupUi(self)
         self.ui.pushButtonOpenPreferences.clicked.connect(self.clicked.emit)
+        self.ui.pushButtonOpenAbout.clicked.connect(self.about_clicked.emit)
 
 
 __all__ = ["PreferencesDialog", "PreferencesLauncher"]

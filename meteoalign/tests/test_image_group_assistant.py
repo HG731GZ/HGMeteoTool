@@ -416,6 +416,7 @@ def test_main_window_close_also_closes_image_group_assistant(monkeypatch) -> Non
     host = SimpleNamespace(
         _meteor_mask_import_thread=None,
         preferences_dialog=SimpleNamespace(close=lambda: closed.append("preferences")),
+        about_dialog=SimpleNamespace(close=lambda: closed.append("about")),
         star_pair_assistant=SimpleNamespace(close=lambda: closed.append("star_pair")),
         image_group_assistant=SimpleNamespace(close=lambda: closed.append("image_group")),
         image_group_reference_dialog=SimpleNamespace(close=lambda: closed.append("image_group_reference")),
@@ -431,6 +432,7 @@ def test_main_window_close_also_closes_image_group_assistant(monkeypatch) -> Non
     MainWindow.closeEvent(host, event)  # type: ignore[arg-type]
     assert closed == [
         "preferences",
+        "about",
         "star_pair",
         "image_group",
         "image_group_reference",

@@ -1,81 +1,45 @@
 from __future__ import annotations
 
-import json
-import math
-import os
 import sys
 from collections import OrderedDict
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
-from PyQt5.QtCore import QDateTime, QEvent, QObject, QPoint, QPointF, QRectF, QTimer, Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QBrush, QCursor, QFont, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap
+from PyQt5.QtCore import QDateTime, QObject, QPoint, QTimer, Qt
+from PyQt5.QtGui import QCursor, QIcon, QImage, QKeySequence
 from PyQt5.QtWidgets import (
     QApplication,
-    QFileDialog,
     QGraphicsEllipseItem,
     QGraphicsItem,
     QGraphicsScene,
     QGraphicsSimpleTextItem,
-    QGraphicsView,
-    QInputDialog,
-    QLabel,
     QMainWindow,
     QMessageBox,
     QProgressDialog,
     QShortcut,
-    QHeaderView,
-    QTableWidgetItem,
 )
 
-from ..alignment.constants import (
-    MIN_ALIGNMENT_PAIRS,
-    SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION,
-    SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT,
-    SKY_MATCHING_MODEL_FISHEYE_EQUISOLID,
-    SKY_MATCHING_MODEL_POLYNOMIAL,
-    SKY_MATCHING_MODEL_RECTILINEAR,
-)
-from ..alignment.fitting import fit_sky_alignment
 from ..alignment.models import SkyAlignmentTransform
 from ..catalog_download import ensure_catalogs_ready_or_handle
-from ..catalog import load_constellation_catalog, load_default_catalog, project_root
+from ..catalog import load_constellation_catalog, load_default_catalog
 from ..camera_calibration import CameraCalibrationProfile
 from ..config import StarMapUiConfig, load_star_map_ui_config
 from ..preference_manager import ensure_preference_file, recent_import_directory, remember_import_path
 from ..runtime_paths import runtime_icon_path
-from ..coordinates import radec_to_unit_vectors
-from ..image_preview import IMAGE_FILE_FILTER, ImagePreview, load_image_preview
+from ..image_preview import ImagePreview
 from ..adjacent_framing_worker import AdjacentFramingWorker
 from ..milky_way import MilkyWayCatalog, load_milky_way
-from ..reference import build_reference_payload, save_reference_outputs
 from ..renderer import StarMapRenderer
-from ..source_model import SourceAstrometricModel, fit_source_astrometric_model
+from ..source_model import SourceAstrometricModel
 from ..simulator import (
-    CameraSettings,
-    FISHEYE_EQUIDISTANT,
-    FISHEYE_EQUISOLID,
     HorizontalConstellationCatalog,
     HorizontalMilkyWayCatalog,
     HorizontalSolarSystemCatalog,
     HorizontalStarCatalog,
-    ObserverSettings,
     ProjectedStarMap,
     ReferenceStar,
-    RECTILINEAR_LENS_MODEL,
-    ViewSettings,
-    camera_basis_from_view,
-    compute_horizontal_catalog,
-    compute_horizontal_milky_way,
-    compute_horizontal_solar_system,
-    horizontal_fov_deg,
-    local_vectors_from_altaz,
-    project_horizontal_catalog,
-    select_reference_stars,
-    vertical_fov_deg,
 )
-from ..star_fitting import FittedStarPosition, fit_star_position
 from ..star_pair_store import StarPairStore
 from ..ui.ui_main_window import Ui_MainWindow
 from .app_constants import (
@@ -91,9 +55,6 @@ from .app_graphics_items import GraphicsImageItem, LiveStarMapGraphicsItem
 from .app_workers import (
     ImagePreviewLoadWorker,
     ImageSequenceCollectWorker,
-    SkyMaskLoadWorker,
-    ReferenceJsonImportWorker,
-    StarPairSessionImportWorker,
 )
 from .app_widgets import AppWidgetMixin
 from .app_adjacent_framing import AdjacentFramingMixin
@@ -118,6 +79,7 @@ from .app_utils import (
     _image_with_binary_mask,
 )
 from .preferences_dialog import PreferencesDialog, PreferencesLauncher
+from .about_dialog import AboutDialog
 from .image_group_assistant_dialog import ImageGroupAssistantDialog, ImageGroupReferenceDialog
 from .image_preview_dialog import ImagePreviewDialog
 from .star_pair_assistant_dialog import StarPairAssistantDialog
@@ -223,6 +185,13 @@ class MainWindow(
         self.preferences_dialog.raise_()
         self.preferences_dialog.activateWindow()
 
+    def _show_about_dialog(self) -> None:
+        """显示单实例非模态关于窗口，并将其提到前台。"""
+
+        self.about_dialog.show()
+        self.about_dialog.raise_()
+        self.about_dialog.activateWindow()
+
     def _show_star_pair_assistant(self) -> None:
         """显示单实例非模态星点匹配助手，并将已有窗口提到前台。"""
 
@@ -264,6 +233,8 @@ class MainWindow(
         self.preferences_page.preferences_saved.connect(self._notify_preferences_saved)
         self.preferences_launcher = PreferencesLauncher(self.ui.tabWidgetMain)
         self.preferences_launcher.clicked.connect(self._show_preferences_dialog)
+        self.about_dialog = AboutDialog(self)
+        self.preferences_launcher.about_clicked.connect(self._show_about_dialog)
         self.ui.tabWidgetMain.setCornerWidget(self.preferences_launcher, Qt.TopRightCorner)
         self.preferences_shortcut = QShortcut(QKeySequence(QKeySequence.Preferences), self)
         self.preferences_shortcut.activated.connect(self._show_preferences_dialog)
@@ -603,6 +574,7 @@ class MainWindow(
         ViewControlsMixin.closeEvent(self, event)
         if event.isAccepted():
             self.preferences_dialog.close()
+            self.about_dialog.close()
             self.star_pair_assistant.close()
             self.image_group_assistant.close()
             self.image_group_reference_dialog.close()

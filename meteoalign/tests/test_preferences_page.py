@@ -18,6 +18,7 @@ from meteoalign.application.preferences_page import (
     EDITABLE_PREFERENCE_KEYS,
     PreferencesPage,
 )
+from meteoalign.application.about_dialog import AboutDialog
 from meteoalign.application.preferences_dialog import PreferencesDialog, PreferencesLauncher
 from meteoalign.application.main_window import MainWindow
 from meteoalign.config import StarMapUiConfig
@@ -206,7 +207,7 @@ def test_disabling_exif_time_sync_does_not_read_image_capture_time(monkeypatch) 
     assert host._apply_single_image_exif_observation_time("image.jpg") == ""
 
 
-def test_preferences_dialog_is_non_modal_and_launcher_uses_text_button(tmp_path) -> None:  # type: ignore[no-untyped-def]
+def test_preferences_dialog_is_non_modal_and_launcher_uses_text_buttons(tmp_path) -> None:  # type: ignore[no-untyped-def]
     """软件选项应使用单独非模态弹窗和跨平台稳定的中文文字入口。"""
 
     app = QApplication.instance() or QApplication([])
@@ -223,6 +224,13 @@ def test_preferences_dialog_is_non_modal_and_launcher_uses_text_button(tmp_path)
     assert dialog.minimumWidth() == 760
     assert launcher.ui.pushButtonOpenPreferences.text() == "选项"
     assert launcher.ui.pushButtonOpenPreferences.accessibleName() == "打开软件选项"
+    assert launcher.ui.pushButtonOpenAbout.text() == "关于"
+    assert launcher.ui.pushButtonOpenAbout.accessibleName() == "打开关于窗口"
+    assert launcher.ui.horizontalLayoutPreferencesLauncher.itemAt(1).widget() is launcher.ui.pushButtonOpenAbout
+    about_clicks: list[bool] = []
+    launcher.about_clicked.connect(lambda: about_clicks.append(True))
+    launcher.ui.pushButtonOpenAbout.click()
+    assert about_clicks == [True]
 
     dialog.show()
     app.processEvents()
@@ -231,6 +239,30 @@ def test_preferences_dialog_is_non_modal_and_launcher_uses_text_button(tmp_path)
     app.processEvents()
     assert not dialog.isVisible()
     launcher.close()
+
+
+def test_about_dialog_displays_qrcodes_and_project_links() -> None:
+    """关于窗口应展示两张二维码，并提供可点击的项目链接。"""
+
+    app = QApplication.instance() or QApplication([])
+    dialog = AboutDialog()
+
+    assert not dialog.isModal()
+    assert dialog.windowTitle() == "关于 HGMeteoTool"
+    assert dialog.ui.labelOfficialAccountQrCode.pixmap() is not None
+    assert not dialog.ui.labelOfficialAccountQrCode.pixmap().isNull()
+    assert dialog.ui.labelAlipayQrCode.pixmap() is not None
+    assert not dialog.ui.labelAlipayQrCode.pixmap().isNull()
+    assert "https://github.com/HG731GZ/HGMeteoTool" in dialog.ui.labelProjectGithubLink.text()
+    assert dialog.ui.labelProjectGithubLink.openExternalLinks()
+    assert "https://github.com/LilacMeteorObservatory/MetDetPy" in dialog.ui.labelDetectionEngineGithubLink.text()
+    assert dialog.ui.labelDetectionEngineGithubLink.openExternalLinks()
+
+    dialog.show()
+    app.processEvents()
+    dialog.ui.pushButtonCloseAbout.click()
+    app.processEvents()
+    assert not dialog.isVisible()
 
 
 def test_default_only_preference_keys_cover_all_default_groups() -> None:

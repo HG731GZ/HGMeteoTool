@@ -81,6 +81,28 @@ def runtime_icon_path() -> Path:
     return frozen_app_sibling_dir() / "icon256.png"
 
 
+def runtime_qrcode_dir() -> Path:
+    """定位二维码目录，兼容源码运行和打包后的应用资源。"""
+
+    if not is_frozen_app():
+        return source_project_root() / "qrcode"
+
+    external_qrcode = frozen_app_sibling_dir() / "qrcode"
+    if external_qrcode.exists():
+        return external_qrcode
+    for root in frozen_resource_roots():
+        bundled_qrcode = root / "qrcode"
+        if bundled_qrcode.exists():
+            return bundled_qrcode
+    return external_qrcode
+
+
+def runtime_qrcode_path(filename: str) -> Path:
+    """返回关于窗口所用二维码的运行时路径。"""
+
+    return runtime_qrcode_dir() / filename
+
+
 def _unique_paths(paths: list[Path]) -> tuple[Path, ...]:
     unique: list[Path] = []
     for path in paths:

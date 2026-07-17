@@ -14,7 +14,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 class Ui_PreferencesLauncher(object):
     def setupUi(self, PreferencesLauncher):
         PreferencesLauncher.setObjectName("PreferencesLauncher")
-        PreferencesLauncher.resize(72, 30)
+        PreferencesLauncher.resize(134, 30)
         self.horizontalLayoutPreferencesLauncher = QtWidgets.QHBoxLayout(PreferencesLauncher)
         self.horizontalLayoutPreferencesLauncher.setContentsMargins(4, 0, 4, 0)
         self.horizontalLayoutPreferencesLauncher.setObjectName("horizontalLayoutPreferencesLauncher")
@@ -22,6 +22,10 @@ class Ui_PreferencesLauncher(object):
         self.pushButtonOpenPreferences.setMinimumSize(QtCore.QSize(56, 0))
         self.pushButtonOpenPreferences.setObjectName("pushButtonOpenPreferences")
         self.horizontalLayoutPreferencesLauncher.addWidget(self.pushButtonOpenPreferences)
+        self.pushButtonOpenAbout = QtWidgets.QPushButton(PreferencesLauncher)
+        self.pushButtonOpenAbout.setMinimumSize(QtCore.QSize(56, 0))
+        self.pushButtonOpenAbout.setObjectName("pushButtonOpenAbout")
+        self.horizontalLayoutPreferencesLauncher.addWidget(self.pushButtonOpenAbout)
 
         self.retranslateUi(PreferencesLauncher)
         QtCore.QMetaObject.connectSlotsByName(PreferencesLauncher)
@@ -31,3 +35,6 @@ class Ui_PreferencesLauncher(object):
         self.pushButtonOpenPreferences.setToolTip(_translate("PreferencesLauncher", "打开软件选项（Ctrl+, / ⌘,）"))
         self.pushButtonOpenPreferences.setAccessibleName(_translate("PreferencesLauncher", "打开软件选项"))
         self.pushButtonOpenPreferences.setText(_translate("PreferencesLauncher", "选项"))
+        self.pushButtonOpenAbout.setToolTip(_translate("PreferencesLauncher", "查看软件介绍、二维码和项目链接"))
+        self.pushButtonOpenAbout.setAccessibleName(_translate("PreferencesLauncher", "打开关于窗口"))
+        self.pushButtonOpenAbout.setText(_translate("PreferencesLauncher", "关于"))
