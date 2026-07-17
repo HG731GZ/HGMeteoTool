@@ -17,7 +17,7 @@
    </size>
   </property>
   <property name="windowTitle">
-   <string>关于 HGMeteoTool</string>
+   <string>关于 HoshinoPanoAssistant</string>
   </property>
   <layout class="QVBoxLayout" name="verticalLayoutAboutDialog">
    <property name="leftMargin">
@@ -42,7 +42,7 @@
       </font>
      </property>
      <property name="text">
-      <string>HGMeteoTool</string>
+      <string>HoshinoPanoAssistant</string>
      </property>
      <property name="alignment">
       <set>Qt::AlignCenter</set>

@@ -248,7 +248,8 @@ def test_about_dialog_displays_qrcodes_and_project_links() -> None:
     dialog = AboutDialog()
 
     assert not dialog.isModal()
-    assert dialog.windowTitle() == "关于 HGMeteoTool"
+    assert dialog.windowTitle() == "关于 HoshinoPanoAssistant"
+    assert dialog.ui.labelApplicationName.text() == "HoshinoPanoAssistant"
     assert dialog.ui.labelOfficialAccountQrCode.pixmap() is not None
     assert not dialog.ui.labelOfficialAccountQrCode.pixmap().isNull()
     assert dialog.ui.labelAlipayQrCode.pixmap() is not None

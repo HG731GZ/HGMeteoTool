@@ -110,8 +110,8 @@ class Ui_AboutDialog(object):
 
     def retranslateUi(self, AboutDialog):
         _translate = QtCore.QCoreApplication.translate
-        AboutDialog.setWindowTitle(_translate("AboutDialog", "关于 HGMeteoTool"))
-        self.labelApplicationName.setText(_translate("AboutDialog", "HGMeteoTool"))
+        AboutDialog.setWindowTitle(_translate("AboutDialog", "关于 HoshinoPanoAssistant"))
+        self.labelApplicationName.setText(_translate("AboutDialog", "HoshinoPanoAssistant"))
         self.labelApplicationDescription.setText(_translate("AboutDialog", "面向星野摄影，尤其是流星雨摄影的离线桌面工具"))
         self.groupBoxOfficialAccount.setTitle(_translate("AboutDialog", "微信公众号"))
         self.labelOfficialAccountQrCode.setText(_translate("AboutDialog", "正在加载公众号二维码……"))
