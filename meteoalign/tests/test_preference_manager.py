@@ -119,7 +119,8 @@ def test_psf_interaction_preferences_are_loaded_and_bounded(tmp_path: Path) -> N
           "auto_pair_search_rms_multiplier": -1.0,
           "auto_pair_search_base_radius_px": 23,
           "auto_pair_search_max_radius_px": 9999,
-          "double_click_focus_auto_pair_enabled": true
+          "double_click_focus_auto_pair_enabled": true,
+          "star_pair_assistant_always_on_top": true
         }
         """,
         encoding="utf-8",
@@ -132,6 +133,7 @@ def test_psf_interaction_preferences_are_loaded_and_bounded(tmp_path: Path) -> N
     assert config.auto_pair_search_base_radius_px == 23
     assert config.auto_pair_search_max_radius_px == 2000
     assert config.double_click_focus_auto_pair_enabled is True
+    assert config.star_pair_assistant_always_on_top is True
 
 
 def test_adjacent_alignment_hyperparameters_are_loaded_and_bounded(tmp_path: Path) -> None:

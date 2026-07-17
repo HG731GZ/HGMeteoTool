@@ -27,6 +27,19 @@
   </property>
   <layout class="QVBoxLayout" name="verticalLayoutStarPairAssistant">
    <item>
+    <widget class="QCheckBox" name="checkBoxStarPairAssistantAlwaysOnTop">
+     <property name="toolTip">
+      <string>启用后，星点匹配助手将保持在其他普通窗口前方；取消后恢复正常窗口层级。</string>
+     </property>
+     <property name="text">
+      <string>固定前端显示</string>
+     </property>
+     <property name="checked">
+      <bool>false</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
     <widget class="QGroupBox" name="groupBoxStarPairs">
      <property name="title">
       <string>参考星匹配</string>

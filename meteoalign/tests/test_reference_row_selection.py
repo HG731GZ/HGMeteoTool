@@ -67,6 +67,7 @@ class _ReferenceClickHarness(AutoMatchMixin, RenderingMixin):
         self._manual_reference_star_ids = list(star_ids)
         self._excluded_reference_star_ids: list[str] = []
         self._picked_star_id = picked_star_id
+        self.assistant_show_count = 0
         self._set_table_stars(star_ids)
         self.container.show()
         self.reference_click_surface.setFocus(Qt.OtherFocusReason)
@@ -91,6 +92,9 @@ class _ReferenceClickHarness(AutoMatchMixin, RenderingMixin):
 
     def _star_pair_label(self, row: int) -> str:
         return self._star_pair_star_id(row)
+
+    def _show_star_pair_assistant(self) -> None:
+        self.assistant_show_count += 1
 
     def select_table_rows(self, rows: list[int]) -> None:
         selection_model = self.table.selectionModel()
@@ -122,6 +126,7 @@ def test_reference_click_activates_existing_star_row() -> None:
 
         _assert_active_row(harness, "HR3")
         assert harness._manual_reference_star_ids == ["HR1", "HR2", "HR3"]
+        assert harness.assistant_show_count == 1
     finally:
         harness.container.close()
 
@@ -135,5 +140,6 @@ def test_reference_click_activates_new_star_row() -> None:
 
         _assert_active_row(harness, "HR3")
         assert harness._manual_reference_star_ids == ["HR1", "HR2", "HR3"]
+        assert harness.assistant_show_count == 1
     finally:
         harness.container.close()

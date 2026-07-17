@@ -191,6 +191,28 @@ def test_exif_time_sync_option_defaults_on_applies_immediately_and_is_saved(tmp_
     app.processEvents()
 
 
+def test_star_pair_assistant_always_on_top_default_is_saved_without_immediate_apply(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """助手置顶默认值应默认关闭，只在保存后供下次启动读取。"""
+
+    app = QApplication.instance() or QApplication([])
+    preference_path = tmp_path / "preference.json"
+    page = PreferencesPage(preference_path=preference_path)
+    applied = []
+    page.preferences_applied.connect(applied.append)
+
+    checkbox = page.ui.checkBoxStarPairAssistantAlwaysOnTopDefault
+    assert not checkbox.isChecked()
+    assert checkbox.text() == "星点匹配助手默认固定前端显示"
+    checkbox.setChecked(True)
+    assert not applied
+
+    page.save_preferences()
+    assert _read_jsonc(preference_path)["star_pair_assistant_always_on_top"] is True
+    assert page._persisted_config.star_pair_assistant_always_on_top is True
+    page.close()
+    app.processEvents()
+
+
 def test_disabling_exif_time_sync_does_not_read_image_capture_time(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """关闭同步后，单图导入不得读取 EXIF，也不得改写星空模拟时间。"""
 
@@ -271,6 +293,7 @@ def test_default_only_preference_keys_cover_all_default_groups() -> None:
 
     assert DEFAULT_ONLY_PREFERENCE_KEYS == {
         "star_pick_circle_default_diameter_px",
+        "star_pair_assistant_always_on_top",
         "default_latitude_deg",
         "default_longitude_deg",
         "default_elevation_m",

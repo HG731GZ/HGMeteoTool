@@ -11,7 +11,15 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import QEvent, Qt
 from PyQt5.QtGui import QFont
-from PyQt5.QtWidgets import QApplication, QFormLayout, QHeaderView, QMainWindow, QSizePolicy, QTableWidget
+from PyQt5.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
+    QFormLayout,
+    QHeaderView,
+    QMainWindow,
+    QSizePolicy,
+    QTableWidget,
+)
 
 from meteoalign.application.app_sequence_table_preview import SequenceTablePreviewMixin
 from meteoalign.application.app_mosaic import MosaicProjectionMixin, MosaicSourceItem
@@ -229,6 +237,11 @@ def test_star_pair_assistant_owns_moved_controls_and_uses_normal_window_layer() 
     assert dialog.width() == 390
     assert dialog.minimumWidth() == 350
     assert dialog.maximumWidth() == 390
+    assert dialog.ui.verticalLayoutStarPairAssistant.itemAt(0).widget() is dialog.ui.checkBoxStarPairAssistantAlwaysOnTop
+    assert dialog.ui.checkBoxStarPairAssistantAlwaysOnTop.text() == "固定前端显示"
+    assert not dialog.ui.checkBoxStarPairAssistantAlwaysOnTop.isChecked()
+    assert not dialog.always_on_top()
+    assert main_ui.checkBoxStarPairAssistantAlwaysOnTop is dialog.ui.checkBoxStarPairAssistantAlwaysOnTop
     assert main_ui.pushButtonOpenStarPairAssistant.text() == "星点匹配助手"
     assert main_ui.tableWidgetStarPairs is dialog.ui.tableWidgetStarPairs
     assert dialog.ui.pushButtonDeleteStarPairs.text() == "重置匹配列表"
@@ -251,6 +264,25 @@ def test_star_pair_assistant_owns_moved_controls_and_uses_normal_window_layer() 
     table_host._configure_star_pair_table_columns()
     dialog.show()
     app.processEvents()
+    window_handle = dialog.windowHandle()
+    assert window_handle is not None
+    original_show = dialog.show
+    reshow_calls: list[str] = []
+    dialog.show = lambda: reshow_calls.append("show")  # type: ignore[method-assign]
+    dialog.ui.checkBoxStarPairAssistantAlwaysOnTop.setChecked(True)
+    app.processEvents()
+    assert dialog.isVisible()
+    assert dialog.always_on_top()
+    assert dialog.windowHandle() is window_handle
+    assert bool(window_handle.flags() & Qt.WindowStaysOnTopHint)
+    dialog.ui.checkBoxStarPairAssistantAlwaysOnTop.setChecked(False)
+    app.processEvents()
+    assert dialog.isVisible()
+    assert not dialog.always_on_top()
+    assert dialog.windowHandle() is window_handle
+    assert not bool(window_handle.flags() & Qt.WindowStaysOnTopHint)
+    assert reshow_calls == []
+    dialog.show = original_show  # type: ignore[method-assign]
     table = dialog.ui.tableWidgetStarPairs
     assert table.columnWidth(0) < table.columnWidth(4)
     assert table.columnWidth(2) < table.columnWidth(4)
@@ -325,6 +357,28 @@ def test_sequence_table_columns_can_be_resized_by_user() -> None:
     table.setColumnWidth(1, 420)
     sequence_table._refresh_image_sequence_table()
     assert table.columnWidth(1) == 420
+
+
+def test_sequence_processing_buttons_and_table_selection_layout() -> None:
+    """处理按钮应位于蒙版按钮下方，序列表应支持多行右键操作。"""
+
+    app = QApplication.instance() or QApplication([])
+    window = QMainWindow()
+    ui = Ui_MainWindow()
+    ui.setupUi(window)
+
+    controls_layout = ui.verticalLayoutImageSequenceControls
+    assert controls_layout.itemAt(2).layout() is ui.horizontalLayoutImageSequenceMaskButtons
+    assert controls_layout.itemAt(3).layout() is ui.horizontalLayoutImageSequenceProcessButtons
+    assert ui.horizontalLayoutImageSequenceProcessButtons.itemAt(0).widget() is ui.pushButtonProcessImageSequence
+    assert ui.horizontalLayoutImageSequenceProcessButtons.itemAt(1).widget() is ui.pushButtonContinueImageSequence
+    assert ui.pushButtonProcessImageSequence.text() == "开始处理"
+    assert ui.pushButtonContinueImageSequence.text() == "继续处理"
+    assert not ui.pushButtonContinueImageSequence.isEnabled()
+    assert ui.tableWidgetImageSequence.selectionMode() == QAbstractItemView.ExtendedSelection
+    assert ui.tableWidgetImageSequence.contextMenuPolicy() == Qt.CustomContextMenu
+
+    window.close()
 
 
 def test_mosaic_source_file_table_selection_sync() -> None:

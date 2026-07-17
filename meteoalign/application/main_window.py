@@ -220,6 +220,9 @@ class MainWindow(
         self.image_group_assistant = ImageGroupAssistantDialog(self.image_preview_dialog)
         self.image_group_reference_dialog = ImageGroupReferenceDialog(self.image_preview_dialog)
         self.ui_config = load_star_map_ui_config()
+        self.star_pair_assistant.set_always_on_top(
+            self.ui_config.star_pair_assistant_always_on_top
+        )
         self._apply_ui_font_config(self.ui_config)
 
         self.catalog = load_default_catalog(mag_limit=None)
@@ -484,6 +487,8 @@ class MainWindow(
             )
         self.ui.pushButtonImportImageSequence.clicked.connect(self.import_image_sequence)
         self.ui.pushButtonProcessImageSequence.clicked.connect(self.process_image_sequence)
+        if hasattr(self.ui, "pushButtonContinueImageSequence"):
+            self.ui.pushButtonContinueImageSequence.clicked.connect(self.continue_image_sequence)
         if hasattr(self.ui, "pushButtonRefineSequenceFrames"):
             self.ui.pushButtonRefineSequenceFrames.clicked.connect(self.refine_sequence_frames)
         if hasattr(self.ui, "pushButtonImportImageSequenceSkyMask"):
@@ -526,6 +531,9 @@ class MainWindow(
         self.ui.tableWidgetStarPairs.installEventFilter(self)
         self.ui.tableWidgetStarPairs.viewport().installEventFilter(self)
         if hasattr(self.ui, "tableWidgetImageSequence"):
+            self.ui.tableWidgetImageSequence.customContextMenuRequested.connect(
+                self._show_image_sequence_context_menu
+            )
             self.ui.tableWidgetImageSequence.cellClicked.connect(self._handle_image_sequence_cell_clicked)
             self.ui.tableWidgetImageSequence.horizontalHeader().sectionClicked.connect(
                 self._handle_image_sequence_header_clicked

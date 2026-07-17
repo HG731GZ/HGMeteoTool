@@ -178,6 +178,7 @@
           <item row="7" column="0"><widget class="QLabel" name="labelAutoPairSearchMaxRadius"><property name="text"><string>自动匹配半径上限</string></property></widget></item>
           <item row="7" column="1"><widget class="QSpinBox" name="spinBoxAutoPairSearchMaxRadius"><property name="toolTip"><string>参考星列表右键“自动匹配”允许使用的最大搜索半径。</string></property><property name="suffix"><string> px</string></property><property name="minimum"><number>4</number></property><property name="maximum"><number>2000</number></property><property name="value"><number>120</number></property></widget></item>
           <item row="8" column="0" colspan="2"><widget class="QCheckBox" name="checkBoxDoubleClickFocusAutoPairEnabled"><property name="toolTip"><string>启用后，双击尚未匹配的参考星行会先显示自动匹配搜索蓝圈，再静默执行自动匹配；失败原因只显示在状态栏。</string></property><property name="text"><string>双击聚焦联动自动匹配</string></property></widget></item>
+          <item row="9" column="0" colspan="2"><widget class="QCheckBox" name="checkBoxStarPairAssistantAlwaysOnTopDefault"><property name="toolTip"><string>保存后决定下次启动时“星点匹配助手”的固定前端显示状态，不改变当前助手窗口的手动选择。</string></property><property name="text"><string>星点匹配助手默认固定前端显示</string></property></widget></item>
          </layout>
         </widget>
        </item>

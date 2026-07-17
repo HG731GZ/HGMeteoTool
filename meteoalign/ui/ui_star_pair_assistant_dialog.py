@@ -19,6 +19,10 @@ class Ui_StarPairAssistantDialog(object):
         StarPairAssistantDialog.setMaximumSize(QtCore.QSize(390, 16777215))
         self.verticalLayoutStarPairAssistant = QtWidgets.QVBoxLayout(StarPairAssistantDialog)
         self.verticalLayoutStarPairAssistant.setObjectName("verticalLayoutStarPairAssistant")
+        self.checkBoxStarPairAssistantAlwaysOnTop = QtWidgets.QCheckBox(StarPairAssistantDialog)
+        self.checkBoxStarPairAssistantAlwaysOnTop.setChecked(False)
+        self.checkBoxStarPairAssistantAlwaysOnTop.setObjectName("checkBoxStarPairAssistantAlwaysOnTop")
+        self.verticalLayoutStarPairAssistant.addWidget(self.checkBoxStarPairAssistantAlwaysOnTop)
         self.groupBoxStarPairs = QtWidgets.QGroupBox(StarPairAssistantDialog)
         self.groupBoxStarPairs.setObjectName("groupBoxStarPairs")
         self.verticalLayoutStarPairs = QtWidgets.QVBoxLayout(self.groupBoxStarPairs)
@@ -128,6 +132,8 @@ class Ui_StarPairAssistantDialog(object):
     def retranslateUi(self, StarPairAssistantDialog):
         _translate = QtCore.QCoreApplication.translate
         StarPairAssistantDialog.setWindowTitle(_translate("StarPairAssistantDialog", "星点匹配助手"))
+        self.checkBoxStarPairAssistantAlwaysOnTop.setToolTip(_translate("StarPairAssistantDialog", "启用后，星点匹配助手将保持在其他普通窗口前方；取消后恢复正常窗口层级。"))
+        self.checkBoxStarPairAssistantAlwaysOnTop.setText(_translate("StarPairAssistantDialog", "固定前端显示"))
         self.groupBoxStarPairs.setTitle(_translate("StarPairAssistantDialog", "参考星匹配"))
         item = self.tableWidgetStarPairs.horizontalHeaderItem(0)
         item.setText(_translate("StarPairAssistantDialog", "序号"))

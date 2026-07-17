@@ -6,9 +6,9 @@ from collections import OrderedDict
 from pathlib import Path
 
 import numpy as np
-from PyQt5.QtCore import QDateTime, Qt, QTimer
+from PyQt5.QtCore import QDateTime, QPoint, Qt, QTimer
 from PyQt5.QtGui import QBrush, QColor, QImage
-from PyQt5.QtWidgets import QAbstractItemView, QHeaderView, QTableWidgetItem
+from PyQt5.QtWidgets import QAbstractItemView, QHeaderView, QMenu, QMessageBox, QTableWidgetItem
 
 from .app_constants import RESIDUAL_WARNING_MIN_PX
 from .app_utils import _image_with_binary_mask
@@ -39,6 +39,14 @@ from ..sequence_constants import (
 
 class SequenceTablePreviewMixin:
     """图像序列表格、状态和预览显示。"""
+
+    def _close_sequence_auxiliary_windows(self) -> None:
+        """开始序列处理或精修前关闭已打开的星点匹配助手和图像预览。"""
+
+        for attribute_name in ("star_pair_assistant", "image_preview_dialog"):
+            dialog = getattr(self, attribute_name, None)
+            if dialog is not None and dialog.isVisible():
+                dialog.close()
 
     def _reset_image_sequence_status(self) -> None:
         self._image_sequence_items = []
@@ -95,25 +103,70 @@ class SequenceTablePreviewMixin:
     def _sequence_mode_active(self) -> bool:
         return bool(getattr(self, "_image_sequence_items", []))
 
-    def _sequence_can_process(self) -> bool:
+    def _sequence_list_can_change(self) -> bool:
+        """序列列表只允许在各类导入、处理和精修任务空闲时修改。"""
+
         return (
-            bool(getattr(self, "_image_sequence_items", []))
+            self._sequence_mode_active()
             and not bool(getattr(self, "_sequence_processing_active", False))
+            and not bool(getattr(self, "_sequence_refinement_active", False))
             and getattr(self, "_image_import_thread", None) is None
             and getattr(self, "_sequence_import_thread", None) is None
             and getattr(self, "_json_import_thread", None) is None
+            and getattr(self, "_mask_import_thread", None) is None
+        )
+
+    def _sequence_can_process(self) -> bool:
+        return (
+            self._sequence_list_can_change()
+            and len(getattr(self, "_image_sequence_items", [])) >= 2
+        )
+
+    def _sequence_item_has_outputs(self, item: ImageSequenceItem) -> bool:
+        """匹配 JSON 与模型 JSON 同时存在时，才把对应帧视为已处理。"""
+
+        return (
+            self._sequence_starpair_json_path(item.path).is_file()
+            and self._sequence_model_json_path(item.path).is_file()
+        )
+
+    def _sequence_processed_items(self) -> list[ImageSequenceItem]:
+        return [
+            item
+            for item in getattr(self, "_image_sequence_items", [])
+            if self._sequence_item_has_outputs(item)
+        ]
+
+    def _sequence_first_unprocessed_index(self) -> int | None:
+        """返回首个尚未完成的批处理帧；首帧是用户基准，不属于批处理范围。"""
+
+        items = list(getattr(self, "_image_sequence_items", []))
+        for index, item in enumerate(items[1:], start=1):
+            if not self._sequence_item_has_outputs(item):
+                return index
+        return None
+
+    def _sequence_can_continue(self) -> bool:
+        items = list(getattr(self, "_image_sequence_items", []))
+        return (
+            self._sequence_can_process()
+            and bool(items)
+            and self._sequence_item_has_outputs(items[0])
+            and self._sequence_first_unprocessed_index() is not None
         )
 
     def _update_image_sequence_controls(self) -> None:
         if hasattr(self.ui, "pushButtonProcessImageSequence"):
             self.ui.pushButtonProcessImageSequence.setEnabled(self._sequence_can_process())
+        if hasattr(self.ui, "pushButtonContinueImageSequence"):
+            self.ui.pushButtonContinueImageSequence.setEnabled(self._sequence_can_continue())
         self._update_image_sequence_mask_controls()
         self._update_sequence_refinement_controls()
         if hasattr(self, "_update_image_group_controls"):
             self._update_image_group_controls()
 
     def _update_sequence_refinement_controls(self) -> None:
-        """仅在整个序列已有成对输出时开放单帧结果修正。"""
+        """至少两帧已有成对输出时开放单帧结果修正。"""
 
         if not hasattr(self.ui, "comboBoxSequenceRefinementMode"):
             return
@@ -203,7 +256,109 @@ class SequenceTablePreviewMixin:
             sequence_index = int(index_item.data(IMAGE_SEQUENCE_INDEX_ROLE))
         except (TypeError, ValueError):
             return
-        self._set_image_sequence_preview_index(sequence_index)
+        self._set_image_sequence_preview_index(sequence_index, sync_table_selection=False)
+
+    def _selected_image_sequence_indices(self) -> list[int]:
+        if not hasattr(self.ui, "tableWidgetImageSequence"):
+            return []
+        table = self.ui.tableWidgetImageSequence
+        indices: set[int] = set()
+        for model_index in table.selectionModel().selectedRows(IMAGE_SEQUENCE_INDEX_COLUMN):
+            item = table.item(model_index.row(), IMAGE_SEQUENCE_INDEX_COLUMN)
+            if item is None:
+                continue
+            try:
+                indices.add(int(item.data(IMAGE_SEQUENCE_INDEX_ROLE)))
+            except (TypeError, ValueError):
+                continue
+        return sorted(indices)
+
+    def _show_image_sequence_context_menu(self, position: QPoint) -> None:
+        """显示序列表右键菜单，并让未选中的右键行成为唯一目标。"""
+
+        if not hasattr(self.ui, "tableWidgetImageSequence"):
+            return
+        table = self.ui.tableWidgetImageSequence
+        clicked_item = table.itemAt(position)
+        if clicked_item is None:
+            return
+        clicked_row = clicked_item.row()
+        selected_rows = {index.row() for index in table.selectionModel().selectedRows()}
+        if clicked_row not in selected_rows:
+            table.clearSelection()
+            table.selectRow(clicked_row)
+
+        menu = QMenu(table)
+        remove_action = menu.addAction("从列表中移除")
+        remove_action.setEnabled(self._sequence_list_can_change())
+        chosen_action = menu.exec_(table.viewport().mapToGlobal(position))
+        if chosen_action is remove_action:
+            self.remove_selected_image_sequence_rows()
+
+    def remove_selected_image_sequence_rows(self) -> None:
+        """从当前序列移除选中行，不删除图像文件和已有 JSON。"""
+
+        if not self._sequence_list_can_change():
+            QMessageBox.information(self, "暂时无法移除", "请等待当前导入、处理或精修任务完成。")
+            return
+        indices = self._selected_image_sequence_indices()
+        if not indices:
+            return
+        self._remove_image_sequence_indices(indices)
+
+    def _remove_image_sequence_indices(self, indices: list[int]) -> None:
+        """按原始序列索引移除条目，并在首帧变化时重载星点匹配基准。"""
+
+        items = list(getattr(self, "_image_sequence_items", []))
+        removed_indices = {index for index in indices if 0 <= index < len(items)}
+        if not removed_indices:
+            return
+        old_first_path = items[0].path if items else None
+        old_current_index = int(getattr(self, "_image_sequence_current_index", -1))
+        old_current_item = items[old_current_index] if 0 <= old_current_index < len(items) else None
+        remaining = [item for index, item in enumerate(items) if index not in removed_indices]
+
+        if not remaining:
+            self._reset_image_sequence_status()
+            self.ui.statusbar.showMessage(f"已从序列列表移除 {len(removed_indices)} 张图像，当前序列为空。")
+            return
+
+        self._image_sequence_items = remaining
+        self._clear_image_sequence_preview_cache()
+        if old_current_item in remaining:
+            new_current_index = remaining.index(old_current_item)
+        else:
+            new_current_index = min(
+                sum(1 for index in range(max(old_current_index, 0)) if index not in removed_indices),
+                len(remaining) - 1,
+            )
+        self._image_sequence_current_index = new_current_index
+        self._update_imported_sequence_status()
+        self._refresh_image_sequence_table()
+        self._set_image_sequence_preview_index(new_current_index)
+
+        first_changed = old_first_path is not None and remaining[0].path != old_first_path
+        if first_changed:
+            self._reload_first_sequence_item_after_removal()
+        self._update_image_sequence_controls()
+        detail = "，已重新载入新的第一帧到星点匹配页" if first_changed else ""
+        self.ui.statusbar.showMessage(f"已从序列列表移除 {len(removed_indices)} 张图像{detail}。")
+
+    def _reload_first_sequence_item_after_removal(self) -> None:
+        """第一帧变化后同步星点匹配页；优先载入新首帧已有匹配 JSON。"""
+
+        first_item = self._current_sequence_first_item()
+        if self._sequence_starpair_json_path(first_item.path).is_file():
+            self._load_first_sequence_session_for_reference_page(raise_on_error=False)
+            return
+        current_tab = self.ui.tabWidgetMain.currentWidget()
+        try:
+            self._load_first_sequence_image_without_tab_switch(first_item)
+        except Exception as exc:  # noqa: BLE001 - 列表已完成移除，首帧载入失败单独反馈。
+            QMessageBox.warning(self, "新首帧载入失败", f"无法载入新的序列第一帧：\n{first_item.path}\n\n{exc}")
+            return
+        if current_tab is not None:
+            self.ui.tabWidgetMain.setCurrentWidget(current_tab)
 
     def _format_sequence_time(self, item: ImageSequenceItem) -> str:
         local_dt = sequence_item_local_datetime(item, self.ui.doubleSpinBoxUtcOffset.value())
@@ -436,7 +591,7 @@ class SequenceTablePreviewMixin:
             lines.append(f"原始尺寸：{preview.original_width} x {preview.original_height} px")
         return "  |  ".join(lines)
 
-    def _set_image_sequence_preview_index(self, index: int) -> None:
+    def _set_image_sequence_preview_index(self, index: int, *, sync_table_selection: bool = True) -> None:
         items = getattr(self, "_image_sequence_items", [])
         if not items:
             self._image_sequence_current_index = -1
@@ -444,7 +599,8 @@ class SequenceTablePreviewMixin:
             return
         self._image_sequence_current_index = max(0, min(int(index), len(items) - 1))
         self._update_image_sequence_preview()
-        self._select_image_sequence_table_row()
+        if sync_table_selection:
+            self._select_image_sequence_table_row()
 
     def show_previous_image_sequence_frame(self) -> None:
         self._set_image_sequence_preview_index(int(getattr(self, "_image_sequence_current_index", 0)) - 1)

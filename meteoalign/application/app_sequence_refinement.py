@@ -36,10 +36,11 @@ class SequenceRefinementMixin:
     """用序列输出的匹配星对每帧模型进行可选后处理。"""
 
     def _sequence_refinement_ready(self) -> bool:
-        """仅当序列每张图都具有匹配和模型输出时允许精修。"""
+        """至少两张图具有完整匹配和模型输出时允许精修。"""
 
-        items = list(getattr(self, "_image_sequence_items", []))
-        if not items or bool(getattr(self, "_sequence_processing_active", False)):
+        if len(self._sequence_processed_items()) < 2:
+            return False
+        if bool(getattr(self, "_sequence_processing_active", False)):
             return False
         if bool(getattr(self, "_sequence_refinement_active", False)):
             return False
@@ -49,11 +50,7 @@ class SequenceRefinementMixin:
             return False
         if getattr(self, "_json_import_thread", None) is not None:
             return False
-        return all(
-            self._sequence_starpair_json_path(item.path).is_file()
-            and self._sequence_model_json_path(item.path).is_file()
-            for item in items
-        )
+        return True
 
     def _sequence_refinement_mode(self) -> str:
         """返回下拉列表当前选中的精修方式。"""
@@ -267,22 +264,25 @@ class SequenceRefinementMixin:
         return float(refined.rms_px)
 
     def refine_sequence_frames(self) -> None:
-        """对序列内全部帧执行所选的单帧结果修正。"""
+        """仅对序列内已有完整输出的帧执行所选修正。"""
 
+        self._close_sequence_auxiliary_windows()
         if not self._sequence_refinement_ready():
             QMessageBox.information(
                 self,
                 "单帧结果修正尚不可用",
-                "请先完成整个图像序列解析，确保每张图像均已有 starpairs.json 与 model.json。",
+                "请先完成至少两张图像的解析，确保它们均已有 starpairs.json 与 model.json。",
             )
             return
         mode = self._sequence_refinement_mode()
         mode_name = "优化取景角度" if mode == SEQUENCE_REFINEMENT_MODE_POSE else "单帧重新拟合"
-        item_count = len(self._image_sequence_items)
+        refinement_items = self._sequence_processed_items()
+        item_count = len(refinement_items)
         reply = QMessageBox.question(
             self,
             "确认单帧结果修正",
-            f"将按“{mode_name}”依次修正 {item_count} 张图像的 model.json，并保留 δt RMS 基准。是否继续？",
+            f"将按“{mode_name}”依次修正 {item_count} 张已处理图像的 model.json，"
+            "未处理图像会跳过，并保留 δt RMS 基准。是否继续？",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.Yes,
         )
@@ -302,7 +302,7 @@ class SequenceRefinementMixin:
         successes = 0
         failures: list[str] = []
         try:
-            for index, item in enumerate(self._image_sequence_items, start=1):
+            for index, item in enumerate(refinement_items, start=1):
                 if progress.wasCanceled():
                     failures.append("用户取消了后续精修。")
                     break

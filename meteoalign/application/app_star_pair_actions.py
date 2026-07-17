@@ -187,7 +187,11 @@ class StarPairActionsMixin:
 
     def _enter_star_pick_mode(self, row: int) -> None:
         if self.current_image_preview is None:
-            QMessageBox.information(self, "尚未导入图像", "请先导入真实图像，再点选星点位置。")
+            self._show_matching_failure_dialog(
+                "尚未导入图像",
+                "请先导入真实图像，再点选星点位置。",
+                warning=False,
+            )
             return
         if row < 0 or row >= self.ui.tableWidgetStarPairs.rowCount():
             return

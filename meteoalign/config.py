@@ -34,6 +34,7 @@ class StarMapUiConfig:
     auto_pair_search_base_radius_px: int = 6
     auto_pair_search_max_radius_px: int = 120
     double_click_focus_auto_pair_enabled: bool = False
+    star_pair_assistant_always_on_top: bool = False
     default_latitude_deg: float = 40.0
     default_longitude_deg: float = 116.0
     default_elevation_m: float = 50.0
@@ -286,6 +287,11 @@ def load_star_map_ui_config(path: Path | None = None) -> StarMapUiConfig:
         double_click_focus_auto_pair_enabled=_read_bool(
             raw_config,
             "double_click_focus_auto_pair_enabled",
+            False,
+        ),
+        star_pair_assistant_always_on_top=_read_bool(
+            raw_config,
+            "star_pair_assistant_always_on_top",
             False,
         ),
         default_latitude_deg=_read_float(raw_config, "default_latitude_deg", 40.0, -90.0, 90.0),

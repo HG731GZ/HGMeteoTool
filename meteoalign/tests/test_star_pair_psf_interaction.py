@@ -6,13 +6,15 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import QPointF
-from PyQt5.QtGui import QColor
+from PyQt5.QtGui import QColor, QImage
 from PyQt5.QtWidgets import QApplication, QGraphicsEllipseItem, QGraphicsScene, QMessageBox, QWidget
 
 from meteoalign.application.app_auto_match import AutoMatchMixin
 from meteoalign.application.app_constants import STAR_PAIR_SORT_KEY_QUALITY
+from meteoalign.application.app_star_pair_actions import StarPairActionsMixin
 from meteoalign.application.app_star_pair_annotations import StarPairAnnotationsMixin
 from meteoalign.application.app_star_pair_table_groups import StarPairTableGroupsMixin
+from meteoalign.application.star_pair_assistant_dialog import StarPairAssistantDialog
 from meteoalign.config import StarMapUiConfig
 from meteoalign.simulator import ReferenceStar
 from meteoalign.star_fitting import FittedStarPosition
@@ -216,6 +218,113 @@ def test_linked_auto_pair_failure_keeps_blue_circle_and_does_not_open_dialog(mon
     assert result is False
     assert focused == [(0, 120.0, 80.0, 17)]
     assert status_messages[-1] == "自动匹配失败：搜索范围内没有可靠星点"
+
+
+def test_right_click_auto_pair_failure_reactivates_star_pair_assistant(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """右键自动匹配失败弹窗关闭后，应重新激活发起操作的星点匹配助手。"""
+
+    app = _qapp()
+    assistant = StarPairAssistantDialog()
+    assistant.show()
+    app.processEvents()
+    events: list[str] = []
+    message_parents: list[object] = []
+    status_messages: list[str] = []
+    monkeypatch.setattr(assistant, "raise_", lambda: events.append("raise"))
+    monkeypatch.setattr(assistant, "activateWindow", lambda: events.append("activate"))
+
+    host = SimpleNamespace(
+        ui=SimpleNamespace(statusbar=SimpleNamespace(showMessage=status_messages.append)),
+        star_pair_assistant=assistant,
+    )
+    host._star_pair_assistant_message_parent = lambda: (
+        StarPairActionsMixin._star_pair_assistant_message_parent(host)
+    )
+    host._reactivate_star_pair_assistant = lambda: (
+        StarPairActionsMixin._reactivate_star_pair_assistant(host)
+    )
+    host._show_matching_failure_dialog = lambda title, message, warning: (
+        AutoMatchMixin._show_matching_failure_dialog(
+            host,
+            title,
+            message,
+            warning=warning,
+        )
+    )
+
+    def show_warning(parent, title, message):  # type: ignore[no-untyped-def]
+        message_parents.append(parent)
+        events.append("dialog")
+        assert title == "自动匹配失败"
+        assert message == "搜索范围内没有可靠星点"
+
+    monkeypatch.setattr(QMessageBox, "warning", show_warning)
+
+    result = AutoMatchMixin._report_auto_pair_failure(
+        host,
+        "搜索范围内没有可靠星点",
+        silent_failure=False,
+        warning=True,
+    )
+
+    assert result is False
+    assert message_parents == [assistant]
+    assert events == ["dialog", "raise", "activate"]
+    assert status_messages[-1] == "自动匹配失败：搜索范围内没有可靠星点"
+    assistant.close()
+
+
+def test_manual_pair_failure_reactivates_star_pair_assistant(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """手动匹配的 PSF 拟合失败弹窗关闭后，也应重新激活星点匹配助手。"""
+
+    app = _qapp()
+    assistant = StarPairAssistantDialog()
+    assistant.show()
+    app.processEvents()
+    events: list[str] = []
+    message_parents: list[object] = []
+    status_messages: list[str] = []
+    monkeypatch.setattr(assistant, "raise_", lambda: events.append("raise"))
+    monkeypatch.setattr(assistant, "activateWindow", lambda: events.append("activate"))
+
+    host = AutoMatchMixin()
+    host.star_pair_assistant = assistant
+    host._star_pair_assistant_message_parent = lambda: (
+        StarPairActionsMixin._star_pair_assistant_message_parent(host)
+    )
+    host._reactivate_star_pair_assistant = lambda: (
+        StarPairActionsMixin._reactivate_star_pair_assistant(host)
+    )
+    host._active_star_pair_row = 0
+    host.current_image_preview = SimpleNamespace(
+        image=QImage(100, 80, QImage.Format_RGB888)
+    )
+    host.ui = SimpleNamespace(
+        realImageView=SimpleNamespace(mapToScene=lambda _position: QPointF(30.0, 20.0)),
+        statusbar=SimpleNamespace(showMessage=status_messages.append),
+    )
+    host._sky_mask_allows_point = lambda _x, _y: True
+    host._star_pick_search_radius_px = lambda _position: 12
+    host._star_pick_psf_radius_px = lambda _position: 18
+
+    def fail_fit(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise ValueError("搜索范围内没有可靠星点")
+
+    def show_warning(parent, title, message):  # type: ignore[no-untyped-def]
+        message_parents.append(parent)
+        events.append("dialog")
+        assert title == "PSF 拟合失败"
+        assert message == "搜索范围内没有可靠星点"
+
+    monkeypatch.setattr("meteoalign.application.app_auto_match.fit_star_position", fail_fit)
+    monkeypatch.setattr(QMessageBox, "warning", show_warning)
+
+    host._handle_real_image_pick_click(object())
+
+    assert message_parents == [assistant]
+    assert events == ["dialog", "raise", "activate"]
+    assert status_messages[-1] == "PSF 拟合失败: 搜索范围内没有可靠星点"
+    assistant.close()
 
 
 def test_psf_quality_sort_keeps_missing_values_last_in_both_directions() -> None:

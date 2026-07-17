@@ -41,6 +41,7 @@ EDITABLE_PREFERENCE_KEYS = frozenset(
         "auto_pair_search_base_radius_px",
         "auto_pair_search_max_radius_px",
         "double_click_focus_auto_pair_enabled",
+        "star_pair_assistant_always_on_top",
         "default_latitude_deg",
         "default_longitude_deg",
         "default_elevation_m",
@@ -77,6 +78,7 @@ EDITABLE_PREFERENCE_KEYS = frozenset(
 DEFAULT_ONLY_PREFERENCE_KEYS = frozenset(
     {
         "star_pick_circle_default_diameter_px",
+        "star_pair_assistant_always_on_top",
         "default_latitude_deg",
         "default_longitude_deg",
         "default_elevation_m",
@@ -167,6 +169,9 @@ class PreferencesPage(QWidget):
             ui.spinBoxAutoPairSearchMaxRadius.setValue(config.auto_pair_search_max_radius_px)
             ui.checkBoxDoubleClickFocusAutoPairEnabled.setChecked(
                 config.double_click_focus_auto_pair_enabled
+            )
+            ui.checkBoxStarPairAssistantAlwaysOnTopDefault.setChecked(
+                config.star_pair_assistant_always_on_top
             )
             ui.doubleSpinBoxDefaultLatitude.setValue(config.default_latitude_deg)
             ui.doubleSpinBoxDefaultLongitude.setValue(config.default_longitude_deg)
@@ -404,6 +409,9 @@ class PreferencesPage(QWidget):
             "auto_pair_search_max_radius_px": ui.spinBoxAutoPairSearchMaxRadius.value(),
             "double_click_focus_auto_pair_enabled": (
                 ui.checkBoxDoubleClickFocusAutoPairEnabled.isChecked()
+            ),
+            "star_pair_assistant_always_on_top": (
+                ui.checkBoxStarPairAssistantAlwaysOnTopDefault.isChecked()
             ),
             "default_latitude_deg": ui.doubleSpinBoxDefaultLatitude.value(),
             "default_longitude_deg": ui.doubleSpinBoxDefaultLongitude.value(),
