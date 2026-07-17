@@ -25,6 +25,7 @@ _COMMON_SETTING_CONTROLS = {
 }
 
 _STAR_SETTING_CONTROLS = {
+    "adjacent_star_extract_pixstack": "spinBoxAdjacentStarExtractPixstack",
     "adjacent_star_background_bw_px": "spinBoxAdjacentStarBackgroundBwPx",
     "adjacent_star_background_bh_px": "spinBoxAdjacentStarBackgroundBhPx",
     "adjacent_star_background_fw_px": "spinBoxAdjacentStarBackgroundFwPx",

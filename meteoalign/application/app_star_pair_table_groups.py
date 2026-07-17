@@ -674,7 +674,7 @@ class StarPairTableGroupsMixin:
             self.ui_config.double_click_focus_auto_pair_enabled
             and not self._star_pair_position_text(row)
         ):
-            self._auto_pair_star(row, silent_failure=True)
+            self._auto_pair_star(row)
             return
         self._focus_star_pair_theoretical_position(row)
 

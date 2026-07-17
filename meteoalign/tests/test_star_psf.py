@@ -194,7 +194,7 @@ def test_catalog_assignment_is_globally_one_to_one() -> None:
 
 
 def test_manual_pick_rejects_masked_landscape_before_psf(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """手动点在蒙版外时不得进入底层 PSF 检测。"""
+    """手动点在蒙版外时不得进入底层 PSF 检测，也不得显示弹窗。"""
 
     class _View:
         def mapToScene(self, _position) -> QPointF:  # type: ignore[no-untyped-def]
@@ -211,8 +211,16 @@ def test_manual_pick_rejects_masked_landscape_before_psf(monkeypatch) -> None:  
     harness.current_image_preview = type("Preview", (), {"image": QImage(20, 20, QImage.Format_RGB888)})()
     harness.ui = type("Ui", (), {"realImageView": _View(), "statusbar": _StatusBar()})()
     harness._sky_mask_allows_point = lambda _x, _y: False  # type: ignore[attr-defined]
-    warning_messages: list[str] = []
-    monkeypatch.setattr(app_auto_match.QMessageBox, "warning", lambda *_args: warning_messages.append(str(_args[-1])))
+    monkeypatch.setattr(
+        app_auto_match.QMessageBox,
+        "warning",
+        lambda *_args: pytest.fail("手动匹配失败时不应显示警告弹窗"),
+    )
+    monkeypatch.setattr(
+        app_auto_match.QMessageBox,
+        "information",
+        lambda *_args: pytest.fail("手动匹配失败时不应显示信息弹窗"),
+    )
     monkeypatch.setattr(
         app_auto_match,
         "fit_star_position",
@@ -221,5 +229,4 @@ def test_manual_pick_rejects_masked_landscape_before_psf(monkeypatch) -> None:  
 
     harness._handle_real_image_pick_click(object())
 
-    assert "蒙版外" in harness.ui.statusbar.message
-    assert warning_messages
+    assert harness.ui.statusbar.message == "手动匹配失败：点击位置位于天空蒙版外，已拒绝把地景纹理作为星点。"

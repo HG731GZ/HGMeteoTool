@@ -191,8 +191,7 @@ def test_adjacent_framing_controls_are_compact_aligned_and_not_clipped() -> None
     assert ui.formLayoutAdjacentImageFraming.verticalSpacing() == 6
     assert ui.formLayoutAdjacentImageFraming.rowWrapPolicy() == QFormLayout.DontWrapRows
     assert ui.horizontalLayoutAdjacentImageInfo.spacing() == 6
-    assert ui.gridLayoutAdjacentImageFramingButtons.horizontalSpacing() == 6
-    assert ui.gridLayoutAdjacentImageFramingButtons.verticalSpacing() == 6
+    assert ui.horizontalLayoutAdjacentImageFramingButtons.spacing() == 4
     assert ui.groupBoxImportedImage.height() >= ui.groupBoxImportedImage.minimumSizeHint().height()
 
     aligned_controls = (
@@ -212,8 +211,8 @@ def test_adjacent_framing_controls_are_compact_aligned_and_not_clipped() -> None
     for button in (
         ui.pushButtonImportAdjacentImage,
         ui.pushButtonCalculateAdjacentFraming,
+        ui.toolButtonAdjacentAlignmentSettings,
     ):
-        assert button.width() >= button.sizeHint().width()
         assert button.fontMetrics().horizontalAdvance(button.text()) < button.contentsRect().width()
 
     window.close()

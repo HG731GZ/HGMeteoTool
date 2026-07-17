@@ -72,6 +72,7 @@ class StarMapUiConfig:
 class AdjacentStarAlignmentConfig:
     """参考图像星点对齐模式的检测、初配准与精配准参数。"""
 
+    extract_pixstack: int = 600000
     background_bw_px: int = 128
     background_bh_px: int = 128
     background_fw_px: int = 3
@@ -441,6 +442,13 @@ def load_adjacent_alignment_config(path: Path | None = None) -> AdjacentAlignmen
     )
 
     stars = AdjacentStarAlignmentConfig(
+        extract_pixstack=_read_int(
+            raw_config,
+            "adjacent_star_extract_pixstack",
+            star_defaults.extract_pixstack,
+            10000,
+            100000000,
+        ),
         background_bw_px=_read_int(raw_config, "adjacent_star_background_bw_px", star_defaults.background_bw_px, 16, 2048),
         background_bh_px=_read_int(raw_config, "adjacent_star_background_bh_px", star_defaults.background_bh_px, 16, 2048),
         background_fw_px=_read_int(raw_config, "adjacent_star_background_fw_px", star_defaults.background_fw_px, 1, 63),

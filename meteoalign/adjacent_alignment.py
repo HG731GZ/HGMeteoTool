@@ -37,6 +37,25 @@ ADJACENT_ALIGNMENT_MODES = (
     ADJACENT_ALIGNMENT_MODE_STARS,
     ADJACENT_ALIGNMENT_MODE_LANDSCAPE,
 )
+
+_SEP_PIXSTACK_FULL_MESSAGE = (
+    "SEP 星点提取缓冲区已满，无法继续检测。\n\n"
+    "建议调整超参数：\n"
+    "提高检测阈值（背景 RMS）。\n"
+    "若画面有明显光污染渐变、云层或银河亮区，把背景网格宽高从 128 调到 64 甚至 32。"
+)
+
+
+def localized_adjacent_alignment_error(error: object) -> str:
+    """把已知的第三方配准错误转换为适合界面展示的中文说明。"""
+
+    message = str(error)
+    normalized = message.lower()
+    if "internal pixel buffer full" in normalized or "set_extract_pixstack" in normalized:
+        return _SEP_PIXSTACK_FULL_MESSAGE
+    return message
+
+
 def adjacent_alignment_mode_display_name(mode: str) -> str:
     """返回与界面下拉列表一致的工作模式名称。"""
 
@@ -265,13 +284,20 @@ def _detect_stars(image: np.ndarray, settings: AdjacentStarAlignmentConfig) -> S
         fw=settings.background_fw_px,
         fh=settings.background_fh_px,
     )
-    objects = sep.extract(
-        working - background.back(),
-        settings.detection_sigma * background.globalrms,
-        minarea=settings.detection_min_area_px,
-        deblend_nthresh=settings.deblend_nthresh,
-        deblend_cont=settings.deblend_cont,
-    )
+    sep.set_extract_pixstack(settings.extract_pixstack)
+    try:
+        objects = sep.extract(
+            working - background.back(),
+            settings.detection_sigma * background.globalrms,
+            minarea=settings.detection_min_area_px,
+            deblend_nthresh=settings.deblend_nthresh,
+            deblend_cont=settings.deblend_cont,
+        )
+    except Exception as exc:  # noqa: BLE001 - 需要识别并本地化 SEP 底层缓冲区错误。
+        localized_message = localized_adjacent_alignment_error(exc)
+        if localized_message != str(exc):
+            raise RuntimeError(localized_message) from exc
+        raise
     if len(objects) == 0:
         raise RuntimeError("未检测到可用于配准的星点。")
     height, width = working.shape

@@ -96,27 +96,6 @@ class AutoMatchMixin:
     _focus_star_pair_image_point: object  # method
     _star_pair_position_count: object  # method
 
-    def _show_matching_failure_dialog(
-        self,
-        title: str,
-        message: str,
-        *,
-        warning: bool,
-    ) -> None:
-        """显示匹配失败提示，并在弹窗关闭后恢复星点匹配助手层级。"""
-
-        parent_method = getattr(self, "_star_pair_assistant_message_parent", None)
-        message_parent = parent_method() if callable(parent_method) else self
-        try:
-            if warning:
-                QMessageBox.warning(message_parent, title, message)
-            else:
-                QMessageBox.information(message_parent, title, message)
-        finally:
-            reactivate_method = getattr(self, "_reactivate_star_pair_assistant", None)
-            if callable(reactivate_method):
-                reactivate_method()
-
     def _scene_radius_from_screen_radius(
         self,
         view: QGraphicsView,
@@ -244,9 +223,9 @@ class AutoMatchMixin:
             self.ui.statusbar.showMessage("点击位置不在真实图像范围内，请重新点选。")
             return
         if not self._sky_mask_allows_point(image_x, image_y):
-            message = "点击位置位于天空蒙版外，已拒绝把地景纹理作为星点。"
-            self.ui.statusbar.showMessage(message)
-            self._show_matching_failure_dialog("星点已被蒙版拒绝", message, warning=True)
+            self.ui.statusbar.showMessage(
+                "手动匹配失败：点击位置位于天空蒙版外，已拒绝把地景纹理作为星点。"
+            )
             return
 
         search_radius_px = self._star_pick_search_radius_px(viewport_pos)
@@ -265,13 +244,12 @@ class AutoMatchMixin:
                 ),
             )
         except Exception as exc:  # noqa: BLE001 - 交互式点选需要把拟合失败原因直接反馈给用户。
-            self.ui.statusbar.showMessage(f"PSF 拟合失败: {exc}")
-            self._show_matching_failure_dialog("PSF 拟合失败", str(exc), warning=True)
+            self.ui.statusbar.showMessage(f"手动匹配失败：PSF 拟合失败：{exc}")
             return
         if not self._sky_mask_allows_point(fitted_position.x, fitted_position.y):
-            message = "检测到的 PSF 中心位于天空蒙版外，结果已拒绝。"
-            self.ui.statusbar.showMessage(message)
-            self._show_matching_failure_dialog("PSF 已被蒙版拒绝", message, warning=True)
+            self.ui.statusbar.showMessage(
+                "手动匹配失败：检测到的 PSF 中心位于天空蒙版外，结果已拒绝。"
+            )
             return
 
         row = self._active_star_pair_row
@@ -314,28 +292,15 @@ class AutoMatchMixin:
             max(MIN_PSF_RADIUS_PX, min_dimension // 4),
         )
 
-    def _report_auto_pair_failure(
-        self,
-        message: str,
-        *,
-        silent_failure: bool,
-        dialog_title: str = "自动匹配失败",
-        warning: bool = False,
-    ) -> bool:
-        """统一报告单星自动匹配失败；双击联动模式只写状态栏。"""
+    def _report_auto_pair_failure(self, message: str) -> bool:
+        """在状态栏静默报告单星自动匹配失败。"""
 
         self.ui.statusbar.showMessage(f"自动匹配失败：{message}")
-        if not silent_failure:
-            self._show_matching_failure_dialog(dialog_title, message, warning=warning)
         return False
 
-    def _auto_pair_star(self, row: int, *, silent_failure: bool = False) -> bool:
+    def _auto_pair_star(self, row: int) -> bool:
         if self.current_image_preview is None:
-            return self._report_auto_pair_failure(
-                "请先导入真实图像，再自动匹配星点。",
-                silent_failure=silent_failure,
-                dialog_title="尚未导入图像",
-            )
+            return self._report_auto_pair_failure("请先导入真实图像，再自动匹配星点。")
 
         transform = self._sky_alignment_transform
         if transform is None:
@@ -346,26 +311,18 @@ class AutoMatchMixin:
                 self._sky_alignment_error_message
                 or self._reference_alignment_error_message
                 or f"至少需要 {MIN_PRELIMINARY_ALIGNMENT_PAIRS} 对已配准参考星。",
-                silent_failure=silent_failure,
-                dialog_title="无法自动匹配",
             )
 
         reference_star = self._reference_star_for_row(row)
         if reference_star is None:
-            return self._report_auto_pair_failure(
-                "当前行没有对应的参考星。",
-                silent_failure=silent_failure,
-                dialog_title="无法自动匹配",
-                warning=True,
-            )
+            return self._report_auto_pair_failure("当前行没有对应的参考星。")
 
         predicted_x, predicted_y = transform.transform_radec(reference_star.ra_deg, reference_star.dec_deg)
         image = self.current_image_preview.image
         if not (0.0 <= predicted_x < image.width() and 0.0 <= predicted_y < image.height()):
-            self.ui.statusbar.showMessage(
-                f"{self._star_pair_label(row)} 的预测位置在真实图像外，无法自动匹配。"
+            return self._report_auto_pair_failure(
+                f"{self._star_pair_label(row)} 的预测位置在真实图像外。"
             )
-            return False
 
         search_radius_px = self._auto_pair_search_radius_px(transform)
         self._focus_star_pair_image_point(row, predicted_x, predicted_y, search_radius_px)
@@ -389,11 +346,7 @@ class AutoMatchMixin:
                 ),
             )
         except Exception as exc:  # noqa: BLE001 - 自动匹配要把失败原因反馈给用户。
-            return self._report_auto_pair_failure(
-                str(exc),
-                silent_failure=silent_failure,
-                warning=True,
-            )
+            return self._report_auto_pair_failure(str(exc))
 
         distance_px = ((fitted_position.x - predicted_x) ** 2 + (fitted_position.y - predicted_y) ** 2) ** 0.5
         self._set_star_pair_position(row, fitted_position)

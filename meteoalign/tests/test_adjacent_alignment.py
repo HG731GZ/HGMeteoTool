@@ -9,13 +9,14 @@ import numpy as np
 from meteoalign.adjacent_alignment import (
     ADJACENT_ALIGNMENT_MODE_LANDSCAPE,
     RoughFramingTransform,
+    _detect_stars,
     _star_correspondences,
     calculate_adjacent_rough_framing,
 )
 from meteoalign.alignment.constants import SKY_MATCHING_MODEL_RECTILINEAR
 from meteoalign.application.app_alignment import AlignmentMixin
 from meteoalign.camera_calibration import CameraCalibrationProfile
-from meteoalign.config import AdjacentAlignmentConfig
+from meteoalign.config import AdjacentAlignmentConfig, AdjacentStarAlignmentConfig
 from meteoalign.frame_astrometry import FrameAstrometricModel, FramePose
 
 
@@ -170,6 +171,40 @@ def test_star_correspondences_find_shifted_stars() -> None:
     assert len(pixels_a) >= 6
     assert len(pixels_a) == len(pixels_b)
     assert rms_px < 4.5
+
+
+def test_sep_extract_pixstack_overflow_uses_config_and_reports_chinese(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """SEP 缓冲区溢出时应使用配置上限，并只返回中文调参建议。"""
+
+    configured_values: list[int] = []
+    monkeypatch.setattr(
+        "meteoalign.adjacent_alignment.sep.set_extract_pixstack",
+        configured_values.append,
+    )
+
+    def raise_pixstack_error(*_args, **_kwargs) -> None:  # type: ignore[no-untyped-def]
+        raise Exception(
+            "internal pixel buffer full: The limit of 300000 active object pixels over the detection threshold was reached. "
+            "If you need to increase the limit, use set_extract_pixstack."
+        )
+
+    monkeypatch.setattr("meteoalign.adjacent_alignment.sep.extract", raise_pixstack_error)
+
+    try:
+        _detect_stars(
+            np.zeros((64, 64), dtype=np.uint8),
+            AdjacentStarAlignmentConfig(extract_pixstack=600000),
+        )
+    except RuntimeError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("SEP 缓冲区溢出必须转换为中文错误")
+
+    assert configured_values == [600000]
+    assert "internal pixel buffer full" not in message
+    assert "建议调整超参数" in message
+    assert "提高检测阈值（背景 RMS）" in message
+    assert "把背景网格宽高从 128 调到 64 甚至 32" in message
 
 
 def test_landscape_mode_builds_current_frame_rough_model(tmp_path) -> None:

@@ -7,14 +7,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import QPointF
 from PyQt5.QtGui import QColor, QImage
-from PyQt5.QtWidgets import QApplication, QGraphicsEllipseItem, QGraphicsScene, QMessageBox, QWidget
+from PyQt5.QtWidgets import QApplication, QGraphicsEllipseItem, QGraphicsScene, QWidget
 
 from meteoalign.application.app_auto_match import AutoMatchMixin
 from meteoalign.application.app_constants import STAR_PAIR_SORT_KEY_QUALITY
-from meteoalign.application.app_star_pair_actions import StarPairActionsMixin
 from meteoalign.application.app_star_pair_annotations import StarPairAnnotationsMixin
 from meteoalign.application.app_star_pair_table_groups import StarPairTableGroupsMixin
-from meteoalign.application.star_pair_assistant_dialog import StarPairAssistantDialog
 from meteoalign.config import StarMapUiConfig
 from meteoalign.simulator import ReferenceStar
 from meteoalign.star_fitting import FittedStarPosition
@@ -45,6 +43,12 @@ def _reference_star(star_id: str, index: int) -> ReferenceStar:
         alt_deg=45.0,
         az_deg=90.0,
     )
+
+
+def _fail_matching_dialog(*_args, **_kwargs) -> None:  # type: ignore[no-untyped-def]
+    """匹配失败路径出现弹窗时立即让测试失败。"""
+
+    raise AssertionError("匹配失败时不应显示弹窗")
 
 
 def test_right_click_auto_pair_search_radius_uses_independent_preferences() -> None:
@@ -148,25 +152,25 @@ def test_focus_blue_circle_radius_is_twice_auto_pair_search_radius() -> None:
     host.close()
 
 
-def test_double_click_link_runs_silent_auto_pair_only_for_unmatched_row() -> None:
-    """联动开关开启时，未匹配行双击应把静默标志传给自动匹配。"""
+def test_double_click_link_runs_auto_pair_only_for_unmatched_row() -> None:
+    """联动开关开启时，未匹配行双击应执行自动匹配。"""
 
-    calls: list[tuple[int, bool]] = []
+    calls: list[int] = []
     host = SimpleNamespace(
         ui_config=StarMapUiConfig(double_click_focus_auto_pair_enabled=True),
         _is_star_pair_group_row=lambda _row: False,
         _star_pair_position_text=lambda _row: "",
-        _auto_pair_star=lambda row, silent_failure=False: calls.append((row, silent_failure)),
+        _auto_pair_star=calls.append,
         _focus_star_pair_theoretical_position=lambda _row: None,
     )
 
     StarPairTableGroupsMixin._handle_star_pair_cell_double_clicked(host, 4, 1)
 
-    assert calls == [(4, True)]
+    assert calls == [4]
 
 
-def test_linked_auto_pair_failure_keeps_blue_circle_and_does_not_open_dialog(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """双击联动拟合失败时应保留搜索蓝圈，并且只在状态栏提示。"""
+def test_auto_pair_failure_keeps_blue_circle_and_uses_statusbar(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """自动匹配拟合失败时应保留搜索蓝圈，并且只在状态栏提示。"""
 
     _qapp()
     status_messages: list[str] = []
@@ -210,95 +214,41 @@ def test_linked_auto_pair_failure_keeps_blue_circle_and_does_not_open_dialog(mon
         assert _kwargs["saturated_fit_error_limit"] == 0.88
         raise ValueError("搜索范围内没有可靠星点")
 
-    def fail_dialog(*_args, **_kwargs):  # type: ignore[no-untyped-def]
-        raise AssertionError("静默联动失败时不应显示弹窗")
-
     monkeypatch.setattr("meteoalign.application.app_auto_match.fit_star_position", fail_fit)
-    monkeypatch.setattr(QMessageBox, "warning", fail_dialog)
-    monkeypatch.setattr(QMessageBox, "information", fail_dialog)
 
-    result = AutoMatchMixin._auto_pair_star(host, 0, silent_failure=True)
+    result = AutoMatchMixin._auto_pair_star(host, 0)
 
     assert result is False
     assert focused == [(0, 120.0, 80.0, 17)]
     assert status_messages[-1] == "自动匹配失败：搜索范围内没有可靠星点"
 
 
-def test_right_click_auto_pair_failure_reactivates_star_pair_assistant(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """右键自动匹配失败弹窗关闭后，应重新激活发起操作的星点匹配助手。"""
+def test_auto_pair_failure_reports_status_without_dialog(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """单星自动匹配失败应只写入状态栏。"""
 
-    app = _qapp()
-    assistant = StarPairAssistantDialog()
-    assistant.show()
-    app.processEvents()
-    events: list[str] = []
-    message_parents: list[object] = []
     status_messages: list[str] = []
-    monkeypatch.setattr(assistant, "raise_", lambda: events.append("raise"))
-    monkeypatch.setattr(assistant, "activateWindow", lambda: events.append("activate"))
-
     host = SimpleNamespace(
         ui=SimpleNamespace(statusbar=SimpleNamespace(showMessage=status_messages.append)),
-        star_pair_assistant=assistant,
-    )
-    host._star_pair_assistant_message_parent = lambda: (
-        StarPairActionsMixin._star_pair_assistant_message_parent(host)
-    )
-    host._reactivate_star_pair_assistant = lambda: (
-        StarPairActionsMixin._reactivate_star_pair_assistant(host)
-    )
-    host._show_matching_failure_dialog = lambda title, message, warning: (
-        AutoMatchMixin._show_matching_failure_dialog(
-            host,
-            title,
-            message,
-            warning=warning,
-        )
     )
 
-    def show_warning(parent, title, message):  # type: ignore[no-untyped-def]
-        message_parents.append(parent)
-        events.append("dialog")
-        assert title == "自动匹配失败"
-        assert message == "搜索范围内没有可靠星点"
-
-    monkeypatch.setattr(QMessageBox, "warning", show_warning)
-
+    monkeypatch.setattr("meteoalign.application.app_auto_match.QMessageBox.warning", _fail_matching_dialog)
+    monkeypatch.setattr("meteoalign.application.app_auto_match.QMessageBox.information", _fail_matching_dialog)
     result = AutoMatchMixin._report_auto_pair_failure(
         host,
         "搜索范围内没有可靠星点",
-        silent_failure=False,
-        warning=True,
     )
 
     assert result is False
-    assert message_parents == [assistant]
-    assert events == ["dialog", "raise", "activate"]
     assert status_messages[-1] == "自动匹配失败：搜索范围内没有可靠星点"
-    assistant.close()
 
 
-def test_manual_pair_failure_reactivates_star_pair_assistant(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """手动匹配的 PSF 拟合失败弹窗关闭后，也应重新激活星点匹配助手。"""
+def test_manual_pair_failure_reports_status_without_dialog(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """手动匹配的 PSF 拟合失败应只写入状态栏。"""
 
-    app = _qapp()
-    assistant = StarPairAssistantDialog()
-    assistant.show()
-    app.processEvents()
-    events: list[str] = []
-    message_parents: list[object] = []
+    _qapp()
     status_messages: list[str] = []
-    monkeypatch.setattr(assistant, "raise_", lambda: events.append("raise"))
-    monkeypatch.setattr(assistant, "activateWindow", lambda: events.append("activate"))
 
     host = AutoMatchMixin()
-    host.star_pair_assistant = assistant
-    host._star_pair_assistant_message_parent = lambda: (
-        StarPairActionsMixin._star_pair_assistant_message_parent(host)
-    )
-    host._reactivate_star_pair_assistant = lambda: (
-        StarPairActionsMixin._reactivate_star_pair_assistant(host)
-    )
     host._active_star_pair_row = 0
     host.current_image_preview = SimpleNamespace(
         image=QImage(100, 80, QImage.Format_RGB888)
@@ -320,21 +270,13 @@ def test_manual_pair_failure_reactivates_star_pair_assistant(monkeypatch) -> Non
         assert _kwargs["saturated_fit_error_limit"] == 0.88
         raise ValueError("搜索范围内没有可靠星点")
 
-    def show_warning(parent, title, message):  # type: ignore[no-untyped-def]
-        message_parents.append(parent)
-        events.append("dialog")
-        assert title == "PSF 拟合失败"
-        assert message == "搜索范围内没有可靠星点"
-
     monkeypatch.setattr("meteoalign.application.app_auto_match.fit_star_position", fail_fit)
-    monkeypatch.setattr(QMessageBox, "warning", show_warning)
+    monkeypatch.setattr("meteoalign.application.app_auto_match.QMessageBox.warning", _fail_matching_dialog)
+    monkeypatch.setattr("meteoalign.application.app_auto_match.QMessageBox.information", _fail_matching_dialog)
 
     host._handle_real_image_pick_click(object())
 
-    assert message_parents == [assistant]
-    assert events == ["dialog", "raise", "activate"]
-    assert status_messages[-1] == "PSF 拟合失败: 搜索范围内没有可靠星点"
-    assistant.close()
+    assert status_messages[-1] == "手动匹配失败：PSF 拟合失败：搜索范围内没有可靠星点"
 
 
 def test_auto_match_quality_sort_keeps_missing_values_last_in_both_directions() -> None:

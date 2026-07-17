@@ -35,18 +35,26 @@ def test_star_settings_dialog_restores_defaults_and_saves_current_mode(tmp_path:
 
     assert dialog.ui.stackedWidgetSettings.currentWidget() is dialog.ui.pageStarSettings
     assert dialog.ui.pushButtonRestoreDefaults.text() == "回到默认"
+    assert dialog.ui.spinBoxAdjacentStarExtractPixstack.value() == 600000
+    assert "不是匹配数量上限" in dialog.ui.spinBoxAdjacentStarExtractPixstack.toolTip()
     dialog.ui.doubleSpinBoxAdjacentStarDetectionSigma.setValue(2.75)
+    dialog.ui.spinBoxAdjacentStarExtractPixstack.setValue(900000)
     dialog._restore_defaults()
     assert dialog.ui.doubleSpinBoxAdjacentStarDetectionSigma.value() == DEFAULT_PREFERENCE_VALUES[
         "adjacent_star_detection_sigma"
     ]
+    assert dialog.ui.spinBoxAdjacentStarExtractPixstack.value() == DEFAULT_PREFERENCE_VALUES[
+        "adjacent_star_extract_pixstack"
+    ]
 
     dialog.ui.doubleSpinBoxAdjacentStarDetectionSigma.setValue(2.75)
+    dialog.ui.spinBoxAdjacentStarExtractPixstack.setValue(900000)
     dialog.ui.spinBoxAdjacentAlignmentMaxCorrespondencesStar.setValue(72)
     dialog._save_settings()
 
     config = load_adjacent_alignment_config(preference_path)
     assert config.stars.detection_sigma == 2.75
+    assert config.stars.extract_pixstack == 900000
     assert config.max_correspondences == 72
     assert dialog.result() == dialog.Accepted
 

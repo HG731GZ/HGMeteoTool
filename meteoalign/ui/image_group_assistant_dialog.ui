@@ -27,6 +27,19 @@
   </property>
   <layout class="QVBoxLayout" name="verticalLayoutImageGroupAssistant">
    <item>
+    <widget class="QCheckBox" name="checkBoxAutoSelectReference">
+     <property name="toolTip">
+      <string>双击切换图像时，自动选取拍摄时间最近且已有 model.json 的其他图像作为参考。</string>
+     </property>
+     <property name="text">
+      <string>自动选取参考</string>
+     </property>
+     <property name="enabled">
+      <bool>false</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
     <widget class="QLabel" name="labelImageGroupHint">
      <property name="text">
       <string>双击任意图像即可跳转到该图像。</string>
@@ -93,6 +106,11 @@
     </widget>
    </item>
   </layout>
+  <action name="actionSelectAsReference">
+   <property name="text">
+    <string>选取为参考</string>
+   </property>
+  </action>
  </widget>
  <resources/>
  <connections/>

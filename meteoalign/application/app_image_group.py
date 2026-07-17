@@ -8,15 +8,6 @@ from PyQt5.QtWidgets import QMessageBox
 class ImageGroupMixin:
     """多图导入后的图像组列表、切换确认与状态同步。"""
 
-    def _image_group_dialogs(self) -> tuple[object, ...]:
-        """返回需要同步图像路径与文件状态的图像组窗口。"""
-
-        dialogs = [self.image_group_assistant]
-        reference_dialog = getattr(self, "image_group_reference_dialog", None)
-        if reference_dialog is not None:
-            dialogs.append(reference_dialog)
-        return tuple(dialogs)
-
     def _show_image_group_assistant(self) -> None:
         """显示单实例非模态图像组助手，并将已有窗口提到前台。"""
 
@@ -49,11 +40,9 @@ class ImageGroupMixin:
 
         normalized = self._normalized_image_group_paths(image_paths)
         self._image_group_paths = normalized if len(normalized) > 1 else ()
-        for dialog in self._image_group_dialogs():
-            dialog.set_image_paths(self._image_group_paths)
+        self.image_group_assistant.set_image_paths(self._image_group_paths)
         if not self._image_group_paths:
-            for dialog in self._image_group_dialogs():
-                dialog.close()
+            self.image_group_assistant.close()
         self._update_image_group_controls()
         return normalized
 
@@ -90,9 +79,34 @@ class ImageGroupMixin:
         self.image_group_assistant.set_current_image(image_path)
 
     def _refresh_image_group_assistant_status(self) -> None:
-        for dialog in self._image_group_dialogs():
-            dialog.refresh_file_statuses()
+        self.image_group_assistant.refresh_file_statuses()
         self._sync_image_group_current_image()
+
+    def _select_automatic_image_group_reference(self, target_path: str | Path) -> None:
+        """为指定的组内图像载入时间最近且已有模型的参考图像。"""
+
+        automatic_reference = self.image_group_assistant.automatic_reference_for(target_path)
+        if automatic_reference is not None and hasattr(self, "load_adjacent_image"):
+            self.load_adjacent_image(automatic_reference, automatic_selection=True)
+
+    def _handle_automatic_image_group_reference_toggled(self, checked: bool) -> None:
+        """勾选自动参考时，立即处理已经载入的当前图像。"""
+
+        if not checked:
+            return
+        current_preview = getattr(self, "current_image_preview", None)
+        if current_preview is not None:
+            self._select_automatic_image_group_reference(current_preview.path)
+
+    def _handle_image_group_reference_requested(self, image_path: object) -> None:
+        """把助手右键选中的组内图像作为手动参考。"""
+
+        if not self._image_group_mode_active() or not self._image_group_controls_idle():
+            return
+        target_path = Path(image_path).expanduser().resolve()
+        if target_path not in self._image_group_paths or not hasattr(self, "load_adjacent_image"):
+            return
+        self.load_adjacent_image(target_path)
 
     def _current_image_group_output_paths(self) -> tuple[Path, Path] | None:
         preview = getattr(self, "current_image_preview", None)

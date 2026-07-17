@@ -34,7 +34,6 @@ class AdjacentFramingMixin:
     _adjacent_framing_progress: QProgressDialog | None
     _rough_alignment_transform: object | None
     _rough_source_astrometric_model: object | None
-    image_group_reference_dialog: object
     image_preview_dialog: ImagePreviewDialog
 
     def _init_adjacent_framing_defaults(self) -> None:
@@ -68,17 +67,6 @@ class AdjacentFramingMixin:
             return
         self._update_adjacent_framing_controls()
 
-    def _adjacent_group_selection_available(self) -> bool:
-        """判断当前状态是否允许从图像组中选取参考。"""
-
-        return (
-            getattr(self, "_adjacent_framing_thread", None) is None
-            and hasattr(self, "_image_group_mode_active")
-            and hasattr(self, "_image_group_controls_idle")
-            and self._image_group_mode_active()
-            and self._image_group_controls_idle()
-        )
-
     def _update_adjacent_framing_controls(self, *unused) -> None:  # type: ignore[no-untyped-def]
         """根据当前图像、参考图像、图像组和后台任务状态更新操作按钮。"""
 
@@ -91,10 +79,6 @@ class AdjacentFramingMixin:
         if hasattr(self.ui, "pushButtonPreviewAdjacentImage"):
             self.ui.pushButtonPreviewAdjacentImage.setEnabled(
                 getattr(self, "_adjacent_image_path", None) is not None
-            )
-        if hasattr(self.ui, "pushButtonSelectAdjacentImageFromGroup"):
-            self.ui.pushButtonSelectAdjacentImageFromGroup.setEnabled(
-                self._adjacent_group_selection_available()
             )
         self.ui.comboBoxAdjacentAlignmentMode.setEnabled(idle)
         self.ui.pushButtonCalculateAdjacentFraming.setEnabled(
@@ -182,37 +166,18 @@ class AdjacentFramingMixin:
         self._remember_import_path(file_path)
         self.load_adjacent_image(file_path)
 
-    def show_adjacent_reference_from_group(self) -> None:
-        """显示图像组参考选择窗口，并刷新磁盘上的模型状态。"""
-
-        if not self._adjacent_group_selection_available():
-            return
-        dialog = getattr(self, "image_group_reference_dialog", None)
-        if dialog is None:
-            return
-        dialog.set_image_paths(getattr(self, "_image_group_paths", ()))
-        dialog.set_reference_image(getattr(self, "_adjacent_image_path", None))
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
-
-    def _handle_adjacent_reference_from_group_activated(self, image_path: object) -> None:
-        """双击图像组行后，复用普通参考图像导入流程完成校验与加载。"""
-
-        if not self._adjacent_group_selection_available():
-            return
-        target_path = Path(image_path).expanduser().resolve()
-        if target_path not in getattr(self, "_image_group_paths", ()):
-            return
-        self.load_adjacent_image(target_path)
-
     @staticmethod
     def _adjacent_model_path_for_image(image_path: Path) -> Path:
         """返回图像导出源图映射时使用的固定 model.json 路径。"""
 
         return image_path.with_name(f"{image_path.stem}_model.json")
 
-    def load_adjacent_image(self, file_path: str | Path) -> bool:
+    def load_adjacent_image(
+        self,
+        file_path: str | Path,
+        *,
+        automatic_selection: bool = False,
+    ) -> bool:
         """验证参考图像及其 model.json，并更新界面显示。"""
 
         image_path = Path(file_path).expanduser().resolve()
@@ -236,9 +201,11 @@ class AdjacentFramingMixin:
 
         self._adjacent_image_path = image_path
         self._adjacent_model_json_path = model_path
-        reference_dialog = getattr(self, "image_group_reference_dialog", None)
-        if reference_dialog is not None:
-            reference_dialog.set_reference_image(image_path)
+        image_group_assistant = getattr(self, "image_group_assistant", None)
+        if image_group_assistant is not None:
+            if not automatic_selection:
+                image_group_assistant.ui.checkBoxAutoSelectReference.setChecked(False)
+            image_group_assistant.set_reference_image(image_path)
         self._clear_adjacent_rough_framing(
             status_text="已导入参考图像，等待计算粗略取景",
             refresh_alignment=True,

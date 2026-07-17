@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PyQt5.QtCore import QObject, pyqtSignal
 
-from .adjacent_alignment import calculate_adjacent_rough_framing
+from .adjacent_alignment import calculate_adjacent_rough_framing, localized_adjacent_alignment_error
 
 
 class AdjacentFramingWorker(QObject):
@@ -38,4 +38,4 @@ class AdjacentFramingWorker(QObject):
             )
             self.finished.emit(result)
         except Exception as exc:  # noqa: BLE001 - 后台计算错误需要返回主线程弹窗展示。
-            self.failed.emit(str(exc))
+            self.failed.emit(localized_adjacent_alignment_error(exc))

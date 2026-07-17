@@ -419,6 +419,8 @@ class ImageMixin:
         self._update_imported_image_labels(preview)
         if hasattr(self, "_refresh_image_group_assistant_status"):
             self._refresh_image_group_assistant_status()
+        if clear_existing_pairs and hasattr(self, "_select_automatic_image_group_reference"):
+            self._select_automatic_image_group_reference(preview.path)
         exif_time_message = ""
         if clear_existing_pairs:
             exif_time_message = self._apply_single_image_exif_observation_time(preview.path)

@@ -4,12 +4,24 @@ from pathlib import Path
 
 from PyQt5.QtCore import QTimer, Qt, pyqtSignal
 from PyQt5.QtGui import QBrush, QColor
-from PyQt5.QtWidgets import QDialog, QHeaderView, QMessageBox, QPushButton, QTableWidgetItem, QWidget
+from PyQt5.QtWidgets import (
+    QDialog,
+    QHeaderView,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QTableWidgetItem,
+    QWidget,
+)
 
 from ..image_path_resolution import companion_sky_mask_path
 from ..image_preview import load_image_preview
+from ..image_sequence import (
+    ImageSequenceItem,
+    read_image_capture_time,
+    sequence_item_time_delta_seconds,
+)
 from ..ui.ui_image_group_assistant_dialog import Ui_ImageGroupAssistantDialog
-from ..ui.ui_image_group_reference_dialog import Ui_ImageGroupReferenceDialog
 from .image_preview_dialog import ImagePreviewDialog
 
 
@@ -26,29 +38,27 @@ IMAGE_GROUP_PREVIEW_TEXT = "预览"
 IMAGE_GROUP_PREVIEW_HORIZONTAL_PADDING = 12
 
 
-class _ImageGroupTableDialog(QDialog):
-    """提供图像组状态、预览与双击操作的共用表格实现。"""
+class ImageGroupAssistantDialog(QDialog):
+    """显示图像组状态，并提供切图、预览和参考图像选择。"""
 
     image_activated = pyqtSignal(object)
+    reference_selection_requested = pyqtSignal(object)
 
     def __init__(
         self,
-        ui: Ui_ImageGroupAssistantDialog | Ui_ImageGroupReferenceDialog,
         image_preview_dialog: ImagePreviewDialog,
-        *,
-        reference_selection: bool,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         # 使用普通顶层窗口，主窗口激活后可以按正常窗口层级覆盖本窗口。
         window_flags = (self.windowFlags() & ~Qt.WindowType_Mask) | Qt.Window
         self.setWindowFlags(window_flags)
-        self.ui = ui
+        self.ui = Ui_ImageGroupAssistantDialog()
         self.ui.setupUi(self)
         self.setModal(False)
-        self._reference_selection = reference_selection
         self._reference_image_path: Path | None = None
         self._image_paths: tuple[Path, ...] = ()
+        self._capture_time_items: dict[Path, ImageSequenceItem] = {}
         self.image_preview_dialog = image_preview_dialog
 
         table = self.ui.tableWidgetImageGroup
@@ -71,6 +81,11 @@ class _ImageGroupTableDialog(QDialog):
         header.setSectionResizeMode(0, QHeaderView.Fixed)
         header.resizeSection(0, file_column_width)
         table.cellDoubleClicked.connect(self._handle_cell_double_clicked)
+        table.setContextMenuPolicy(Qt.CustomContextMenu)
+        table.customContextMenuRequested.connect(self._show_context_menu)
+        self.ui.checkBoxAutoSelectReference.toggled.connect(
+            self._guard_automatic_reference_selection
+        )
 
     def showEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         """窗口真正可见后再按有效布局收紧宽度。"""
@@ -122,6 +137,7 @@ class _ImageGroupTableDialog(QDialog):
             )
             table.setCellWidget(row, IMAGE_GROUP_PREVIEW_COLUMN, preview_button)
         self.refresh_file_statuses()
+        self._refresh_capture_times()
 
     def _show_image_preview(self, image_path: Path) -> None:
         """读取指定行的图像，并复用唯一的预览窗口显示。"""
@@ -159,11 +175,7 @@ class _ImageGroupTableDialog(QDialog):
         for row, image_path in enumerate(self._image_paths):
             model_path = self._model_path(image_path)
             model_ready = model_path.is_file()
-            if (
-                self._reference_selection
-                and image_path == self._reference_image_path
-                and model_ready
-            ):
+            if image_path == self._reference_image_path and model_ready:
                 reference_tooltip = f"当前参考图像，模型：{model_path}"
                 self._set_reference_cell(row, 1, reference_tooltip)
                 self._set_reference_cell(row, 2, reference_tooltip)
@@ -248,36 +260,82 @@ class _ImageGroupTableDialog(QDialog):
         if 0 <= row < len(self._image_paths):
             self.image_activated.emit(self._image_paths[row])
 
-class ImageGroupAssistantDialog(_ImageGroupTableDialog):
-    """显示多图像的匹配与映射文件状态。"""
+    def _show_context_menu(self, position) -> None:  # type: ignore[no-untyped-def]
+        """在右键所在行显示手动参考选择菜单。"""
 
-    def __init__(
-        self,
-        image_preview_dialog: ImagePreviewDialog,
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(
-            Ui_ImageGroupAssistantDialog(),
-            image_preview_dialog,
-            reference_selection=False,
-            parent=parent,
+        table = self.ui.tableWidgetImageGroup
+        item = table.itemAt(position)
+        if item is None or not 0 <= item.row() < len(self._image_paths):
+            return
+        row = item.row()
+        table.selectRow(row)
+        menu = QMenu(self)
+        menu.addAction(self.ui.actionSelectAsReference)
+        selected_action = menu.exec_(table.viewport().mapToGlobal(position))
+        if selected_action is self.ui.actionSelectAsReference:
+            self.reference_selection_requested.emit(self._image_paths[row])
+
+    def _refresh_capture_times(self) -> None:
+        """读取整组拍摄时间；任一图像失败时禁止自动选取参考。"""
+
+        capture_time_items: dict[Path, ImageSequenceItem] = {}
+        unreadable_paths: list[Path] = []
+        for image_path in self._image_paths:
+            try:
+                capture_time_items[image_path] = read_image_capture_time(image_path)
+            except Exception:  # noqa: BLE001 - 界面只需汇总不可用文件并禁用选项。
+                unreadable_paths.append(image_path)
+        self._capture_time_items = capture_time_items
+
+        check_box = self.ui.checkBoxAutoSelectReference
+        available = bool(self._image_paths) and not unreadable_paths
+        if not available:
+            check_box.setChecked(False)
+        check_box.setEnabled(available)
+        if unreadable_paths:
+            names = "、".join(path.name for path in unreadable_paths[:5])
+            if len(unreadable_paths) > 5:
+                names += f"等 {len(unreadable_paths)} 张图像"
+            check_box.setToolTip(f"以下图像读不到 EXIF/XMP 拍摄时间，无法自动选取参考：{names}")
+        elif self._image_paths:
+            check_box.setToolTip(
+                "双击切换图像时，自动选取拍摄时间最近且已有 model.json 的其他图像作为参考。"
+            )
+        else:
+            check_box.setToolTip("导入图像组后才能自动选取参考。")
+
+    def _guard_automatic_reference_selection(self, checked: bool) -> None:
+        """防止代码或恢复状态时绕过整组拍摄时间校验。"""
+
+        if checked and len(self._capture_time_items) != len(self._image_paths):
+            self.ui.checkBoxAutoSelectReference.setChecked(False)
+
+    def automatic_reference_for(self, target_path: str | Path) -> Path | None:
+        """返回目标图像时间最近且已有模型的其他组内图像。"""
+
+        check_box = self.ui.checkBoxAutoSelectReference
+        if not check_box.isEnabled() or not check_box.isChecked():
+            return None
+        resolved_target = Path(target_path).expanduser().resolve()
+        target_item = self._capture_time_items.get(resolved_target)
+        if target_item is None:
+            return None
+
+        candidates = (
+            image_path
+            for image_path in self._image_paths
+            if image_path != resolved_target and self._model_path(image_path).is_file()
+        )
+        return min(
+            candidates,
+            key=lambda image_path: abs(
+                sequence_item_time_delta_seconds(
+                    self._capture_time_items[image_path],
+                    target_item,
+                )
+            ),
+            default=None,
         )
 
 
-class ImageGroupReferenceDialog(_ImageGroupTableDialog):
-    """从图像组中选取粗略取景参考图像。"""
-
-    def __init__(
-        self,
-        image_preview_dialog: ImagePreviewDialog,
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(
-            Ui_ImageGroupReferenceDialog(),
-            image_preview_dialog,
-            reference_selection=True,
-            parent=parent,
-        )
-
-
-__all__ = ["ImageGroupAssistantDialog", "ImageGroupReferenceDialog"]
+__all__ = ["ImageGroupAssistantDialog"]

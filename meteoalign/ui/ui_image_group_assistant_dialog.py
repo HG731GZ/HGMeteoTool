@@ -19,6 +19,10 @@ class Ui_ImageGroupAssistantDialog(object):
         ImageGroupAssistantDialog.setMaximumSize(QtCore.QSize(480, 16777215))
         self.verticalLayoutImageGroupAssistant = QtWidgets.QVBoxLayout(ImageGroupAssistantDialog)
         self.verticalLayoutImageGroupAssistant.setObjectName("verticalLayoutImageGroupAssistant")
+        self.checkBoxAutoSelectReference = QtWidgets.QCheckBox(ImageGroupAssistantDialog)
+        self.checkBoxAutoSelectReference.setEnabled(False)
+        self.checkBoxAutoSelectReference.setObjectName("checkBoxAutoSelectReference")
+        self.verticalLayoutImageGroupAssistant.addWidget(self.checkBoxAutoSelectReference)
         self.labelImageGroupHint = QtWidgets.QLabel(ImageGroupAssistantDialog)
         self.labelImageGroupHint.setWordWrap(True)
         self.labelImageGroupHint.setObjectName("labelImageGroupHint")
@@ -45,6 +49,8 @@ class Ui_ImageGroupAssistantDialog(object):
         self.tableWidgetImageGroup.horizontalHeader().setStretchLastSection(False)
         self.tableWidgetImageGroup.verticalHeader().setVisible(False)
         self.verticalLayoutImageGroupAssistant.addWidget(self.tableWidgetImageGroup)
+        self.actionSelectAsReference = QtWidgets.QAction(ImageGroupAssistantDialog)
+        self.actionSelectAsReference.setObjectName("actionSelectAsReference")
 
         self.retranslateUi(ImageGroupAssistantDialog)
         QtCore.QMetaObject.connectSlotsByName(ImageGroupAssistantDialog)
@@ -52,6 +58,8 @@ class Ui_ImageGroupAssistantDialog(object):
     def retranslateUi(self, ImageGroupAssistantDialog):
         _translate = QtCore.QCoreApplication.translate
         ImageGroupAssistantDialog.setWindowTitle(_translate("ImageGroupAssistantDialog", "图像组助手"))
+        self.checkBoxAutoSelectReference.setToolTip(_translate("ImageGroupAssistantDialog", "双击切换图像时，自动选取拍摄时间最近且已有 model.json 的其他图像作为参考。"))
+        self.checkBoxAutoSelectReference.setText(_translate("ImageGroupAssistantDialog", "自动选取参考"))
         self.labelImageGroupHint.setText(_translate("ImageGroupAssistantDialog", "双击任意图像即可跳转到该图像。"))
         item = self.tableWidgetImageGroup.horizontalHeaderItem(0)
         item.setText(_translate("ImageGroupAssistantDialog", "文件名"))
@@ -63,3 +71,4 @@ class Ui_ImageGroupAssistantDialog(object):
         item.setText(_translate("ImageGroupAssistantDialog", "蒙版"))
         item = self.tableWidgetImageGroup.horizontalHeaderItem(4)
         item.setText(_translate("ImageGroupAssistantDialog", "预览"))
+        self.actionSelectAsReference.setText(_translate("ImageGroupAssistantDialog", "选取为参考"))

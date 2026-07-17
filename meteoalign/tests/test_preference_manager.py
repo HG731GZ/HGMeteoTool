@@ -148,6 +148,7 @@ def test_adjacent_alignment_hyperparameters_are_loaded_and_bounded(tmp_path: Pat
         """
         {
           "adjacent_alignment_max_correspondences": 72,
+          "adjacent_star_extract_pixstack": 750000,
           "adjacent_star_detection_sigma": 3.5,
           "adjacent_star_max_detected_stars": 480,
           "adjacent_star_final_match_distance_px": 2.25,
@@ -163,6 +164,7 @@ def test_adjacent_alignment_hyperparameters_are_loaded_and_bounded(tmp_path: Pat
     config = load_adjacent_alignment_config(preference_path)
 
     assert config.max_correspondences == 72
+    assert config.stars.extract_pixstack == 750000
     assert config.stars.detection_sigma == 3.5
     assert config.stars.max_detected_stars == 480
     assert config.stars.final_match_distance_px == 2.25
@@ -172,6 +174,7 @@ def test_adjacent_alignment_hyperparameters_are_loaded_and_bounded(tmp_path: Pat
     assert config.landscape.normalization_high_percentile > config.landscape.normalization_low_percentile
     assert isinstance(config.stars, AdjacentStarAlignmentConfig)
     assert isinstance(config.landscape, AdjacentLandscapeAlignmentConfig)
+    assert AdjacentStarAlignmentConfig().extract_pixstack == 600000
     assert AdjacentLandscapeAlignmentConfig().sift_max_features == 30000
     assert AdjacentLandscapeAlignmentConfig().flann_checks == 500
     assert AdjacentLandscapeAlignmentConfig().min_inlier_matches == 6

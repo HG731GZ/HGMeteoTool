@@ -80,7 +80,7 @@ from .app_utils import (
 )
 from .preferences_dialog import PreferencesDialog, PreferencesLauncher
 from .about_dialog import AboutDialog
-from .image_group_assistant_dialog import ImageGroupAssistantDialog, ImageGroupReferenceDialog
+from .image_group_assistant_dialog import ImageGroupAssistantDialog
 from .image_preview_dialog import ImagePreviewDialog
 from .star_pair_assistant_dialog import StarPairAssistantDialog
 
@@ -218,7 +218,6 @@ class MainWindow(
         self.star_pair_assistant.bind_controls_to(self.ui)
         self.image_preview_dialog = ImagePreviewDialog()
         self.image_group_assistant = ImageGroupAssistantDialog(self.image_preview_dialog)
-        self.image_group_reference_dialog = ImageGroupReferenceDialog(self.image_preview_dialog)
         self.ui_config = load_star_map_ui_config()
         self.star_pair_assistant.set_always_on_top(
             self.ui_config.star_pair_assistant_always_on_top
@@ -472,10 +471,6 @@ class MainWindow(
         self.ui.pushButtonImportImages.clicked.connect(self.import_images)
         if hasattr(self.ui, "pushButtonImportAdjacentImage"):
             self.ui.pushButtonImportAdjacentImage.clicked.connect(self.import_adjacent_image)
-        if hasattr(self.ui, "pushButtonSelectAdjacentImageFromGroup"):
-            self.ui.pushButtonSelectAdjacentImageFromGroup.clicked.connect(
-                self.show_adjacent_reference_from_group
-            )
         if hasattr(self.ui, "pushButtonPreviewAdjacentImage"):
             self.ui.pushButtonPreviewAdjacentImage.clicked.connect(self.show_adjacent_image_preview)
         if hasattr(self.ui, "pushButtonCalculateAdjacentFraming"):
@@ -504,8 +499,11 @@ class MainWindow(
         self.ui.pushButtonClearStarPairs.clicked.connect(self.clear_all_star_pair_positions)
         self.ui.pushButtonOpenImageGroupAssistant.clicked.connect(self._show_image_group_assistant)
         self.image_group_assistant.image_activated.connect(self._handle_image_group_image_activated)
-        self.image_group_reference_dialog.image_activated.connect(
-            self._handle_adjacent_reference_from_group_activated
+        self.image_group_assistant.ui.checkBoxAutoSelectReference.toggled.connect(
+            self._handle_automatic_image_group_reference_toggled
+        )
+        self.image_group_assistant.reference_selection_requested.connect(
+            self._handle_image_group_reference_requested
         )
         self.ui.pushButtonOpenStarPairAssistant.clicked.connect(self._show_star_pair_assistant)
         self.ui.pushButtonImportSkyMask.clicked.connect(self.import_sky_mask)
@@ -586,7 +584,6 @@ class MainWindow(
             self.about_dialog.close()
             self.star_pair_assistant.close()
             self.image_group_assistant.close()
-            self.image_group_reference_dialog.close()
             self.image_preview_dialog.close()
             self._shutdown_meteor_detection_worker()
 
