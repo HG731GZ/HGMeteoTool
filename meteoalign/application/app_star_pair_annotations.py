@@ -67,7 +67,7 @@ class StarPairAnnotationsMixin:
         if new_diameter == self._star_pick_circle_diameter_px:
             if show_status and self._active_star_pair_row is not None:
                 self.ui.statusbar.showMessage(
-                    f"选星圈直径已到边界：{new_diameter} 图像px。Ctrl+左键确认，右键取消。"
+                    f"当前选星圈直径：{new_diameter} px，右键取消调整"
                 )
             return
 
@@ -76,7 +76,7 @@ class StarPairAnnotationsMixin:
             self._update_real_image_pick_cursor()
             if show_status:
                 self.ui.statusbar.showMessage(
-                    f"选星圈直径：{new_diameter} 图像px。Ctrl+左键确认，右键取消，Ctrl+滚轮 / Ctrl+加减继续缩放。"
+                    f"当前选星圈直径：{new_diameter} px，右键取消调整"
                 )
 
     def _adjust_star_pick_circle_diameter(self, step_count: int) -> None:
@@ -106,11 +106,9 @@ class StarPairAnnotationsMixin:
 
     def _show_star_pick_status_hint(self, row: int) -> None:
         self.ui.statusbar.showMessage(
-            "正在点选 {label}；普通左键拖动预览，Ctrl+左键确认，右键取消，Ctrl+滚轮 / Ctrl+加减缩放选星圈。"
-            "当前选星圈直径：{diameter} 图像px，自适应PSF拟合半径上限：{max_radius} 图像px。".format(
+            "正在点选 {label}，当前选星圈直径 {diameter} px，右键取消点选".format(
                 label=self._star_pair_label(row),
                 diameter=self._star_pick_circle_diameter_px,
-                max_radius=self.ui_config.star_pick_psf_max_radius_px,
             )
         )
 
@@ -436,7 +434,8 @@ class StarPairAnnotationsMixin:
             self._update_reference_alignment_transform()
             transform = self._sky_alignment_transform
         if transform is None:
-            self.ui.statusbar.showMessage(self._sky_alignment_error_message or "当前配准模型尚未就绪，无法聚焦理论位置。")
+            alignment_error = self._sky_alignment_error_message or "当前配准模型尚未就绪。"
+            self.ui.statusbar.showMessage(f"无法聚焦理论位置：{alignment_error}")
             return
 
         reference_star = self._reference_star_for_row(row)
@@ -457,12 +456,9 @@ class StarPairAnnotationsMixin:
         search_radius_px = self._auto_pair_search_radius_px(transform)
         self._focus_star_pair_image_point(row, predicted_x, predicted_y, search_radius_px)
         self.ui.statusbar.showMessage(
-            "已聚焦理论位置: x={x:.2f}, y={y:.2f}；蓝圈半径 {blue_radius} px，"
-            "为自动匹配搜索半径 {search_radius} px 的两倍。"
-            "切换标注选项可重置蓝圈。".format(
+            "已聚焦 {label} 的推算位置 ({x:.2f},{y:.2f})".format(
+                label=self._star_pair_label(row),
                 x=predicted_x,
                 y=predicted_y,
-                blue_radius=search_radius_px * 2,
-                search_radius=search_radius_px,
             )
         )

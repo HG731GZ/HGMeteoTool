@@ -249,7 +249,7 @@ class ViewControlsMixin:
                 if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
                     self.drag_start = None
                     self.last_drag_pos = None
-                    self.ui.statusbar.showMessage("已有 4 对或更多有效匹配，星空模拟参数已锁定；清除匹配后可继续调整。")
+                    self.ui.statusbar.showMessage("星空模拟参数已锁定，清除匹配后可调整")
                     return True
                 if event.type() in (QEvent.MouseMove, QEvent.MouseButtonRelease):
                     self.drag_start = None

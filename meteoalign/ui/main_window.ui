@@ -3627,8 +3627,13 @@
     </item>
    </layout>
   </widget>
-  <widget class="QStatusBar" name="statusbar">
+  <widget class="AppStatusBar" name="statusbar">
    <widget class="QLabel" name="labelStatusImageContext">
+    <property name="styleSheet">
+     <string notr="true">background-color: #cfe2ff;
+color: #084298;
+padding: 1px 4px;</string>
+    </property>
     <property name="text">
      <string>图像：未导入  |  蒙版：未使用  |  投影：普通透视镜头(TAN)</string>
     </property>
@@ -3639,6 +3644,11 @@
   </widget>
  </widget>
  <customwidgets>
+  <customwidget>
+   <class>AppStatusBar</class>
+   <extends>QStatusBar</extends>
+   <header>meteoalign.application.status_bar</header>
+  </customwidget>
   <customwidget>
    <class>MeteorSelectionView</class>
    <extends>QGraphicsView</extends>

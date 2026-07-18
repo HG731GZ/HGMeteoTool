@@ -188,7 +188,7 @@ class AdjacentFramingMixin:
                 "请导入已有模型(model.json)的图像。\n\n"
                 f"需要的模型文件：{model_path}"
             )
-            self.ui.statusbar.showMessage(f"参考图像缺少 model.json：{image_path}")
+            self.ui.statusbar.showMessage(f"参考图像缺少 model.json：{image_path.name}")
             QMessageBox.information(self, "参考图像缺少模型", message)
             return False
 
@@ -211,7 +211,7 @@ class AdjacentFramingMixin:
             refresh_alignment=True,
         )
         self._update_adjacent_image_label()
-        self.ui.statusbar.showMessage(f"已导入参考图像：{image_path}")
+        self.ui.statusbar.showMessage(f"已导入参考图像：{image_path.name}")
         self._update_adjacent_framing_controls()
         return True
 
@@ -343,8 +343,7 @@ class AdjacentFramingMixin:
         self._update_reference_alignment_transform()
         self._update_adjacent_framing_controls()
         self.ui.statusbar.showMessage(
-            f"已生成当前图像的粗略 Pixel↔ICRS 取景：{result.correspondence_count} 对对应点，"
-            f"RMS {result.transform.rms_px:.2f}px。"
+            f"{result.correspondence_count} 对匹配， RMS {result.transform.rms_px:.2f} px"
         )
 
     def _handle_adjacent_framing_failed(self, error_message: str) -> None:

@@ -150,7 +150,7 @@ class StarPairSessionMixin:
         json_path = self._star_pair_session_path_for_image(image_path)
         if not json_path.exists():
             return
-        self.ui.statusbar.showMessage(f"发现同名匹配 JSON，正在自动导入: {json_path}")
+        self.ui.statusbar.showMessage(f"发现同名匹配 JSON，正在自动导入: {json_path.name}")
         sync_time_enabled = getattr(self, "_auto_sync_simulator_time_from_exif_enabled", None)
         restore_observation_time = (
             bool(sync_time_enabled())
@@ -289,11 +289,11 @@ class StarPairSessionMixin:
             self._json_import_progress = self._show_json_import_progress(
                 title="正在导入匹配 JSON",
                 label_text=f"正在读取匹配 JSON 并恢复真实图像...\n{json_path}",
-                status_text=f"正在导入星点匹配 JSON: {json_path}",
+                status_text=f"正在导入星点匹配 JSON: {json_path.name}",
             )
         else:
             self._json_import_progress = None
-            self.ui.statusbar.showMessage(f"正在后台导入星点匹配 JSON: {json_path}")
+            self.ui.statusbar.showMessage(f"正在后台导入星点匹配 JSON: {json_path.name}")
 
         current_preview = self.current_image_preview if reuse_current_image else None
         if current_preview is None:
@@ -667,5 +667,5 @@ class StarPairSessionMixin:
         elif current_tab is not None:
             self.ui.tabWidgetMain.setCurrentWidget(current_tab)
         self.ui.statusbar.showMessage(
-            f"已导入星点匹配 JSON: {source_path}  真实图像: {image_path}  恢复匹配: {restored_count}"
+            f"已导入星点匹配 JSON: {source_path.name}  真实图像: {image_path.name}  恢复匹配: {restored_count}"
         )

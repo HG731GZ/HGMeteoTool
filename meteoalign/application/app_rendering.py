@@ -774,40 +774,11 @@ class RenderingMixin:
 
     def render_now(self) -> None:
         try:
-            _observer, _camera, view, _mag_limit, star_map = self._build_projected_star_map()
+            _observer, _camera, _view, _mag_limit, star_map = self._build_projected_star_map()
             self._current_star_map = star_map
             self._current_reference_star_map = star_map
             reference_stars = self._select_current_reference_stars(star_map)
             self._display_star_map(star_map, reference_stars)
             self._update_star_pair_table(reference_stars)
-            if self._reference_label_mode() == REFERENCE_LABEL_MODE_FIXED_MAG_LIMIT:
-                reference_mode_text = f"标注星等 <= {self.ui.doubleSpinBoxReferenceMagLimit.value():.1f} mag"
-            else:
-                reference_mode_text = f"标注星数 {self.ui.spinBoxReferenceStarCount.value()} 颗"
-            manual_count = len(
-                [
-                    star_id
-                    for star_id in self._manual_reference_star_ids
-                    if any(star.star_id == star_id for star in reference_stars)
-                ]
-            )
-            if manual_count:
-                reference_mode_text = f"{reference_mode_text}，手动 {manual_count} 颗"
-            self.ui.statusbar.showMessage(
-                "星表: {catalog_count}  视野内: {visible_count}  地平线上: {above_count}  "
-                "银河面: {mw_count}  太阳系: {solar_count}  参考星: {reference_count} ({reference_mode})  "
-                "镜头: {lens_name}  Az: {az:.2f} deg  Alt: {alt:.2f} deg".format(
-                    catalog_count=star_map.catalog_count,
-                    visible_count=len(star_map),
-                    above_count=star_map.above_horizon_count,
-                    mw_count=len(star_map.milky_way_polygons),
-                    solar_count=len(star_map.solar_system_objects),
-                    reference_count=len(reference_stars),
-                    reference_mode=reference_mode_text,
-                    lens_name=self.ui.comboBoxLensModel.currentText(),
-                    az=view.center_az_deg,
-                    alt=view.center_alt_deg,
-                )
-            )
         except Exception as exc:  # noqa: BLE001 - 界面层需要把可恢复输入错误显示出来。
             self.ui.statusbar.showMessage(f"渲染失败: {exc}")

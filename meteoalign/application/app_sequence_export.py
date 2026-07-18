@@ -429,7 +429,7 @@ class SequenceExportMixin:
             except Exception as image_exc:  # noqa: BLE001 - 兜底载图失败同样反馈给用户。
                 message += f"\n\n第一帧图像也无法载入：{image_exc}"
             QMessageBox.warning(self, "第一帧匹配 JSON 载入失败", message)
-            self.ui.statusbar.showMessage(f"第一帧匹配 JSON 载入失败: {json_path}")
+            self.ui.statusbar.showMessage(f"第一帧匹配 JSON 载入失败: {json_path.name}")
             return False
 
     def _ensure_first_sequence_session_loaded_for_processing(self) -> None:

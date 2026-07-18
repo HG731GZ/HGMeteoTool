@@ -377,7 +377,7 @@ class MeteorSelectionMixin:
         self._meteor_mask_import_thread = task.thread
         self._meteor_mask_import_worker = task.worker
         self._meteor_mask_import_progress = progress
-        self.ui.statusbar.showMessage(f"正在导入流星检测蒙版：{mask_path}")
+        self.ui.statusbar.showMessage(f"正在导入流星检测蒙版：{mask_path.name}")
         self._update_meteor_selection_controls()
 
     def _handle_meteor_mask_import_finished(self, result: object) -> None:
@@ -415,7 +415,7 @@ class MeteorSelectionMixin:
             self._refresh_meteor_mask_display()
             valid_fraction = float(np.count_nonzero(mask_array)) / max(float(mask_array.size), 1.0)
             self.ui.statusbar.showMessage(
-                f"已导入流星检测蒙版，有效区域 {valid_fraction * 100.0:.1f}%：{mask_path}",
+                f"已导入流星检测蒙版，有效区域 {valid_fraction * 100.0:.1f}%：{mask_path.name}",
                 8000,
             )
         except Exception as exc:  # noqa: BLE001 - 主线程应用异步结果时需统一反馈状态错误。
@@ -806,7 +806,7 @@ class MeteorSelectionMixin:
             self._meteor_detection_client.start(self._meteor_detection_options.engine_path)
         except (OSError, RuntimeError) as exc:
             self._meteor_detection_engine_status = str(exc)
-            self.ui.statusbar.showMessage(f"流星检测引擎不可用：{exc}", 12000)
+            self.ui.statusbar.showMessage(f"流星检测引擎不可用：{exc}")
             self._update_meteor_selection_controls()
 
     def _handle_meteor_detection_worker_ready(self, payload: dict[str, object]) -> None:
@@ -815,7 +815,7 @@ class MeteorSelectionMixin:
         providers = payload.get("available_providers")
         provider_text = "、".join(str(item) for item in providers) if isinstance(providers, list) else "未知"
         self._meteor_detection_engine_status = f"检测引擎已就绪；可用 Provider：{provider_text}"
-        self.ui.statusbar.showMessage(self._meteor_detection_engine_status, 6000)
+        self.ui.statusbar.showMessage(self._meteor_detection_engine_status)
         self._update_meteor_selection_controls()
 
     def toggle_automatic_meteor_detection(self) -> None:
@@ -866,7 +866,7 @@ class MeteorSelectionMixin:
         self._meteor_detection_job_paths = []
         self._meteor_detection_engine_status = "检测已取消，正在重启引擎…"
         self._meteor_detection_client.cancel_active_job()
-        self.ui.statusbar.showMessage(self._meteor_detection_engine_status, 6000)
+        self.ui.statusbar.showMessage(self._meteor_detection_engine_status)
         self._update_meteor_selection_controls()
         QTimer.singleShot(0, self._start_meteor_detection_worker)
 
@@ -970,7 +970,7 @@ class MeteorSelectionMixin:
         self._meteor_detection_job_paths = []
         self._meteor_detection_engine_status = message
         self._update_meteor_selection_controls()
-        self.ui.statusbar.showMessage(message, 15000)
+        self.ui.statusbar.showMessage(message)
         if was_active:
             QMessageBox.warning(self, "流星检测中断", message)
 

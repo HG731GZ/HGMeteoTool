@@ -191,8 +191,8 @@ def test_auto_match_candidate_count_includes_mask_prefilter() -> None:
     assert mask_prefiltered_count == 2
 
 
-def test_no_candidate_status_reports_mask_prefilter(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """蒙版筛完全部候选时，不应继续显示误导性的“蒙版跳过 0”。"""
+def test_no_candidate_status_is_compact(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """蒙版筛完全部候选时，状态栏只显示候选数和成功数。"""
 
     messages: list[tuple[str, str]] = []
     monkeypatch.setattr(
@@ -204,7 +204,7 @@ def test_no_candidate_status_reports_mask_prefilter(monkeypatch) -> None:  # typ
 
     harness.auto_match_field_stars()
 
-    assert harness.ui.statusbar.messages[-1] == "自动扩展匹配：没有可新增星；蒙版预筛 3 个视场星点。"
+    assert harness.ui.statusbar.messages[-1] == "自动扩展匹配完成：候选 0，成功 0。"
     assert messages[-1] == (
         "没有可新增星",
         "当前视场、数量设置和蒙版下没有新的可匹配参考星。\n蒙版预筛 3 个视场星点。",

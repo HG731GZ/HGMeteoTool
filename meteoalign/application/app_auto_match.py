@@ -267,17 +267,10 @@ class AutoMatchMixin:
         self._add_or_update_star_pair_annotation(row, fitted_position)
         self._leave_star_pick_mode()
         self.ui.statusbar.showMessage(
-            "已记录 {name} 的图像坐标: x={x:.2f}, y={y:.2f}；搜索半径 {search_radius} px，"
-            "PSF FWHM=({fwhm_x:.2f}, {fwhm_y:.2f}) px，质量={quality:.2f}{saturated}。"
-            "右键匹配表行可继续点选。".format(
+            "已记录 {name} ({x:.2f},{y:.2f})".format(
                 name=star_name,
                 x=fitted_position.x,
                 y=fitted_position.y,
-                search_radius=search_radius_px,
-                fwhm_x=fitted_position.fwhm_x,
-                fwhm_y=fitted_position.fwhm_y,
-                quality=fitted_position.quality_score,
-                saturated="，饱和兼容拟合" if fitted_position.saturated else "",
             )
         )
 
@@ -366,12 +359,11 @@ class AutoMatchMixin:
         )
         self.ui.tableWidgetStarPairs.selectRow(row)
         self.ui.statusbar.showMessage(
-            "{label} 自动匹配完成: x={x:.2f}, y={y:.2f}；预测偏差 {distance:.2f} px，搜索半径 {radius} px。".format(
+            "自动匹配 {label} ({x:.2f},{y:.2f})，预测偏差 {distance:.2f} px".format(
                 label=self._star_pair_label(row),
                 x=fitted_position.x,
                 y=fitted_position.y,
                 distance=distance_px,
-                radius=search_radius_px,
             )
         )
         return True
@@ -788,7 +780,7 @@ class AutoMatchMixin:
                 mask_status = "蒙版未启用"
             else:
                 mask_status = f"蒙版预筛 {mask_prefiltered_count} 个视场星点"
-            self.ui.statusbar.showMessage(f"自动扩展匹配：没有可新增星；{mask_status}。")
+            self.ui.statusbar.showMessage("自动扩展匹配完成：候选 0，成功 0。")
             QMessageBox.information(
                 self,
                 "没有可新增星",
@@ -803,12 +795,6 @@ class AutoMatchMixin:
         annotate_matches = len(candidates) <= AUTO_MATCH_ANNOTATION_LIMIT
         accepted_positions = self._existing_matched_positions()
         matched_count = 0
-        skipped_existing = 0
-        skipped_mask = 0
-        skipped_duplicate = 0
-        skipped_ambiguous = 0
-        skipped_photometric = 0
-        failed_count = 0
         canceled = False
         provisional_matches: list[_AutoExpansionFit] = []
         progress = QProgressDialog(self)
@@ -837,7 +823,6 @@ class AutoMatchMixin:
             predicted_x, predicted_y = predicted_position
             if not self._sky_mask_allows_point(predicted_x, predicted_y):
                 self._mask_excluded_reference_star_ids.add(star_id)
-                skipped_mask += 1
                 continue
             try:
                 nearby_sources = detect_star_candidates(
@@ -863,7 +848,6 @@ class AutoMatchMixin:
             search_radius_px=float(search_radius_px),
             strict_mutual=True,
         )
-        skipped_ambiguous = len(assignment.ambiguous_star_ids)
         progress.setLabelText(f"正在对 {len(assignment.assignments)} 个一对一星源做 PSF 拟合...")
         QApplication.processEvents()
 
@@ -881,22 +865,17 @@ class AutoMatchMixin:
                 star_id = reference_star.star_id.strip()
                 row = self._row_for_star_id(star_id)
                 if row is None:
-                    failed_count += 1
                     continue
                 if self._star_pair_position_text(row):
-                    skipped_existing += 1
                     continue
 
                 predicted_position = predicted_by_id.get(star_id)
                 assigned_source = assignment.assignments.get(star_id)
                 if predicted_position is None or assigned_source is None:
-                    if star_id not in assignment.ambiguous_star_ids and star_id not in self._mask_excluded_reference_star_ids:
-                        failed_count += 1
                     continue
                 predicted_x, predicted_y = predicted_position
                 if not self._sky_mask_allows_point(predicted_x, predicted_y):
                     self._mask_excluded_reference_star_ids.add(star_id)
-                    skipped_mask += 1
                     continue
 
                 try:
@@ -920,20 +899,16 @@ class AutoMatchMixin:
                         ),
                     )
                 except Exception:
-                    failed_count += 1
                     continue
 
                 distance_px = float(np.hypot(fitted_position.x - predicted_x, fitted_position.y - predicted_y))
                 if distance_px > float(search_radius_px) or fitted_position.amplitude < AUTO_MATCH_MIN_AMPLITUDE:
-                    failed_count += 1
                     continue
                 if not self._sky_mask_allows_point(fitted_position.x, fitted_position.y):
                     self._mask_excluded_reference_star_ids.add(star_id)
-                    skipped_mask += 1
                     continue
                 diagnostic = assignment.diagnostics.get(star_id)
                 if diagnostic is None:
-                    failed_count += 1
                     continue
                 provisional_matches.append(
                     _AutoExpansionFit(
@@ -975,7 +950,6 @@ class AutoMatchMixin:
                     photometric_model=photometric_model,
                 )
                 if photometric_rejected:
-                    skipped_photometric += 1
                     continue
                 fitted = provisional.fitted_position
                 fitted_xy = (float(fitted.x), float(fitted.y))
@@ -984,7 +958,6 @@ class AutoMatchMixin:
                     min(24.0, max(fitted.fwhm_x, fitted.fwhm_y) * 0.65),
                 )
                 if self._position_is_duplicate(fitted_xy, accepted_positions, duplicate_radius):
-                    skipped_duplicate += 1
                     continue
                 self._set_star_pair_position(
                     provisional.row,
@@ -1010,24 +983,11 @@ class AutoMatchMixin:
         self._refresh_star_pair_table_styles()
         self._update_reference_alignment_transform()
         status_prefix = "自动扩展匹配已取消" if canceled else "自动扩展匹配完成"
-        if self.current_sky_mask is None:
-            mask_status = "蒙版未启用"
-        else:
-            mask_status = f"蒙版预筛 {mask_prefiltered_count} 个视场星点，拟合后落入蒙版 {skipped_mask}"
         self.ui.statusbar.showMessage(
-            "{status_prefix}：{group_name} 本次新增 {candidate_count}，匹配成功 {matched_count}，已有 {skipped_existing}，"
-            "{mask_status}，歧义跳过 {skipped_ambiguous}，亮度异常 {skipped_photometric}，"
-            "重复跳过 {skipped_duplicate}，失败 {failed_count}。".format(
+            "{status_prefix}：候选 {candidate_count}，成功 {matched_count}。".format(
                 status_prefix=status_prefix,
-                group_name=self._auto_match_group_label(auto_group_id),
                 candidate_count=len(candidates),
                 matched_count=matched_count,
-                skipped_existing=skipped_existing,
-                mask_status=mask_status,
-                skipped_ambiguous=skipped_ambiguous,
-                skipped_photometric=skipped_photometric,
-                skipped_duplicate=skipped_duplicate,
-                failed_count=failed_count,
             )
         )
         if matched_count <= 0 and not canceled:

@@ -1494,9 +1494,12 @@ class Ui_MainWindow(object):
         self.tabWidgetMain.addTab(self.tabMosaicBatch, "")
         self.verticalLayoutMain.addWidget(self.tabWidgetMain)
         MainWindow.setCentralWidget(self.centralwidget)
-        self.statusbar = QtWidgets.QStatusBar(MainWindow)
+        self.statusbar = AppStatusBar(MainWindow)
         self.statusbar.setObjectName("statusbar")
         self.labelStatusImageContext = QtWidgets.QLabel(self.statusbar)
+        self.labelStatusImageContext.setStyleSheet("background-color: #cfe2ff;\n"
+"color: #084298;\n"
+"padding: 1px 4px;")
         self.labelStatusImageContext.setAlignment(QtCore.Qt.AlignRight|QtCore.Qt.AlignVCenter)
         self.labelStatusImageContext.setObjectName("labelStatusImageContext")
         MainWindow.setStatusBar(self.statusbar)
@@ -1801,3 +1804,4 @@ class Ui_MainWindow(object):
         self.tabWidgetMain.setTabText(self.tabWidgetMain.indexOf(self.tabMosaicBatch), _translate("MainWindow", "全景图批处理"))
         self.labelStatusImageContext.setText(_translate("MainWindow", "图像：未导入  |  蒙版：未使用  |  投影：普通透视镜头(TAN)"))
 from meteoalign.application.meteor_selection_view import MeteorSelectionView
+from meteoalign.application.status_bar import AppStatusBar

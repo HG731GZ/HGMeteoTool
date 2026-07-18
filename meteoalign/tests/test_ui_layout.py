@@ -90,6 +90,7 @@ def test_status_image_context_is_visible_only_on_star_matching_tab() -> None:
     ui.tabWidgetMain.setCurrentWidget(ui.tabReferenceImage)
     host._handle_tab_changed()
     assert not ui.labelStatusImageContext.isHidden()
+    assert "background-color: #cfe2ff" in ui.labelStatusImageContext.styleSheet()
 
     ui.tabWidgetMain.setCurrentWidget(ui.tabMeteorSelection)
     host._handle_tab_changed()

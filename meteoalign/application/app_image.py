@@ -119,7 +119,7 @@ class ImageMixin:
         self.ui.dateTimeEditObservation.setDateTime(qt_datetime)
         if hasattr(self, "schedule_render"):
             self.schedule_render(delay_ms=0)
-        return f"  已应用 EXIF 拍摄时间: {capture_item.capture_datetime.isoformat()}。"
+        return capture_item.capture_datetime.strftime("%Y-%m-%d %H:%M:%S")
 
     def _auto_sync_simulator_time_from_exif_enabled(self) -> bool:
         """返回导入图像时是否允许 EXIF 时间覆盖当前星空模拟时间。"""
@@ -137,7 +137,7 @@ class ImageMixin:
         selected_action = menu.exec_(self.ui.labelImportedImagePath.mapToGlobal(position))
         if selected_action is copy_action:
             QApplication.clipboard().setText(image_path_text)
-            self.ui.statusbar.showMessage(f"已复制真实图像完整路径: {image_path_text}")
+            self.ui.statusbar.showMessage(f"已复制真实图像完整路径: {Path(image_path_text).name}")
 
     def _reset_sky_mask_status(self) -> None:
         self.current_sky_mask_path = None
@@ -232,7 +232,7 @@ class ImageMixin:
             and current_mask_path.expanduser().resolve() == mask_path
         ):
             return False
-        self.ui.statusbar.showMessage(f"发现同名蒙版，正在自动导入: {mask_path}")
+        self.ui.statusbar.showMessage(f"发现同名蒙版，正在自动导入: {mask_path.name}")
         self.start_sky_mask_import(mask_path)
         return True
 
@@ -304,7 +304,7 @@ class ImageMixin:
         self._preserve_sequence_on_next_image_load = bool(preserve_sequence_status)
         self._preserve_image_group_on_next_image_load = bool(preserve_image_group_status)
         self._set_image_import_controls_enabled(False)
-        self.ui.statusbar.showMessage(f"正在读取 8-bit 显示图与原始位深计算数据: {image_path}")
+        self.ui.statusbar.showMessage(f"正在读取 8-bit 显示图与原始位深计算数据: {image_path.name}")
 
         progress = create_progress_dialog(
             self,
@@ -425,15 +425,15 @@ class ImageMixin:
             self._refresh_image_group_assistant_status()
         if clear_existing_pairs and hasattr(self, "_select_automatic_image_group_reference"):
             self._select_automatic_image_group_reference(preview.path)
-        exif_time_message = ""
+        capture_time_text = "未知"
         if clear_existing_pairs:
-            exif_time_message = self._apply_single_image_exif_observation_time(preview.path)
+            capture_time_text = self._apply_single_image_exif_observation_time(preview.path) or "未知"
         self.ui.statusbar.showMessage(
-            "已导入图像: {path}  原始: {width} x {height} px。{exif}右键匹配表行选择“点选位置”。".format(
-                path=Path(preview.path).expanduser().resolve(),
+            "{path} {width} X {height}，拍摄时间：{capture_time}".format(
+                path=Path(preview.path).name,
                 width=preview.original_width,
                 height=preview.original_height,
-                exif=exif_time_message,
+                capture_time=capture_time_text,
             )
         )
         skip_auto_import = (
@@ -505,7 +505,7 @@ class ImageMixin:
         image = self.current_image_preview.image
         source_path = Path(self.current_image_preview.path).expanduser().resolve()
         self._set_mask_import_controls_enabled(False)
-        self.ui.statusbar.showMessage(f"正在导入蒙版并生成缓存预览: {mask_path}")
+        self.ui.statusbar.showMessage(f"正在导入蒙版并生成缓存预览: {mask_path.name}")
 
         progress = create_progress_dialog(
             self,
@@ -563,7 +563,7 @@ class ImageMixin:
             self._refresh_real_image_display_for_mask()
             if hasattr(self, "_update_image_sequence_preview"):
                 self._update_image_sequence_preview()
-            self.ui.statusbar.showMessage(f"已导入蒙版并缓存显示图: {mask_path}")
+            self.ui.statusbar.showMessage(f"已导入蒙版并缓存显示图: {mask_path.name}")
         except Exception as exc:  # noqa: BLE001 - 主线程应用蒙版时需要把状态错误直接反馈给用户。
             self.ui.statusbar.showMessage(f"导入蒙版失败: {exc}")
             QMessageBox.critical(self, "导入蒙版失败", str(exc))

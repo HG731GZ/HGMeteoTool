@@ -1340,7 +1340,7 @@ class MosaicProjectionMixin:
             QMessageBox.critical(self, "导入取景失败", str(exc))
             self.ui.statusbar.showMessage(f"导入取景失败: {exc}")
             return False
-        self.ui.statusbar.showMessage(f"已导入自由投影取景: {json_path}")
+        self.ui.statusbar.showMessage(f"已导入自由投影取景: {json_path.name}")
         return True
 
     def _mosaic_payload_float(self, payload: dict[str, object], key: str, default: float) -> float:
@@ -1566,7 +1566,7 @@ class MosaicProjectionMixin:
         self._update_mosaic_export_button_state()
         self.schedule_mosaic_render(delay_ms=0)
         if not quiet:
-            self.ui.statusbar.showMessage(f"已导入源图模型: {source_model.json_path}")
+            self.ui.statusbar.showMessage(f"已导入源图模型: {source_model.json_path.name}")
         return True
 
     def load_mosaic_models_json(

@@ -155,8 +155,8 @@ def test_rough_framing_switches_at_four_manual_pairs_and_returns_after_deletion(
 
     harness._show_adjacent_framing_workflow_status(3, using_rough_framing=True)
     harness._show_adjacent_framing_workflow_status(4, using_rough_framing=False)
-    assert "暂不执行手工配准" in harness.ui.statusbar.messages[0]
-    assert "已停止使用参考图像粗略取景显示" in harness.ui.statusbar.messages[1]
+    assert harness.ui.statusbar.messages[0] == "参考星图同步目前由粗略取景提供"
+    assert harness.ui.statusbar.messages[1] == "参考星图同步基于当前匹配求解"
 
 
 def test_star_correspondences_find_shifted_stars() -> None:

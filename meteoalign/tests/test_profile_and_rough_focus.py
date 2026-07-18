@@ -110,7 +110,7 @@ def test_rough_framing_allows_double_click_focus_before_two_matches() -> None:
     harness._focus_star_pair_theoretical_position(2)
 
     assert harness.focused_position == (2, 120.0, 80.0, 37)
-    assert "已聚焦理论位置" in harness.ui.statusbar.messages[-1]
+    assert harness.ui.statusbar.messages[-1] == "已聚焦 测试星 的推算位置 (120.00,80.00)"
 
 
 def test_two_manual_pairs_allow_double_click_focus() -> None:

@@ -44,7 +44,7 @@ class ReferenceJsonIOMixin:
         self._json_import_progress = self._show_json_import_progress(
             title="正在导入预览 JSON",
             label_text=f"正在读取预览 JSON 并恢复星空模拟参数...\n{json_path}",
-            status_text=f"正在导入预览 JSON: {json_path}",
+            status_text=f"正在导入预览 JSON: {json_path.name}",
         )
 
         worker = ReferenceJsonImportWorker(json_path)
@@ -255,4 +255,4 @@ class ReferenceJsonIOMixin:
         self._update_lens_model_controls()
         self.ui.tabWidgetMain.setCurrentWidget(self.ui.tabSimulator)
         self.render_now()
-        self.ui.statusbar.showMessage(f"已导入预览 JSON 并恢复星空模拟参数: {source_path}")
+        self.ui.statusbar.showMessage(f"已导入预览 JSON 并恢复星空模拟参数: {source_path.name}")

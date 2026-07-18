@@ -221,7 +221,7 @@ class AlignmentMixin:
             self.ui.comboBoxProfileSolveMode.setCurrentIndex(1)
         self._update_camera_profile_controls()
         self._update_reference_alignment_transform()
-        self.ui.statusbar.showMessage(f"已导入 Camera Profile: {json_path}")
+        self.ui.statusbar.showMessage(f"已导入 Camera Profile: {json_path.name}")
 
     def clear_camera_calibration_profile(self) -> None:
         self._imported_camera_calibration_profile = None
@@ -424,21 +424,15 @@ class AlignmentMixin:
 
         return manual_pair_count < MIN_ALIGNMENT_PAIRS and self._has_rough_framing()
 
-    def _show_adjacent_framing_workflow_status(self, manual_pair_count: int, using_rough_framing: bool) -> None:
+    def _show_adjacent_framing_workflow_status(self, _manual_pair_count: int, using_rough_framing: bool) -> None:
         """在底部状态栏说明粗略取景和手工匹配之间的当前切换状态。"""
 
         if not self._has_rough_framing():
             return
         if using_rough_framing:
-            message = (
-                f"已记录 {manual_pair_count} 对手工匹配，暂不执行手工配准；"
-                f"参考星图同步拖拽由参考图像粗略取景提供，达到 {MIN_ALIGNMENT_PAIRS} 对后将切换。"
-            )
+            message = "参考星图同步目前由粗略取景提供"
         else:
-            message = (
-                f"已记录 {manual_pair_count} 对手工匹配，已停止使用参考图像粗略取景显示；"
-                "当前结果仅由手工匹配求解，粗略姿态仅作为已知投影的初始值。"
-            )
+            message = "参考星图同步基于当前匹配求解"
         self.ui.statusbar.showMessage(message)
 
     def _star_pair_alignment_residual(self, row: int) -> tuple[float, float, float] | None:

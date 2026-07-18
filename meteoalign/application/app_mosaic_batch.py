@@ -212,7 +212,7 @@ class MosaicBatchMixin:
         self._mosaic_batch_framing = framing
         self._mosaic_batch_base_model = None
         self._update_mosaic_batch_controls()
-        self.ui.statusbar.showMessage(f"已导入批处理取景 JSON: {framing.json_path}")
+        self.ui.statusbar.showMessage(f"已导入批处理取景 JSON: {framing.json_path.name}")
 
     def _import_mosaic_batch_base_json(self) -> None:
         default_dir = self._import_dialog_directory(self._mosaic_batch_default_dir())
@@ -236,7 +236,7 @@ class MosaicBatchMixin:
         self._mosaic_batch_base_model = base_model
         self._mosaic_batch_framing = None
         self._update_mosaic_batch_controls()
-        self.ui.statusbar.showMessage(f"已导入批处理底图 JSON: {base_model.json_path}")
+        self.ui.statusbar.showMessage(f"已导入批处理底图 JSON: {base_model.json_path.name}")
 
     def _load_mosaic_batch_framing(self, json_path: Path) -> MosaicBatchFraming:
         payload = json.loads(json_path.read_text(encoding="utf-8"))
