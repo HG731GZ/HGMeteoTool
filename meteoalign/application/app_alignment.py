@@ -60,7 +60,13 @@ class AlignmentMixin:
     """配准管理 Mixin：天球配准变换、残差计算、参考星图联动。"""
 
     ui: object
-    _sky_alignment_transform: PreliminarySkyAlignmentTransform | SkyAlignmentTransform | RoughFramingTransform | None
+    _sky_alignment_transform: (
+        PreliminarySkyAlignmentTransform
+        | SkyAlignmentTransform
+        | RoughFramingTransform
+        | FixedProfilePoseSourceModel
+        | None
+    )
     _source_astrometric_model: SourceAstrometricModel | FixedProfilePoseSourceModel | None
     _restored_alignment_initial_rotation_matrix: np.ndarray | None
     _imported_camera_calibration_profile: CameraCalibrationProfile | None
@@ -481,6 +487,23 @@ class AlignmentMixin:
             return rough_rotation
         return self._initial_projection_rotation_matrix()
 
+    def _fixed_profile_pose_initial_rotation_matrices(self) -> tuple[np.ndarray, ...]:
+        """收集恢复姿态、粗取景和模拟页姿态，作为数据初值之外的竞争候选。"""
+
+        candidates: list[np.ndarray] = []
+        restored_rotation = getattr(self, "_restored_alignment_initial_rotation_matrix", None)
+        if restored_rotation is not None:
+            rotation = np.asarray(restored_rotation, dtype=np.float64)
+            if rotation.shape == (3, 3) and np.all(np.isfinite(rotation)):
+                candidates.append(rotation.copy())
+        rough_rotation = self._rough_framing_initial_rotation_matrix()
+        if rough_rotation is not None:
+            candidates.append(rough_rotation)
+        simulated_rotation = self._initial_projection_rotation_matrix()
+        if simulated_rotation is not None:
+            candidates.append(simulated_rotation)
+        return tuple(candidates)
+
     def _has_rough_framing(self) -> bool:
         """判断当前图像是否保留可回退的参考图像粗略取景。"""
 
@@ -646,43 +669,51 @@ class AlignmentMixin:
             self._show_adjacent_framing_workflow_status(manual_pair_count, using_rough_framing=False)
             return
 
-        try:
-            image = self.current_image_preview.image
-            initial_rotation_matrix = self._manual_projection_initial_rotation_matrix()
-            # 源图基础投影由真实图像匹配拟合，避免复用星空模拟页的镜头投影或鱼眼视场。
-            source_projection_fov_deg = None
-            self._sky_alignment_transform = fit_sky_alignment(
-                ra_dec_points=sky_points,
-                target_points=sky_target_points,
-                matching_model=self._alignment_model(),
-                image_size=(image.width(), image.height()),
-                fisheye_fov_deg=source_projection_fov_deg,
-                initial_rotation_matrix=initial_rotation_matrix,
-                point_weights=fit_weights,
-                residual_anchor_mask=anchor_mask,
-            )
-        except Exception as exc:  # noqa: BLE001 - 天球残差失败需要直接反馈给交互界面。
-            self._sky_alignment_error_message = str(exc)
-        if self._sky_alignment_transform is not None and self.current_image_preview is not None:
+        image = self.current_image_preview.image
+        source_projection_fov_deg = None
+        if self._profile_reuse_enabled():
             try:
-                image = self.current_image_preview.image
-                initial_rotation_matrix = self._manual_projection_initial_rotation_matrix()
                 imported_profile = getattr(self, "_imported_camera_calibration_profile", None)
-                if self._profile_reuse_enabled():
-                    if imported_profile is None:
-                        raise ValueError("已选择使用 Profile，但尚未导入 Camera Profile。")
-                    self._source_astrometric_model = fit_source_astrometric_model_with_fixed_profile(
-                        ra_dec_points=sky_points,
-                        pixel_points=sky_target_points,
-                        image_size=(image.width(), image.height()),
-                        camera_calibration_profile=imported_profile,
-                        initial_rotation_matrix=initial_rotation_matrix,
-                        point_weights=fit_weights,
-                        residual_anchor_mask=anchor_mask,
-                        profile_source_path=str(getattr(self, "_imported_camera_calibration_profile_path", "") or ""),
-                        solve_mode=self._profile_reuse_solve_mode(),
-                    )
-                else:
+                if imported_profile is None:
+                    raise ValueError("已选择使用 Profile，但尚未导入 Camera Profile。")
+                pose_candidates = self._fixed_profile_pose_initial_rotation_matrices()
+                supplied_initial = pose_candidates[0] if pose_candidates else None
+                additional_initials = pose_candidates[1:] if pose_candidates else ()
+                self._source_astrometric_model = fit_source_astrometric_model_with_fixed_profile(
+                    ra_dec_points=sky_points,
+                    pixel_points=sky_target_points,
+                    image_size=(image.width(), image.height()),
+                    camera_calibration_profile=imported_profile,
+                    initial_rotation_matrix=supplied_initial,
+                    additional_initial_rotation_matrices=additional_initials,
+                    point_weights=fit_weights,
+                    residual_anchor_mask=anchor_mask,
+                    profile_source_path=str(getattr(self, "_imported_camera_calibration_profile_path", "") or ""),
+                    solve_mode=self._profile_reuse_solve_mode(),
+                )
+                # 固定 Profile 模型本身就是实时叠加变换，不再让普通投影拟合成为前置条件。
+                self._sky_alignment_transform = self._source_astrometric_model
+            except Exception as exc:  # noqa: BLE001 - 固定 Profile 求解错误要反馈给残差与导出状态。
+                self._sky_alignment_error_message = str(exc)
+                self._source_model_error_message = str(exc)
+        else:
+            try:
+                initial_rotation_matrix = self._manual_projection_initial_rotation_matrix()
+                # 源图基础投影由真实图像匹配拟合，避免复用星空模拟页的镜头投影或鱼眼视场。
+                self._sky_alignment_transform = fit_sky_alignment(
+                    ra_dec_points=sky_points,
+                    target_points=sky_target_points,
+                    matching_model=self._alignment_model(),
+                    image_size=(image.width(), image.height()),
+                    fisheye_fov_deg=source_projection_fov_deg,
+                    initial_rotation_matrix=initial_rotation_matrix,
+                    point_weights=fit_weights,
+                    residual_anchor_mask=anchor_mask,
+                )
+            except Exception as exc:  # noqa: BLE001 - 天球残差失败需要直接反馈给交互界面。
+                self._sky_alignment_error_message = str(exc)
+            if self._sky_alignment_transform is not None:
+                try:
                     self._source_astrometric_model = fit_source_astrometric_model(
                         ra_dec_points=sky_points,
                         pixel_points=sky_target_points,
@@ -693,8 +724,8 @@ class AlignmentMixin:
                         point_weights=fit_weights,
                         residual_anchor_mask=anchor_mask,
                     )
-            except Exception as exc:  # noqa: BLE001 - 源图模型错误要保留给导出按钮和状态栏。
-                self._source_model_error_message = str(exc)
+                except Exception as exc:  # noqa: BLE001 - 源图模型错误要保留给导出按钮和状态栏。
+                    self._source_model_error_message = str(exc)
         self._sync_simulator_view_from_alignment()
         self._update_star_pair_residual_columns()
         self._update_reference_alignment_display()

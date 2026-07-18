@@ -247,6 +247,74 @@ def test_fixed_profile_pose_solver_reuses_embedded_profile_without_refitting_int
     assert np.max(np.linalg.norm(predicted - pixels, axis=1)) < 1e-5
 
 
+def test_fixed_profile_pose_solver_ignores_distant_simulator_seed() -> None:
+    """模拟页姿态严重偏离时，匹配点反投影得到的 Wahba 初值仍应独立完成求解。"""
+
+    radec, pixels = _projection_fixture(SKY_MATCHING_MODEL_RECTILINEAR)
+    transform = fit_sky_alignment(
+        radec,
+        pixels,
+        matching_model=SKY_MATCHING_MODEL_RECTILINEAR,
+        image_size=(1000, 800),
+    )
+    profile = CameraCalibrationProfile.from_projection_transform(transform)
+    angle_rad = np.deg2rad(145.0)
+    distant_delta = np.asarray(
+        (
+            (1.0, 0.0, 0.0),
+            (0.0, np.cos(angle_rad), -np.sin(angle_rad)),
+            (0.0, np.sin(angle_rad), np.cos(angle_rad)),
+        ),
+        dtype=np.float64,
+    )
+    distant_initial = distant_delta @ transform.rotation_matrix
+
+    solved = fit_source_astrometric_model_with_fixed_profile(
+        radec,
+        pixels,
+        image_size=(1000, 800),
+        camera_calibration_profile=profile,
+        initial_rotation_matrix=distant_initial,
+        additional_initial_rotation_matrices=[np.eye(3, dtype=np.float64)],
+    )
+    frame_model = solved.to_frame_astrometric_model()
+    predicted = solved.transform_radec_points(radec)
+
+    assert solved.display_name == "固定 Camera Profile 姿态"
+    assert np.max(np.linalg.norm(predicted - pixels, axis=1)) < 1e-5
+    assert frame_model.diagnostics["fixed_profile_pose_solver_selected_initial"] == (
+        "matched_points_wahba_kabsch"
+    )
+    assert frame_model.diagnostics["fixed_profile_pose_solver_candidate_count"] >= 2
+    assert frame_model.diagnostics["fixed_profile_pose_solver_weighted_rms_px"] < 1e-5
+
+
+@pytest.mark.parametrize("lens_model", KNOWN_PROJECTION_MODELS)
+def test_fixed_profile_pose_solver_needs_no_external_initial_rotation(lens_model: str) -> None:
+    """固定 Profile 求解应能仅凭匹配点构造姿态，不要求恢复的 frame_pose。"""
+
+    radec, pixels = _projection_fixture(lens_model)
+    transform = fit_sky_alignment(
+        radec,
+        pixels,
+        matching_model=lens_model,
+        image_size=(1000, 800),
+    )
+    profile = CameraCalibrationProfile.from_projection_transform(transform)
+
+    solved = fit_source_astrometric_model_with_fixed_profile(
+        radec,
+        pixels,
+        image_size=(1000, 800),
+        camera_calibration_profile=profile,
+    )
+
+    assert solved.rms_px < 1e-5
+    assert solved.frame_model.diagnostics["fixed_profile_pose_solver_selected_initial"] == (
+        "matched_points_wahba_kabsch"
+    )
+
+
 def test_fixed_profile_pose_local_residual_round_trips_from_json() -> None:
     radec, pixels = _projection_fixture(SKY_MATCHING_MODEL_RECTILINEAR)
     transform = fit_sky_alignment(

@@ -48,6 +48,7 @@ INVERSE_SOLVER_MAX_STEP_DEG = 2.0
 INVERSE_SOLVER_SCALAR_FALLBACK_LIMIT = 8
 FIXED_PROFILE_POSE_SOLVER_INVALID_RESIDUAL_PX = 1e6
 FIXED_PROFILE_POSE_SOLVER_MAX_NFEV = 180
+FIXED_PROFILE_POSE_CANDIDATE_DUPLICATE_TOLERANCE_RAD = 1e-8
 
 
 def _finite_point_mask(*arrays: np.ndarray) -> np.ndarray:
@@ -482,6 +483,19 @@ class FixedProfilePoseSourceModel:
     def direction_to_pixel_points(self, ra_dec_points: np.ndarray) -> np.ndarray:
         return self.frame_model.sky_to_pixel_points(ra_dec_points)
 
+    def transform_radec_points(self, ra_dec_points: np.ndarray) -> np.ndarray:
+        """兼容实时叠加所需的天球配准变换接口。"""
+
+        return self.direction_to_pixel_points(ra_dec_points)
+
+    def transform_radec(self, ra_deg: float, dec_deg: float) -> tuple[float, float]:
+        pixel = self.direction_to_pixel_points(np.asarray([[ra_deg, dec_deg]], dtype=np.float64))[0]
+        return float(pixel[0]), float(pixel[1])
+
+    @property
+    def display_name(self) -> str:
+        return "固定 Camera Profile 姿态"
+
     def pixel_to_radec_points(self, pixel_points: np.ndarray) -> np.ndarray:
         return self.frame_model.pixel_to_sky_points(pixel_points)
 
@@ -511,6 +525,60 @@ class FixedProfilePoseSourceModel:
         )
 
 
+def _weighted_wahba_rotation_matrix(
+    world_vectors: np.ndarray,
+    camera_vectors: np.ndarray,
+    point_weights: np.ndarray,
+) -> np.ndarray:
+    """以加权 Wahba/Kabsch 求解 ICRS 单位向量到相机单位射线的旋转。"""
+
+    world = np.asarray(world_vectors, dtype=np.float64)
+    camera = np.asarray(camera_vectors, dtype=np.float64)
+    weights = np.asarray(point_weights, dtype=np.float64).reshape(-1)
+    finite = (
+        np.all(np.isfinite(world), axis=1)
+        & np.all(np.isfinite(camera), axis=1)
+        & np.isfinite(weights)
+        & (weights > 0.0)
+    )
+    if np.count_nonzero(finite) < 2:
+        raise ValueError("有效反投影射线不足，无法从匹配点构造固定 Profile 姿态初值。")
+
+    world = world[finite]
+    camera = camera[finite]
+    weights = weights[finite]
+    world_norm = np.linalg.norm(world, axis=1)
+    camera_norm = np.linalg.norm(camera, axis=1)
+    valid_norm = (world_norm > 1e-12) & (camera_norm > 1e-12)
+    if np.count_nonzero(valid_norm) < 2:
+        raise ValueError("有效单位向量不足，无法从匹配点构造固定 Profile 姿态初值。")
+    world = world[valid_norm] / world_norm[valid_norm, None]
+    camera = camera[valid_norm] / camera_norm[valid_norm, None]
+    weights = weights[valid_norm]
+
+    covariance = world.T @ (camera * weights[:, None])
+    try:
+        left, singular_values, right_transpose = np.linalg.svd(covariance)
+    except np.linalg.LinAlgError as exc:
+        raise ValueError("匹配点的 Wahba/Kabsch 姿态初值分解失败。") from exc
+    if singular_values[1] <= max(float(singular_values[0]), 1.0) * 1e-12:
+        raise ValueError("匹配星方向过于集中或共线，无法稳定构造固定 Profile 姿态初值。")
+
+    rotation_matrix = right_transpose.T @ left.T
+    if np.linalg.det(rotation_matrix) < 0.0:
+        right_transpose[-1, :] *= -1.0
+        rotation_matrix = right_transpose.T @ left.T
+    return FramePose(rotation_matrix).icrs_to_camera
+
+
+def _rotation_matrix_distance_rad(first: np.ndarray, second: np.ndarray) -> float:
+    """返回两个姿态之间的最小旋转角，用于去除重复候选。"""
+
+    relative = np.asarray(first, dtype=np.float64) @ np.asarray(second, dtype=np.float64).T
+    cosine = np.clip((float(np.trace(relative)) - 1.0) * 0.5, -1.0, 1.0)
+    return float(np.arccos(cosine))
+
+
 def fit_source_astrometric_model_with_fixed_profile(
     ra_dec_points: np.ndarray,
     pixel_points: np.ndarray,
@@ -518,6 +586,7 @@ def fit_source_astrometric_model_with_fixed_profile(
     camera_calibration_profile: CameraCalibrationProfile,
     *,
     initial_rotation_matrix: np.ndarray | None = None,
+    additional_initial_rotation_matrices: tuple[np.ndarray, ...] | list[np.ndarray] | None = None,
     point_weights: np.ndarray | None = None,
     residual_anchor_mask: np.ndarray | None = None,
     profile_source_path: str = "",
@@ -549,39 +618,105 @@ def fit_source_astrometric_model_with_fixed_profile(
         raise ValueError("源图尺寸无效，无法用导入 Profile 求姿态。")
 
     world_vectors = radec_to_unit_vectors(sky_radec[:, 0], sky_radec[:, 1])
-    if initial_rotation_matrix is None:
-        base_rotation = np.eye(3, dtype=np.float64)
-    else:
-        base_rotation = FramePose(np.asarray(initial_rotation_matrix, dtype=np.float64)).icrs_to_camera
     sqrt_weights = np.sqrt(np.clip(fit_weights, FIT_WEIGHT_MIN, FIT_WEIGHT_MAX))
+    camera_rays = camera_calibration_profile.pixel_to_camera_ray_points(pixels)
+    candidate_rotations: list[tuple[str, np.ndarray]] = []
 
-    def model_pixels(delta_rotvec: np.ndarray) -> np.ndarray:
-        delta_rotation = Rotation.from_rotvec(np.asarray(delta_rotvec, dtype=np.float64)).as_matrix()
-        rotation_matrix = delta_rotation @ base_rotation
-        camera_vectors = world_vectors @ rotation_matrix.T
-        return camera_calibration_profile.camera_ray_to_pixel_points(camera_vectors)
+    def add_candidate(name: str, rotation_matrix: np.ndarray) -> None:
+        rotation = FramePose(np.asarray(rotation_matrix, dtype=np.float64)).icrs_to_camera
+        if any(
+            _rotation_matrix_distance_rad(rotation, existing) <= FIXED_PROFILE_POSE_CANDIDATE_DUPLICATE_TOLERANCE_RAD
+            for _existing_name, existing in candidate_rotations
+        ):
+            return
+        candidate_rotations.append((name, rotation))
 
-    def residual_function(delta_rotvec: np.ndarray) -> np.ndarray:
-        predicted = model_pixels(delta_rotvec)
+    data_initial_error = ""
+    try:
+        add_candidate(
+            "matched_points_wahba_kabsch",
+            _weighted_wahba_rotation_matrix(world_vectors, camera_rays, fit_weights),
+        )
+    except (TypeError, ValueError, np.linalg.LinAlgError) as exc:
+        data_initial_error = str(exc)
+
+    if initial_rotation_matrix is not None:
+        add_candidate("supplied_initial", initial_rotation_matrix)
+    for index, rotation_matrix in enumerate(additional_initial_rotation_matrices or (), start=1):
+        add_candidate(f"additional_initial_{index}", rotation_matrix)
+    if not candidate_rotations:
+        add_candidate("identity_fallback", np.eye(3, dtype=np.float64))
+
+    candidate_diagnostics: list[dict[str, Any]] = []
+    best_result = None
+    best_rotation: np.ndarray | None = None
+    best_weighted_rms = float("inf")
+    best_candidate_name = ""
+    for candidate_name, base_rotation in candidate_rotations:
+        def model_pixels(delta_rotvec: np.ndarray) -> np.ndarray:
+            delta_rotation = Rotation.from_rotvec(np.asarray(delta_rotvec, dtype=np.float64)).as_matrix()
+            rotation_matrix = delta_rotation @ base_rotation
+            camera_vectors = world_vectors @ rotation_matrix.T
+            return camera_calibration_profile.camera_ray_to_pixel_points(camera_vectors)
+
+        def residual_function(delta_rotvec: np.ndarray) -> np.ndarray:
+            predicted = model_pixels(delta_rotvec)
+            residual = predicted - pixels
+            finite = np.all(np.isfinite(residual), axis=1)
+            safe_residual = np.full_like(residual, FIXED_PROFILE_POSE_SOLVER_INVALID_RESIDUAL_PX)
+            safe_residual[finite] = residual[finite]
+            return (safe_residual * sqrt_weights[:, None]).ravel()
+
+        try:
+            result = least_squares(
+                residual_function,
+                np.zeros(3, dtype=np.float64),
+                max_nfev=FIXED_PROFILE_POSE_SOLVER_MAX_NFEV,
+                xtol=1e-10,
+                ftol=1e-10,
+                gtol=1e-10,
+            )
+        except (TypeError, ValueError, np.linalg.LinAlgError) as exc:
+            candidate_diagnostics.append(
+                {
+                    "source": candidate_name,
+                    "success": False,
+                    "weighted_rms_px": None,
+                    "message": str(exc),
+                }
+            )
+            continue
+
+        optimized_rotation = Rotation.from_rotvec(np.asarray(result.x, dtype=np.float64)).as_matrix() @ base_rotation
+        predicted = camera_calibration_profile.camera_ray_to_pixel_points(world_vectors @ optimized_rotation.T)
         residual = predicted - pixels
-        finite = np.all(np.isfinite(residual), axis=1)
-        safe_residual = np.full_like(residual, FIXED_PROFILE_POSE_SOLVER_INVALID_RESIDUAL_PX)
-        safe_residual[finite] = residual[finite]
-        return (safe_residual * sqrt_weights[:, None]).ravel()
+        finite_residual = np.all(np.isfinite(residual), axis=1)
+        if np.all(finite_residual) and np.all(np.isfinite(result.x)):
+            squared_distance = np.sum(residual * residual, axis=1)
+            weighted_rms = float(np.sqrt(np.sum(fit_weights * squared_distance) / np.sum(fit_weights)))
+        else:
+            weighted_rms = float("inf")
+        candidate_diagnostics.append(
+            {
+                "source": candidate_name,
+                "success": bool(np.isfinite(weighted_rms)),
+                "optimizer_converged": bool(result.success),
+                "weighted_rms_px": float(weighted_rms) if np.isfinite(weighted_rms) else None,
+                "cost": float(result.cost),
+                "nfev": int(result.nfev),
+                "message": str(result.message),
+            }
+        )
+        if weighted_rms < best_weighted_rms:
+            best_result = result
+            best_rotation = optimized_rotation
+            best_weighted_rms = weighted_rms
+            best_candidate_name = candidate_name
 
-    result = least_squares(
-        residual_function,
-        np.zeros(3, dtype=np.float64),
-        max_nfev=FIXED_PROFILE_POSE_SOLVER_MAX_NFEV,
-        xtol=1e-10,
-        ftol=1e-10,
-        gtol=1e-10,
-    )
-    if not result.success and not np.all(np.isfinite(result.x)):
-        raise ValueError(f"导入 Profile 姿态求解失败：{result.message}")
-
-    best_delta = np.asarray(result.x, dtype=np.float64)
-    best_rotation = Rotation.from_rotvec(best_delta).as_matrix() @ base_rotation
+    if best_result is None or best_rotation is None:
+        detail = f"；数据初值：{data_initial_error}" if data_initial_error else ""
+        raise ValueError(f"导入 Profile 姿态求解失败：所有初值均未得到有效像素解{detail}")
+    result = best_result
     frame_model = FrameAstrometricModel(
         image_width_px=image_width,
         image_height_px=image_height,
@@ -681,6 +816,11 @@ def fit_source_astrometric_model_with_fixed_profile(
         "round_trip_max_px": float(roundtrip_max_px),
         "fixed_profile_pose_solver_cost": float(result.cost),
         "fixed_profile_pose_solver_nfev": int(result.nfev),
+        "fixed_profile_pose_solver_weighted_rms_px": float(best_weighted_rms),
+        "fixed_profile_pose_solver_selected_initial": best_candidate_name,
+        "fixed_profile_pose_solver_candidate_count": len(candidate_diagnostics),
+        "fixed_profile_pose_solver_candidates": candidate_diagnostics,
+        "fixed_profile_pose_data_initial_error": data_initial_error or None,
         "frame_local_residual_enabled": bool(frame_model.frame_local_residual.enabled),
         "profile_image_width_px": int(camera_calibration_profile.image_width_px),
         "profile_image_height_px": int(camera_calibration_profile.image_height_px),

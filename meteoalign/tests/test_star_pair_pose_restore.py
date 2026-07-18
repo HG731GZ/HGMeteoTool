@@ -157,3 +157,22 @@ def test_manual_alignment_prefers_restored_starpairs_pose_as_fit_seed() -> None:
     assert initial_rotation is not None
     assert np.allclose(initial_rotation, model.frame_pose.icrs_to_camera)
     assert initial_rotation is not harness._restored_alignment_initial_rotation_matrix
+
+
+def test_fixed_profile_collects_all_available_pose_candidates() -> None:
+    """固定 Profile 应同时保留恢复姿态、粗取景和模拟页姿态供求解器竞争。"""
+
+    harness = AlignmentMixin()
+    restored = np.eye(3, dtype=np.float64)
+    rough = np.asarray(((0.0, -1.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0)), dtype=np.float64)
+    simulated = np.asarray(((1.0, 0.0, 0.0), (0.0, 0.0, -1.0), (0.0, 1.0, 0.0)), dtype=np.float64)
+    harness._restored_alignment_initial_rotation_matrix = restored
+    harness._rough_framing_initial_rotation_matrix = lambda: rough.copy()
+    harness._initial_projection_rotation_matrix = lambda: simulated.copy()
+
+    candidates = harness._fixed_profile_pose_initial_rotation_matrices()
+
+    assert len(candidates) == 3
+    assert np.allclose(candidates[0], restored)
+    assert np.allclose(candidates[1], rough)
+    assert np.allclose(candidates[2], simulated)
