@@ -206,16 +206,42 @@ class SourceModelExportMixin:
             if result is None:
                 return
             json_path, pair_count, rms_px, preloaded_to_mosaic = result
+            try:
+                star_pair_result = self._write_current_star_pair_session()
+            except Exception as exc:  # noqa: BLE001 - 映射已落盘时必须单独说明匹配 JSON 的保存失败。
+                self.ui.statusbar.showMessage(
+                    f"映射 JSON 已导出，但星点匹配 JSON 保存失败: {exc}"
+                )
+                QMessageBox.critical(
+                    self,
+                    "星点匹配 JSON 保存失败",
+                    f"映射 JSON 已成功导出：\n{json_path}\n\n星点匹配 JSON 保存失败：\n{exc}",
+                )
+                return
+            if star_pair_result is None:
+                self.ui.statusbar.showMessage("映射 JSON 已导出，但已取消覆盖星点匹配 JSON。")
+                QMessageBox.warning(
+                    self,
+                    "映射已导出",
+                    f"映射 JSON 已成功导出：\n{json_path}\n\n星点匹配 JSON 未覆盖。",
+                )
+                return
+            star_pair_path, star_pair_count = star_pair_result
             preload_status = "，已预载到全景构图" if preloaded_to_mosaic else "，自由投影预载失败"
             self.ui.statusbar.showMessage(
-                f"已导出 xy→RA/Dec 映射 JSON: {json_path}  匹配数: {pair_count}  "
-                f"RMS: {rms_px:.2f}px{preload_status}"
+                f"已导出映射并保存星点匹配 JSON: {json_path}  匹配: {star_pair_path}  "
+                f"匹配数: {pair_count}  RMS: {rms_px:.2f}px{preload_status}"
             )
             preload_message = "\n已预载到全景构图，可切换页面查看。" if preloaded_to_mosaic else "\n自由投影预载失败，可稍后手动导入检查。"
             QMessageBox.information(
                 self,
-                "映射 JSON 已导出",
-                f"JSON：{json_path}\n匹配数：{pair_count}\nRMS：{rms_px:.2f} px{preload_message}",
+                "映射与匹配 JSON 已导出",
+                (
+                    f"映射 JSON：{json_path}\n"
+                    f"星点匹配 JSON：{star_pair_path}\n"
+                    f"匹配数：{star_pair_count}\n"
+                    f"RMS：{rms_px:.2f} px{preload_message}"
+                ),
             )
         except Exception as exc:  # noqa: BLE001 - 导出入口需要把模型生成与文件错误直接反馈给用户。
             self.ui.statusbar.showMessage(f"导出 xy→RA/Dec 映射 JSON 失败: {exc}")
