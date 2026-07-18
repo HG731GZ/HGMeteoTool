@@ -29,7 +29,11 @@ class ImagePreviewLoadWorker(QObject):
 
     def run(self) -> None:
         try:
-            preview = load_image_preview(self.file_path, max_long_side_px=self.max_long_side_px)
+            preview = load_image_preview(
+                self.file_path,
+                max_long_side_px=self.max_long_side_px,
+                include_native_luminance=self.max_long_side_px is None,
+            )
             self.finished.emit(preview)
         except Exception as exc:  # noqa: BLE001 - 后台线程需要把所有读取错误传回界面层。
             self.failed.emit(str(exc))
@@ -135,7 +139,11 @@ class StarPairSessionImportWorker(QObject):
         try:
             payload = json.loads(self.file_path.read_text(encoding="utf-8"))
             image_path = self._real_image_path(payload)
-            preview = load_image_preview(image_path, max_long_side_px=None)
+            preview = load_image_preview(
+                image_path,
+                max_long_side_px=None,
+                include_native_luminance=True,
+            )
             self.finished.emit((self.file_path, payload, preview))
         except Exception as exc:  # noqa: BLE001 - 后台线程需要把所有 JSON/图像读取错误传回界面层。
             self.failed.emit(str(exc))

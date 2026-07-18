@@ -332,7 +332,11 @@ class SequenceExportMixin:
             return False
 
     def _load_first_sequence_image_without_tab_switch(self, first_item: ImageSequenceItem) -> None:
-        preview = load_image_preview(first_item.path, max_long_side_px=None)
+        preview = load_image_preview(
+            first_item.path,
+            max_long_side_px=None,
+            include_native_luminance=True,
+        )
         self._preserve_sequence_on_next_image_load = True
         self._apply_loaded_image_preview(
             preview,
@@ -399,7 +403,11 @@ class SequenceExportMixin:
             return False
         try:
             payload = json.loads(json_path.read_text(encoding="utf-8"))
-            preview = load_image_preview(first_item.path, max_long_side_px=None)
+            preview = load_image_preview(
+                first_item.path,
+                max_long_side_px=None,
+                include_native_luminance=True,
+            )
             current_tab = self.ui.tabWidgetMain.currentWidget()
             self._clear_star_pair_positions_for_new_input("第一帧匹配 JSON")
             self._apply_star_pair_session_payload(

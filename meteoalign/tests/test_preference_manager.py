@@ -106,6 +106,7 @@ def test_mosaic_display_scales_and_search_radii_have_independent_defaults(tmp_pa
     assert config.mosaic_star_marker_size_multiplier == 0.5
     assert config.auto_match_default_search_radius_px == 30
     assert config.sequence_psf_search_radius_px == 30
+    assert config.use_8bit_psf_precision is True
 
 
 def test_psf_interaction_preferences_are_loaded_and_bounded(tmp_path: Path) -> None:
@@ -116,6 +117,7 @@ def test_psf_interaction_preferences_are_loaded_and_bounded(tmp_path: Path) -> N
         """
         {
           "star_pair_psf_outer_diameter_multiplier": 20.0,
+          "use_8bit_psf_precision": false,
           "star_pick_psf_fit_error_limit": -1.0,
           "star_pick_saturated_psf_fit_error_limit": 99.0,
           "auto_pair_search_rms_multiplier": -1.0,
@@ -131,6 +133,7 @@ def test_psf_interaction_preferences_are_loaded_and_bounded(tmp_path: Path) -> N
     config = load_star_map_ui_config(preference_path)
 
     assert config.star_pair_psf_outer_diameter_multiplier == 10.0
+    assert config.use_8bit_psf_precision is False
     assert config.star_pick_psf_fit_error_limit == 0.05
     assert config.star_pick_saturated_psf_fit_error_limit == 2.0
     assert config.auto_pair_search_rms_multiplier == 0.0

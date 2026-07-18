@@ -1159,7 +1159,7 @@ class MosaicProjectionMixin:
             QMessageBox.warning(self, "导出重投影图失败", "源图模型 JSON 未记录原图路径。")
             return
         if not mosaic_export_available():
-            QMessageBox.critical(self, "导出重投影图失败", "当前环境缺少 OpenCV 或 tifffile，无法写入 16-bit TIFF。")
+            QMessageBox.critical(self, "导出重投影图失败", "当前环境缺少 OpenCV 或 tifffile，无法写入 TIFF。")
             return
 
         if self._mosaic_output_size()[0] <= 0 or self._mosaic_output_size()[1] <= 0:
@@ -1205,7 +1205,7 @@ class MosaicProjectionMixin:
             (
                 f"导出文件：\n{output_path}\n\n"
                 f"尺寸：{geometry.output_width_px} x {geometry.output_height_px} px\n"
-                f"格式：{compression_text} 16-bit RGBA TIFF\n"
+                f"格式：{compression_text}、与原图同位深（最高 16-bit）的 RGBA TIFF\n"
                 "背景：透明"
             ),
             QMessageBox.Yes | QMessageBox.No,

@@ -199,7 +199,18 @@ class SequenceProcessingMixin:
                 QApplication.processEvents()
 
                 try:
-                    preview = load_image_preview(item.path, max_long_side_px=None)
+                    use_8bit_psf = bool(
+                        getattr(
+                            getattr(self, "ui_config", None),
+                            "use_8bit_psf_precision",
+                            True,
+                        )
+                    )
+                    preview = load_image_preview(
+                        item.path,
+                        max_long_side_px=None,
+                        include_native_luminance=not use_8bit_psf,
+                    )
                     if (preview.image.width(), preview.image.height()) != target_size:
                         raise ValueError(
                             "图像尺寸与第一张不一致：第一张 {base_w} x {base_h} px，当前 {w} x {h} px。".format(
@@ -209,7 +220,11 @@ class SequenceProcessingMixin:
                                 h=preview.image.height(),
                             )
                         )
-                    sequence_luminance = qimage_to_grayscale_array(preview.image)
+                    sequence_luminance = (
+                        None if use_8bit_psf else getattr(preview, "native_luminance", None)
+                    )
+                    if sequence_luminance is None:
+                        sequence_luminance = qimage_to_grayscale_array(preview.image)
                     stats = {
                         "failed_psf": 0,
                         "skipped_mask": 0,

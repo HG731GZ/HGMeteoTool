@@ -97,6 +97,18 @@ class AutoMatchMixin:
     _enter_star_pick_mode: object  # method
     _star_pair_position_count: object  # method
 
+    def _current_psf_image(self) -> object:
+        """按精度选项返回 8-bit 显示图或原始位深亮度图。"""
+
+        preview = self.current_image_preview
+        if preview is None:
+            raise ValueError("请先导入真实图像。")
+        ui_config = getattr(self, "ui_config", None)
+        if bool(getattr(ui_config, "use_8bit_psf_precision", True)):
+            return preview.image
+        native_luminance = getattr(preview, "native_luminance", None)
+        return native_luminance if native_luminance is not None else preview.image
+
     def _scene_radius_from_screen_radius(
         self,
         view: QGraphicsView,
@@ -229,7 +241,7 @@ class AutoMatchMixin:
         max_fit_radius_px = self._star_pick_psf_radius_px(viewport_pos)
         try:
             fitted_position = fit_star_position(
-                image,
+                AutoMatchMixin._current_psf_image(self),
                 click_x=image_x,
                 click_y=image_y,
                 radius_px=search_radius_px,
@@ -330,7 +342,7 @@ class AutoMatchMixin:
 
         try:
             fitted_position = fit_star_position(
-                image,
+                AutoMatchMixin._current_psf_image(self),
                 click_x=predicted_x,
                 click_y=predicted_y,
                 radius_px=search_radius_px,
@@ -829,7 +841,7 @@ class AutoMatchMixin:
                 continue
             try:
                 nearby_sources = detect_star_candidates(
-                    image,
+                    AutoMatchMixin._current_psf_image(self),
                     click_x=predicted_x,
                     click_y=predicted_y,
                     radius_px=search_radius_px,
@@ -896,7 +908,7 @@ class AutoMatchMixin:
                         ),
                     )
                     fitted_position = fit_star_position(
-                        image,
+                        AutoMatchMixin._current_psf_image(self),
                         click_x=assigned_source.x,
                         click_y=assigned_source.y,
                         radius_px=source_fit_search_radius,

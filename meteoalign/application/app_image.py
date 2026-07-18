@@ -304,12 +304,12 @@ class ImageMixin:
         self._preserve_sequence_on_next_image_load = bool(preserve_sequence_status)
         self._preserve_image_group_on_next_image_load = bool(preserve_image_group_status)
         self._set_image_import_controls_enabled(False)
-        self.ui.statusbar.showMessage(f"正在读取整张图像并量化为 8-bit: {image_path}")
+        self.ui.statusbar.showMessage(f"正在读取 8-bit 显示图与原始位深计算数据: {image_path}")
 
         progress = create_progress_dialog(
             self,
             title="正在导入图像",
-            label_text=f"正在读取整张图像并量化为 8-bit 显示图...\n{image_path}",
+            label_text=f"正在读取 8-bit 显示图与原始位深计算数据...\n{image_path}",
             minimum=0,
             maximum=0,
         )
@@ -333,7 +333,11 @@ class ImageMixin:
 
     def load_single_image(self, file_path: str | Path) -> None:
         try:
-            preview = load_image_preview(file_path, max_long_side_px=None)
+            preview = load_image_preview(
+                file_path,
+                max_long_side_px=None,
+                include_native_luminance=True,
+            )
             self._apply_loaded_image_preview(preview)
         except Exception as exc:  # noqa: BLE001 - 文件导入错误需要以对话框形式提示用户。
             self.ui.statusbar.showMessage(f"导入图像失败: {exc}")

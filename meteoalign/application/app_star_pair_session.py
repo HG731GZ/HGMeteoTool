@@ -648,7 +648,11 @@ class StarPairSessionMixin:
             self._refresh_reference_stars_from_current_map()
             self._ensure_pair_record_stars_visible(pair_records)
             if preview is None:
-                preview = load_image_preview(image_path, max_long_side_px=None)
+                preview = load_image_preview(
+                    image_path,
+                    max_long_side_px=None,
+                    include_native_luminance=True,
+                )
             self._apply_loaded_image_preview(
                 preview,
                 clear_existing_pairs=False,

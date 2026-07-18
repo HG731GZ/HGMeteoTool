@@ -15,6 +15,7 @@ from meteoalign.psf.models import StarSourceCandidate
 from meteoalign.star_fitting import (
     StarFitError,
     detect_star_candidates_from_array,
+    fit_star_position,
     fit_star_position_from_array,
     qimage_to_grayscale_array,
 )
@@ -114,6 +115,20 @@ def test_uint16_array_preserves_native_saturation_level() -> None:
     saturated_fit = fit_star_position_from_array(saturated, 40.0, 40.0, 20)
     assert saturated_fit.saturated
     assert saturated_fit.x == pytest.approx(40.0, abs=0.3)
+
+
+def test_psf_qt_adapter_keeps_uint8_and_uint16_signal_scales() -> None:
+    """同一星点的 8/16 位原生数组不能在 Qt 适配层被强制成同一量化尺度。"""
+
+    image_8bit = np.clip(_gaussian_scene([(40.0, 40.0, 180.0, 2.0)]), 0.0, 250.0).astype(np.uint8)
+    image_16bit = image_8bit.astype(np.uint16) * 257
+
+    fitted_8bit = fit_star_position(image_8bit, 40.0, 40.0, 16)
+    fitted_16bit = fit_star_position(image_16bit, 40.0, 40.0, 16)
+
+    assert fitted_8bit.x == pytest.approx(fitted_16bit.x, abs=0.05)
+    assert fitted_8bit.y == pytest.approx(fitted_16bit.y, abs=0.05)
+    assert fitted_16bit.amplitude / fitted_8bit.amplitude == pytest.approx(257.0, rel=0.03)
 
 
 def test_fast_sequence_measurement_uses_sep_subpixel_moments() -> None:

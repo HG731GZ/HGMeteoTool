@@ -53,13 +53,42 @@ def qimage_to_grayscale_array(image: QImage) -> np.ndarray:
     return rows[:, :width].copy()
 
 
+def _image_dimensions(image: QImage | np.ndarray) -> tuple[int, int]:
+    """返回 QImage 或二维原生亮度数组的宽高。"""
+
+    if isinstance(image, QImage):
+        if image.isNull():
+            raise StarFitError("图像为空，无法进行星点拟合。", code="invalid_image")
+        return image.width(), image.height()
+    array = np.asarray(image)
+    if array.ndim != 2:
+        raise StarFitError("星点拟合需要二维亮度图像。", code="invalid_image")
+    return int(array.shape[1]), int(array.shape[0])
+
+
+def _cropped_luminance(
+    image: QImage | np.ndarray,
+    x0: int,
+    y0: int,
+    x1: int,
+    y1: int,
+) -> tuple[np.ndarray, float | None]:
+    """裁出 PSF 局部窗口，并返回显式饱和上限（仅 8 位 QImage 需要）。"""
+
+    if isinstance(image, QImage):
+        cropped = image.copy(x0, y0, x1 - x0, y1 - y0)
+        return qimage_to_luminance_array(cropped), 255.0
+    return np.asarray(image)[y0:y1, x0:x1], None
+
+
 def _fit_crop_geometry(
-    image: QImage,
+    image: QImage | np.ndarray,
     click_x: float,
     click_y: float,
     search_radius_px: int,
     max_fit_radius_px: int,
 ) -> tuple[int, int, int, int]:
+    width, height = _image_dimensions(image)
     padding = max(4, min(max_fit_radius_px, 48))
     crop_radius = int(search_radius_px + padding)
     center_x = int(round(click_x))
@@ -67,13 +96,13 @@ def _fit_crop_geometry(
     return (
         max(0, center_x - crop_radius),
         max(0, center_y - crop_radius),
-        min(image.width(), center_x + crop_radius + 1),
-        min(image.height(), center_y + crop_radius + 1),
+        min(width, center_x + crop_radius + 1),
+        min(height, center_y + crop_radius + 1),
     )
 
 
 def fit_star_position(
-    image: QImage,
+    image: QImage | np.ndarray,
     click_x: float,
     click_y: float,
     radius_px: int = 12,
@@ -86,9 +115,8 @@ def fit_star_position(
 ) -> FittedStarPosition:
     """在搜索圆中选择星源，再用独立的自适应窗口测量 PSF。"""
 
-    if image.isNull():
-        raise StarFitError("图像为空，无法进行星点拟合。", code="invalid_image")
-    if not (0.0 <= click_x < image.width() and 0.0 <= click_y < image.height()):
+    width, height = _image_dimensions(image)
+    if not (0.0 <= click_x < width and 0.0 <= click_y < height):
         raise StarFitError("点击位置不在真实图像范围内。", code="outside_image")
     search_radius = max(4, int(radius_px))
     fit_radius_limit = (
@@ -103,8 +131,13 @@ def fit_star_position(
         search_radius,
         fit_radius_limit,
     )
-    cropped_image = image.copy(crop_x0, crop_y0, crop_x1 - crop_x0, crop_y1 - crop_y0)
-    luminance = qimage_to_luminance_array(cropped_image)
+    luminance, saturation_level = _cropped_luminance(
+        image,
+        crop_x0,
+        crop_y0,
+        crop_x1,
+        crop_y1,
+    )
     fitted = fit_star_position_from_array(
         luminance,
         click_x=click_x - crop_x0,
@@ -112,7 +145,7 @@ def fit_star_position(
         radius_px=search_radius,
         max_fit_radius_px=fit_radius_limit,
         reject_ambiguous=reject_ambiguous,
-        saturation_level=255.0,
+        saturation_level=saturation_level,
         selection_mode=selection_mode,
         fit_error_limit=fit_error_limit,
         saturated_fit_error_limit=saturated_fit_error_limit,
@@ -139,16 +172,15 @@ def fit_star_position(
 
 
 def detect_star_candidates(
-    image: QImage,
+    image: QImage | np.ndarray,
     click_x: float,
     click_y: float,
     radius_px: int,
 ) -> list[StarSourceCandidate]:
-    """从 QImage 的局部搜索圆检测星源，返回整图坐标。"""
+    """从显示图或原生亮度图的局部搜索圆检测星源，返回整图坐标。"""
 
-    if image.isNull():
-        raise StarFitError("图像为空，无法检测星点。", code="invalid_image")
-    if not (0.0 <= click_x < image.width() and 0.0 <= click_y < image.height()):
+    width, height = _image_dimensions(image)
+    if not (0.0 <= click_x < width and 0.0 <= click_y < height):
         raise StarFitError("搜索位置不在真实图像范围内。", code="outside_image")
     search_radius = max(4, int(radius_px))
     padding = max(6, min(24, search_radius // 2))
@@ -157,16 +189,21 @@ def detect_star_candidates(
     center_y = int(round(click_y))
     crop_x0 = max(0, center_x - crop_radius)
     crop_y0 = max(0, center_y - crop_radius)
-    crop_x1 = min(image.width(), center_x + crop_radius + 1)
-    crop_y1 = min(image.height(), center_y + crop_radius + 1)
-    cropped = image.copy(crop_x0, crop_y0, crop_x1 - crop_x0, crop_y1 - crop_y0)
-    luminance = qimage_to_luminance_array(cropped)
+    crop_x1 = min(width, center_x + crop_radius + 1)
+    crop_y1 = min(height, center_y + crop_radius + 1)
+    luminance, saturation_level = _cropped_luminance(
+        image,
+        crop_x0,
+        crop_y0,
+        crop_x1,
+        crop_y1,
+    )
     local_candidates = detect_star_candidates_from_array(
         luminance,
         click_x=click_x - crop_x0,
         click_y=click_y - crop_y0,
         search_radius_px=search_radius,
-        saturation_level=255.0,
+        saturation_level=saturation_level,
     )
     return [
         StarSourceCandidate(

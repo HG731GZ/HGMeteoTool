@@ -29,6 +29,7 @@ class StarMapUiConfig:
     star_pick_circle_min_diameter_px: int = 20
     star_pick_circle_max_diameter_px: int = 200
     star_pick_psf_max_radius_px: int = 40
+    use_8bit_psf_precision: bool = True
     star_pick_psf_fit_error_limit: float = 0.42
     star_pick_saturated_psf_fit_error_limit: float = 0.52
     star_pair_psf_outer_diameter_multiplier: float = 1.5
@@ -259,6 +260,7 @@ def load_star_map_ui_config(path: Path | None = None) -> StarMapUiConfig:
         star_pick_circle_min_diameter_px=circle_min,
         star_pick_circle_max_diameter_px=circle_max,
         star_pick_psf_max_radius_px=_read_int(raw_config, "star_pick_psf_max_radius_px", 40, 8, 200),
+        use_8bit_psf_precision=_read_bool(raw_config, "use_8bit_psf_precision", True),
         star_pick_psf_fit_error_limit=_read_float(
             raw_config,
             "star_pick_psf_fit_error_limit",

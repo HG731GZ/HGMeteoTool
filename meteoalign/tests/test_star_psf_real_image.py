@@ -21,7 +21,13 @@ def test_img_0067_accepts_saturated_stars_and_rejects_landscape_samples() -> Non
     if not image_path.exists() or not model_path.exists():
         pytest.skip("未提供 IMG_0067 实图回归素材。")
 
-    image = load_image_preview(image_path, max_long_side_px=None).image
+    preview = load_image_preview(
+        image_path,
+        max_long_side_px=None,
+        include_native_luminance=True,
+    )
+    assert preview.native_luminance is not None
+    image = preview.native_luminance
     payload = json.loads(model_path.read_text(encoding="utf-8"))
     pairs_by_id = {str(pair["star_id"]): pair for pair in payload["fit_pairs"]}
     regression_star_ids = ("HR2618", "HR2827", "HR3165", "HR2040", "HR2445", "HR2579", "HR2942")

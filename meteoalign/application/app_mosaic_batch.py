@@ -450,7 +450,7 @@ class MosaicBatchMixin:
             QMessageBox.warning(self, "批处理失败", message)
             return
         if not mosaic_export_available():
-            QMessageBox.critical(self, "批处理失败", "当前环境缺少 OpenCV 或 tifffile，无法写入 16-bit TIFF。")
+            QMessageBox.critical(self, "批处理失败", "当前环境缺少 OpenCV 或 tifffile，无法写入 TIFF。")
             return
         output_dir_text = QFileDialog.getExistingDirectory(
             self,

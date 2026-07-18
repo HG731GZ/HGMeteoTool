@@ -70,6 +70,23 @@ def test_right_click_auto_pair_search_radius_uses_independent_preferences() -> N
     assert radius == 24
 
 
+def test_psf_precision_preference_selects_display_or_native_pixels() -> None:
+    """8-bit 开关应立即决定 PSF 使用显示图还是原始位深亮度图。"""
+
+    display_image = object()
+    native_luminance = object()
+    preview = SimpleNamespace(image=display_image, native_luminance=native_luminance)
+    host = SimpleNamespace(
+        current_image_preview=preview,
+        ui_config=StarMapUiConfig(use_8bit_psf_precision=True),
+    )
+
+    assert AutoMatchMixin._current_psf_image(host) is display_image
+
+    host.ui_config = StarMapUiConfig(use_8bit_psf_precision=False)
+    assert AutoMatchMixin._current_psf_image(host) is native_luminance
+
+
 class _AnnotationHarness(QWidget, StarPairAnnotationsMixin):
     """提供真实图像场景和固定星号的最小标注宿主。"""
 

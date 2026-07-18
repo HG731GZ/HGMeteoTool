@@ -10,9 +10,10 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 import numpy as np
-from PIL import Image, ImageOps
+from PIL import Image
 
 from .coordinates import radec_to_unit_vectors, unit_vectors_to_radec
+from .native_image import load_native_image_array
 from .mosaic.export.geometry import MosaicExportGeometry, mosaic_export_cropped_geometry
 from .mosaic.export.remap_builder import (
     MosaicReprojectionMap,
@@ -59,9 +60,8 @@ except ImportError:  # pragma: no cover - tifftools 仅用于保留完整 EXIF I
     tifftools = None
 
 
-MOSAIC_EXPORT_TIFF_FILTER = "16-bit RGBA TIFF (*.tif *.tiff)"
+MOSAIC_EXPORT_TIFF_FILTER = "自适应位深 RGBA TIFF (*.tif *.tiff)"
 MOSAIC_EXPORT_DEFAULT_BLOCK_ROWS = 1024
-MOSAIC_EXPORT_MAX_U16 = 65535
 MOSAIC_FORWARD_REMAP_EXACT_FILL_BATCH_PIXELS = 1_000_000
 MosaicExportProgressCallback = Callable[[str, int, int], None]
 SourcePixelRegion = tuple[int, int, int, int]
@@ -85,17 +85,21 @@ class MosaicExportSourceImage:
     """用于最终导出的全分辨率源图数据。"""
 
     path: Path
-    rgb_u16: np.ndarray
+    rgb: np.ndarray
     exif_tags: tuple[tuple[int, str, int, object, bool], ...]
     icc_profile: bytes | None
 
     @property
+    def bit_depth(self) -> int:
+        return int(np.iinfo(self.rgb.dtype).bits)
+
+    @property
     def width_px(self) -> int:
-        return int(self.rgb_u16.shape[1])
+        return int(self.rgb.shape[1])
 
     @property
     def height_px(self) -> int:
-        return int(self.rgb_u16.shape[0])
+        return int(self.rgb.shape[0])
 
 
 def _emit_export_progress(
@@ -124,32 +128,37 @@ def mosaic_export_block_rows(config: object, default_value: int = MOSAIC_EXPORT_
 
 
 def load_mosaic_export_source_image(image_path: str | Path) -> MosaicExportSourceImage:
-    """读取源图全分辨率像素，输出统一的 RGB uint16 数组。"""
+    """读取源图全分辨率像素，保留 8 位或最高 16 位的 RGB 数组。"""
 
     path = Path(image_path).expanduser()
     if not path.exists():
         raise FileNotFoundError(f"源图不存在：{path}")
     path = path.resolve()
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", UserWarning)
-        with Image.open(path) as image:
-            exif = image.getexif()
-            transformed = ImageOps.exif_transpose(image)
-            array = np.asarray(transformed)
-            exif_tags = _safe_exif_tags(exif)
-            icc_profile = image.info.get("icc_profile")
+    if path.suffix.lower() in {".tif", ".tiff"}:
+        # TIFF 的完整 IFD 树会在写入后复制，避免 Pillow 对超大全景触发像素数限制。
+        exif_tags = ()
+        icc_profile = None
+    else:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            with Image.open(path) as image:
+                exif = image.getexif()
+                exif_tags = _safe_exif_tags(exif)
+                icc_profile = image.info.get("icc_profile")
 
-    rgb_u16 = _image_array_to_rgb_u16(array)
+    rgb = _image_array_to_export_rgb(load_native_image_array(path))
     return MosaicExportSourceImage(
         path=path,
-        rgb_u16=np.ascontiguousarray(rgb_u16, dtype=np.uint16),
+        rgb=np.ascontiguousarray(rgb),
         exif_tags=exif_tags,
         icc_profile=icc_profile if isinstance(icc_profile, bytes) else None,
     )
 
 
-def _image_array_to_rgb_u16(array: np.ndarray) -> np.ndarray:
+def _image_array_to_export_rgb(array: np.ndarray) -> np.ndarray:
+    """统一通道数，并按源 dtype 选择 uint8 或 uint16 输出。"""
+
     values = np.asarray(array)
     if values.ndim == 2:
         values = np.repeat(values[:, :, None], 3, axis=2)
@@ -158,17 +167,21 @@ def _image_array_to_rgb_u16(array: np.ndarray) -> np.ndarray:
     else:
         raise ValueError(f"源图像素形状不支持：{values.shape}")
 
+    if values.dtype == np.uint8:
+        return values.astype(np.uint8, copy=False)
     if values.dtype == np.uint16:
         return values.astype(np.uint16, copy=False)
-    if values.dtype == np.uint8:
-        return (values.astype(np.uint16) * 257).astype(np.uint16)
+    if values.dtype == np.bool_:
+        return values.astype(np.uint8) * 255
     if np.issubdtype(values.dtype, np.integer):
-        return np.clip(values, 0, MOSAIC_EXPORT_MAX_U16).astype(np.uint16)
+        if values.dtype.itemsize <= 1:
+            return np.clip(values, 0, 255).astype(np.uint8)
+        return np.clip(values, 0, 65535).astype(np.uint16)
     if np.issubdtype(values.dtype, np.floating):
         finite = np.nan_to_num(values.astype(np.float64), nan=0.0, posinf=1.0, neginf=0.0)
         if float(np.nanmax(finite)) <= 1.0:
-            finite = finite * MOSAIC_EXPORT_MAX_U16
-        return np.clip(finite, 0.0, float(MOSAIC_EXPORT_MAX_U16)).astype(np.uint16)
+            finite = finite * 65535.0
+        return np.clip(finite, 0.0, 65535.0).astype(np.uint16)
     raise ValueError(f"源图像素类型不支持：{values.dtype}")
 
 
@@ -331,7 +344,7 @@ def restrict_reprojection_map_to_source_regions(
 def mosaic_reprojection_blocks(
     *,
     source_model: object,
-    source_rgb_u16: np.ndarray,
+    source_rgb: np.ndarray,
     camera: CameraSettings | None,
     view: ViewSettings | None,
     observer: ObserverSettings | None,
@@ -345,13 +358,15 @@ def mosaic_reprojection_blocks(
     exact_remap_repair: bool = False,
     source_pixel_regions: tuple[SourcePixelRegion, ...] | None = None,
 ) -> Iterator[np.ndarray]:
-    """逐块生成裁剪后全景图像的 RGBA uint16 像素。"""
+    """逐块生成与源图位深一致的 RGBA 像素。"""
 
     if cv2 is None:
         raise RuntimeError("当前环境缺少 OpenCV，无法执行重投影导出。")
     if target_icrs_to_pixel_payload is not None and target_model is not None:
         raise ValueError("目标 ICRS 变换和底图模型不能同时指定。")
-    source = np.ascontiguousarray(source_rgb_u16, dtype=np.uint16)
+    source = np.ascontiguousarray(source_rgb)
+    if source.dtype not in (np.dtype(np.uint8), np.dtype(np.uint16)):
+        raise ValueError(f"重投影源图必须是 uint8 或 uint16，实际为 {source.dtype}。")
     normalized_regions = (
         None
         if source_pixel_regions is None
@@ -364,7 +379,7 @@ def mosaic_reprojection_blocks(
     if normalized_regions is not None and not normalized_regions:
         empty = np.zeros(
             (int(geometry.output_height_px), int(geometry.output_width_px), 4),
-            dtype=np.uint16,
+            dtype=source.dtype,
         )
         yield empty
         return
@@ -395,7 +410,7 @@ def mosaic_reprojection_blocks(
             map_y = np.asarray(map_block["map_y"], dtype=np.float32)
             _emit_export_progress(export_progress_callback, "正在重采样源图...", 0, 0)
             block = _render_mosaic_reprojection_block_from_map(
-                source_rgb_u16=source,
+                source_rgb=source,
                 map_x=map_x,
                 map_y=map_y,
             )
@@ -414,7 +429,7 @@ def mosaic_reprojection_blocks(
 
     yield _render_mosaic_forward_remap_from_source_to_target(
         source_model=source_model,
-        source_rgb_u16=source,
+        source_rgb=source,
         target_icrs_to_pixel_payload=target_icrs_to_pixel_payload,
         target_model=target_model,
         geometry=geometry,
@@ -429,7 +444,7 @@ def mosaic_reprojection_blocks(
 def _render_mosaic_forward_remap_from_source_to_target(
     *,
     source_model: object,
-    source_rgb_u16: np.ndarray,
+    source_rgb: np.ndarray,
     target_icrs_to_pixel_payload: dict[str, object] | None,
     target_model: object | None,
     geometry: MosaicExportGeometry,
@@ -443,7 +458,7 @@ def _render_mosaic_forward_remap_from_source_to_target(
 
     output_width = int(geometry.output_width_px)
     output_height = int(geometry.output_height_px)
-    source_height, source_width = source_rgb_u16.shape[:2]
+    source_height, source_width = source_rgb.shape[:2]
     tile_size = max(1, int(map_tile_size_px))
     accum_x = np.zeros((output_height, output_width), dtype=np.float32)
     accum_y = np.zeros((output_height, output_width), dtype=np.float32)
@@ -535,7 +550,7 @@ def _render_mosaic_forward_remap_from_source_to_target(
         map_x, map_y = restrict_reprojection_map_to_source_regions(map_x, map_y, source_pixel_regions)
     _emit_export_progress(export_progress_callback, "正在重采样源图...", 0, 0)
     rendered = _render_mosaic_reprojection_block_from_map(
-        source_rgb_u16=source_rgb_u16,
+        source_rgb=source_rgb,
         map_x=map_x,
         map_y=map_y,
     )
@@ -1128,12 +1143,12 @@ def mosaic_reprojection_map_blocks(
 
 def _render_mosaic_reprojection_block_from_map(
     *,
-    source_rgb_u16: np.ndarray,
+    source_rgb: np.ndarray,
     map_x: np.ndarray,
     map_y: np.ndarray,
 ) -> np.ndarray:
     remapped = cv2.remap(
-        source_rgb_u16,
+        source_rgb,
         map_x,
         map_y,
         interpolation=cv2.INTER_LINEAR,
@@ -1142,7 +1157,7 @@ def _render_mosaic_reprojection_block_from_map(
     )
     if remapped.ndim == 2:
         remapped = np.repeat(remapped[:, :, None], 3, axis=2)
-    source_height, source_width = source_rgb_u16.shape[:2]
+    source_height, source_width = source_rgb.shape[:2]
     valid_alpha = (
         np.isfinite(map_x)
         & np.isfinite(map_y)
@@ -1151,11 +1166,13 @@ def _render_mosaic_reprojection_block_from_map(
         & (map_y >= -0.5)
         & (map_y <= float(source_height) - 0.5)
     )
-    alpha = np.where(valid_alpha, MOSAIC_EXPORT_MAX_U16, 0).astype(np.uint16)
-    remapped = np.asarray(remapped, dtype=np.uint16)
+    output_dtype = source_rgb.dtype
+    alpha_max = np.iinfo(output_dtype).max
+    alpha = np.where(valid_alpha, alpha_max, 0).astype(output_dtype)
+    remapped = np.asarray(remapped, dtype=output_dtype)
     remapped[~valid_alpha] = 0
     rgba = np.dstack((remapped, alpha))
-    return np.ascontiguousarray(rgba, dtype=np.uint16)
+    return np.ascontiguousarray(rgba, dtype=output_dtype)
 
 
 def write_mosaic_reprojection_tiff(
@@ -1178,10 +1195,10 @@ def write_mosaic_reprojection_tiff(
     tiff_lzw_compression: bool = True,
     source_pixel_regions: tuple[SourcePixelRegion, ...] | None = None,
 ) -> None:
-    """把重投影结果写成 16-bit RGBA TIFF。"""
+    """把重投影结果写成与原图一致、最高 16 位的 RGBA TIFF。"""
 
     if tifffile is None:
-        raise RuntimeError("当前环境缺少 tifffile，无法写入 16-bit TIFF。")
+        raise RuntimeError("当前环境缺少 tifffile，无法写入 TIFF。")
     if geometry.output_width_px <= 0 or geometry.output_height_px <= 0:
         raise ValueError("裁剪后的导出尺寸无效。")
     if target_icrs_to_pixel_payload is not None and target_model is not None:
@@ -1204,7 +1221,7 @@ def write_mosaic_reprojection_tiff(
     blocks = list(
         mosaic_reprojection_blocks(
             source_model=source_model,
-            source_rgb_u16=source_image.rgb_u16,
+            source_rgb=source_image.rgb,
             camera=camera,
             view=view,
             observer=observer,
@@ -1221,7 +1238,7 @@ def write_mosaic_reprojection_tiff(
     )
     if not blocks:
         raise ValueError("重投影没有生成任何输出块。")
-    output_image = np.ascontiguousarray(blocks[0] if len(blocks) == 1 else np.vstack(blocks), dtype=np.uint16)
+    output_image = np.ascontiguousarray(blocks[0] if len(blocks) == 1 else np.vstack(blocks))
     if output_image.shape != (int(geometry.output_height_px), int(geometry.output_width_px), 4):
         raise ValueError(f"重投影输出尺寸异常：{output_image.shape}")
     compression = "lzw" if tiff_lzw_compression else None

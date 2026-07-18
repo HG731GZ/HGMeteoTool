@@ -3,8 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 from PyQt5.QtCore import QSize, Qt
 from PyQt5.QtGui import QImage, QImageReader
+
+from .native_image import native_image_luminance
 
 
 SUPPORTED_IMAGE_SUFFIXES = {".tif", ".tiff", ".jpg", ".jpeg", ".png"}
@@ -20,6 +23,7 @@ class ImagePreview:
     image: QImage
     original_width: int
     original_height: int
+    native_luminance: np.ndarray | None = None
 
 
 def _scaled_preview_size(width: int, height: int, max_long_side_px: int) -> tuple[int, int]:
@@ -40,7 +44,12 @@ def _reader_error(reader: QImageReader) -> str:
     return "未知图像读取错误"
 
 
-def load_image_preview(path: str | Path, max_long_side_px: int | None = DEFAULT_PREVIEW_LONG_SIDE_PX) -> ImagePreview:
+def load_image_preview(
+    path: str | Path,
+    max_long_side_px: int | None = DEFAULT_PREVIEW_LONG_SIDE_PX,
+    *,
+    include_native_luminance: bool = False,
+) -> ImagePreview:
     image_path = Path(path).expanduser()
     if image_path.suffix.lower() not in SUPPORTED_IMAGE_SUFFIXES:
         raise ValueError("当前只支持 TIFF、JPG 与 PNG 图像。")
@@ -77,6 +86,17 @@ def load_image_preview(path: str | Path, max_long_side_px: int | None = DEFAULT_
     image_8bit = image.convertToFormat(QImage.Format_RGB888)
     del image
 
+    native_luminance = native_image_luminance(image_path) if include_native_luminance else None
+    if native_luminance is not None and native_luminance.shape != (
+        image_8bit.height(),
+        image_8bit.width(),
+    ):
+        raise ValueError(
+            "原生位深图像方向或尺寸与显示图不一致："
+            f"显示 {image_8bit.width()} x {image_8bit.height()} px，"
+            f"计算数据 {native_luminance.shape[1]} x {native_luminance.shape[0]} px。"
+        )
+
     if max_long_side_px is not None and max(image_8bit.width(), image_8bit.height()) > max_long_side_px:
         # 少数解码器可能忽略 setScaledSize；这里再压一次，保证界面只持有缩放图。
         scaled_width, scaled_height = _scaled_preview_size(
@@ -91,4 +111,5 @@ def load_image_preview(path: str | Path, max_long_side_px: int | None = DEFAULT_
         image=image_8bit,
         original_width=original_size.width(),
         original_height=original_size.height(),
+        native_luminance=native_luminance,
     )

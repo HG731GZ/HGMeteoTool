@@ -36,6 +36,7 @@ EDITABLE_PREFERENCE_KEYS = frozenset(
         "star_pick_circle_min_diameter_px",
         "star_pick_circle_max_diameter_px",
         "star_pick_psf_max_radius_px",
+        "use_8bit_psf_precision",
         "star_pick_psf_fit_error_limit",
         "star_pick_saturated_psf_fit_error_limit",
         "star_pair_psf_outer_diameter_multiplier",
@@ -163,6 +164,7 @@ class PreferencesPage(QWidget):
             ui.spinBoxStarPickMinDiameter.setValue(config.star_pick_circle_min_diameter_px)
             ui.spinBoxStarPickMaxDiameter.setValue(config.star_pick_circle_max_diameter_px)
             ui.spinBoxStarPickPsfMaxRadius.setValue(config.star_pick_psf_max_radius_px)
+            ui.checkBoxUse8BitPsfPrecision.setChecked(config.use_8bit_psf_precision)
             ui.doubleSpinBoxStarPickPsfFitErrorLimit.setValue(
                 config.star_pick_psf_fit_error_limit
             )
@@ -262,6 +264,7 @@ class PreferencesPage(QWidget):
             ui.checkBoxShowConstellationNames,
             ui.checkBoxShowConstellationLines,
             ui.checkBoxAutoSyncSimulatorTimeFromExif,
+            ui.checkBoxUse8BitPsfPrecision,
             ui.checkBoxWheelZoomEnabled,
             ui.checkBoxTouchpadPinchZoomEnabled,
             ui.checkBoxDoubleClickFocusAutoPairEnabled,
@@ -411,6 +414,7 @@ class PreferencesPage(QWidget):
             "star_pick_circle_min_diameter_px": ui.spinBoxStarPickMinDiameter.value(),
             "star_pick_circle_max_diameter_px": ui.spinBoxStarPickMaxDiameter.value(),
             "star_pick_psf_max_radius_px": ui.spinBoxStarPickPsfMaxRadius.value(),
+            "use_8bit_psf_precision": ui.checkBoxUse8BitPsfPrecision.isChecked(),
             "star_pick_psf_fit_error_limit": ui.doubleSpinBoxStarPickPsfFitErrorLimit.value(),
             "star_pick_saturated_psf_fit_error_limit": (
                 ui.doubleSpinBoxStarPickSaturatedPsfFitErrorLimit.value()

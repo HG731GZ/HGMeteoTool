@@ -14,6 +14,7 @@ from meteoalign.mosaic_export import (
     _icrs_camera_basis_from_view,
     _render_mosaic_reprojection_block_from_map,
     build_target_icrs_to_pixel_transform_payload,
+    load_mosaic_export_source_image,
     mosaic_reprojection_blocks,
     mosaic_export_cropped_geometry,
     mosaic_reprojection_map_blocks,
@@ -158,7 +159,7 @@ def test_mosaic_export_writes_cropped_lzw_rgba_u16_tiff_with_exif(tmp_path) -> N
     source_model = _TargetProjectionSourceModel(camera, view, observer)
     source_image = MosaicExportSourceImage(
         path=tmp_path / "source.tif",
-        rgb_u16=source_rgb,
+        rgb=source_rgb,
         exif_tags=((271, "s", 0, "UnitTestCamera", True),),
         icc_profile=None,
     )
@@ -214,6 +215,83 @@ def test_mosaic_export_writes_cropped_lzw_rgba_u16_tiff_with_exif(tmp_path) -> N
         assert tiff.pages[0].tags["Compression"].value == 1
 
 
+def test_mosaic_export_keeps_uint8_source_and_alpha_depth(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """8 位原图重投影后仍应写成 8 位 TIFF，透明通道上限应为 255。"""
+
+    width, height = 8, 6
+    source_rgb = np.full((height, width, 3), (20, 80, 160), dtype=np.uint8)
+    observer = ObserverSettings(
+        observation_time_utc=datetime(2025, 12, 14, 18, 11, 45, tzinfo=timezone.utc),
+        latitude_deg=25.0,
+        longitude_deg=102.0,
+        elevation_m=200.0,
+    )
+    camera = CameraSettings(
+        sensor_width_mm=36.0,
+        sensor_height_mm=27.0,
+        image_width_px=width,
+        image_height_px=height,
+        focal_length_mm=24.0,
+        lens_model=RECTILINEAR_LENS_MODEL,
+        fisheye_fov_deg=90.0,
+    )
+    view = ViewSettings(center_az_deg=180.0, center_alt_deg=45.0, roll_deg=0.0)
+    source_image = MosaicExportSourceImage(
+        path=tmp_path / "source.jpg",
+        rgb=source_rgb,
+        exif_tags=(),
+        icc_profile=None,
+    )
+    geometry = MosaicExportGeometry(
+        boundary_width_px=width,
+        boundary_height_px=height,
+        crop_left_px=0,
+        crop_top_px=0,
+        output_width_px=width,
+        output_height_px=height,
+    )
+    output_path = tmp_path / "export_8bit.tif"
+
+    write_mosaic_reprojection_tiff(
+        output_path=output_path,
+        source_model=_TargetProjectionSourceModel(camera, view, observer),
+        source_image=source_image,
+        camera=camera,
+        view=view,
+        observer=observer,
+        geometry=geometry,
+    )
+
+    exported = tifffile.imread(output_path)
+    assert exported.dtype == np.uint8
+    assert exported.shape == (height, width, 4)
+    assert np.max(exported[:, :, 3]) == 255
+
+
+def test_mosaic_source_loader_preserves_uint8_and_uint16_dtype(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """最终导出读取器不得再由 Pillow 把 16 位 RGB TIFF 降成 8 位。"""
+
+    from PIL import Image
+
+    source_8bit_path = tmp_path / "source_8bit.jpg"
+    source_16bit_path = tmp_path / "source_16bit.tif"
+    Image.fromarray(np.full((4, 5, 3), 120, dtype=np.uint8), mode="RGB").save(source_8bit_path)
+    tifffile.imwrite(
+        source_16bit_path,
+        np.full((4, 5, 3), 40000, dtype=np.uint16),
+        photometric="rgb",
+    )
+
+    source_8bit = load_mosaic_export_source_image(source_8bit_path)
+    source_16bit = load_mosaic_export_source_image(source_16bit_path)
+
+    assert source_8bit.rgb.dtype == np.uint8
+    assert source_8bit.bit_depth == 8
+    assert source_16bit.rgb.dtype == np.uint16
+    assert source_16bit.bit_depth == 16
+    assert np.all(source_16bit.rgb == 40000)
+
+
 def test_mosaic_export_copies_complete_exif_ifd_tree_from_tiff_source(tmp_path) -> None:  # type: ignore[no-untyped-def]
     """TIFF 导出应保留原图嵌套 EXIF IFD 中的拍摄与厂商信息。"""
 
@@ -258,7 +336,7 @@ def test_mosaic_render_block_marks_invalid_pixels_transparent() -> None:
     map_y = np.asarray([[0.0, -1.0]], dtype=np.float32)
 
     rendered = _render_mosaic_reprojection_block_from_map(
-        source_rgb_u16=source_rgb,
+        source_rgb=source_rgb,
         map_x=map_x,
         map_y=map_y,
     )
@@ -319,7 +397,7 @@ def test_mosaic_reprojection_only_projects_selected_source_region() -> None:
     blocks = list(
         mosaic_reprojection_blocks(
             source_model=source_model,
-            source_rgb_u16=source_rgb,
+            source_rgb=source_rgb,
             camera=camera,
             view=view,
             observer=observer,
@@ -381,7 +459,7 @@ def test_mosaic_export_map_blocks_bridge_target_pixels_to_source_pixels(tmp_path
         source_model=source_model,
         source_image=MosaicExportSourceImage(
             path=tmp_path / "source.tif",
-            rgb_u16=source_rgb,
+            rgb=source_rgb,
             exif_tags=(),
             icc_profile=None,
         ),
@@ -443,7 +521,7 @@ def test_mosaic_export_uses_target_icrs_to_pixel_transform_payload(tmp_path) -> 
         source_model=source_model,
         source_image=MosaicExportSourceImage(
             path=tmp_path / "source.tif",
-            rgb_u16=source_rgb,
+            rgb=source_rgb,
             exif_tags=(),
             icc_profile=None,
         ),
@@ -497,7 +575,7 @@ def test_mosaic_export_uses_base_image_model_as_pixel_target(tmp_path) -> None: 
         source_model=source_model,
         source_image=MosaicExportSourceImage(
             path=tmp_path / "source.tif",
-            rgb_u16=source_rgb,
+            rgb=source_rgb,
             exif_tags=(),
             icc_profile=None,
         ),
@@ -566,7 +644,7 @@ def test_mosaic_export_fixed_tile_forward_path_projects_fewer_source_points(tmp_
         source_model=source_model,
         source_image=MosaicExportSourceImage(
             path=tmp_path / "source.tif",
-            rgb_u16=source_rgb,
+            rgb=source_rgb,
             exif_tags=(),
             icc_profile=None,
         ),
@@ -638,7 +716,7 @@ def test_mosaic_export_forward_remap_fills_projected_sampling_gaps(tmp_path) -> 
         source_model=source_model,
         source_image=MosaicExportSourceImage(
             path=tmp_path / "source.tif",
-            rgb_u16=source_rgb,
+            rgb=source_rgb,
             exif_tags=(),
             icc_profile=None,
         ),
