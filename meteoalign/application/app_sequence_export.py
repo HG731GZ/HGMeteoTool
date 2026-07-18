@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 from PyQt5.QtWidgets import QFileDialog, QMessageBox
 
+from ..auto_match_quality import AUTO_MATCH_QUALITY_SCORE_KEY
 from ..alignment.constants import MIN_ALIGNMENT_PAIRS
 from .app_constants import (
     STAR_PAIR_SESSION_FORMAT,
@@ -42,6 +43,13 @@ class SequenceExportMixin:
                 "fixed_model_x_px": float(predicted_x),
                 "fixed_model_y_px": float(predicted_y),
             }
+            if pair.auto_match_quality_score is not None and np.isfinite(
+                pair.auto_match_quality_score
+            ):
+                # 第一帧固定相机重建匹配记录时，保留交互自动匹配的综合质量。
+                extra_fields[AUTO_MATCH_QUALITY_SCORE_KEY] = float(
+                    pair.auto_match_quality_score
+                )
             if pair.predicted_x_px is not None and pair.predicted_y_px is not None:
                 extra_fields["theoretical_x_px"] = float(pair.predicted_x_px)
                 extra_fields["theoretical_y_px"] = float(pair.predicted_y_px)

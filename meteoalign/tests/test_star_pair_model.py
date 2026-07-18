@@ -72,6 +72,7 @@ def test_star_pair_record_round_trips_json_payload() -> None:
     payload = record.to_json_payload()
     restored = star_pair_record_from_payload(payload)
 
+    assert payload["auto_match_quality_score"] == 0.76
     assert restored is not None
     assert restored.star_id == record.star_id
     assert restored.position == record.position

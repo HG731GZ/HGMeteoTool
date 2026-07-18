@@ -14,6 +14,7 @@ class _SequencePairTemplate:
     fit_constraint_mode: str
     fit_weight: float
     pair_origin: str
+    auto_match_quality_score: float | None = None
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,7 @@ class _SequenceMatchedPair:
     fit_constraint_mode: str
     fit_weight: float
     pair_origin: str
+    auto_match_quality_score: float | None = None
     predicted_x_px: float | None = None
     predicted_y_px: float | None = None
     search_x_px: float | None = None

@@ -1,21 +1,25 @@
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import QPointF
 from PyQt5.QtGui import QColor, QImage
-from PyQt5.QtWidgets import QApplication, QGraphicsEllipseItem, QGraphicsScene, QWidget
+from PyQt5.QtWidgets import QApplication, QGraphicsEllipseItem, QGraphicsScene, QTableWidgetItem, QWidget
 
 from meteoalign.application.app_auto_match import AutoMatchMixin
-from meteoalign.application.app_constants import STAR_PAIR_SORT_KEY_QUALITY
+from meteoalign.application.app_constants import STAR_PAIR_QUALITY_COLUMN, STAR_PAIR_SORT_KEY_QUALITY
 from meteoalign.application.app_star_pair_annotations import StarPairAnnotationsMixin
 from meteoalign.application.app_star_pair_table_groups import StarPairTableGroupsMixin
+from meteoalign.application.star_pair_assistant_dialog import StarPairAssistantDialog
 from meteoalign.config import StarMapUiConfig
 from meteoalign.simulator import ReferenceStar
 from meteoalign.star_fitting import FittedStarPosition
+from meteoalign.star_pair_model import star_pair_records_from_payloads
 
 
 _QT_APP: QApplication | None = None
@@ -323,3 +327,62 @@ def test_auto_match_quality_sort_keeps_missing_values_last_in_both_directions() 
 
     assert [entry[1].star_id for entry in descending] == ["second", "first", "missing"]
     assert [entry[1].star_id for entry in ascending] == ["first", "second", "missing"]
+
+
+def test_loaded_starpairs_psf_quality_is_shown_in_assistant_table() -> None:
+    """JSON 只有 quality_score 时，恢复后也应在助手表格显示 PSF 质量。"""
+
+    _qapp()
+    json_path = (
+        Path(__file__).resolve().parents[2]
+        / "testimages"
+        / "28mm测试"
+        / "残差异常"
+        / "IMG_0084_starpairs.json"
+    )
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    records = star_pair_records_from_payloads(payload["pairs"])
+    record = records[0]
+    old_auto_record = next(item for item in records if item.is_auto_match)
+    assert record.psf is not None
+    assert "auto_match_quality_score" not in record.extra_fields
+    assert StarPairTableGroupsMixin._record_quality_score(old_auto_record) is None
+
+    assistant = StarPairAssistantDialog()
+    assistant.ui.tableWidgetStarPairs.setRowCount(1)
+    assistant.ui.tableWidgetStarPairs.setItem(0, STAR_PAIR_QUALITY_COLUMN, QTableWidgetItem())
+    host = StarPairTableGroupsMixin()
+    host.ui = assistant.ui
+    host._is_star_pair_group_row = lambda _row: False
+    host._star_pair_record_for_row = lambda _row: record
+
+    host._refresh_star_pair_quality_cell(0)
+
+    quality_item = assistant.ui.tableWidgetStarPairs.item(0, STAR_PAIR_QUALITY_COLUMN)
+    assert quality_item is not None
+    assert quality_item.text() == f"{record.psf.quality_score:.2f}"
+    assert "PSF 拟合质量" in quality_item.toolTip()
+    assert "SNR" in quality_item.toolTip()
+    assert "FWHM" in quality_item.toolTip()
+    assistant.close()
+
+
+def test_auto_match_composite_quality_takes_priority_over_psf_quality() -> None:
+    """新 JSON 同时含综合质量与 PSF 质量时，表格应显示综合质量。"""
+
+    payload = {
+        "star_id": "HR1",
+        "name": "测试星",
+        "ra_deg": 10.0,
+        "dec_deg": 20.0,
+        "mag_v": 2.0,
+        "image_x_px": 100.0,
+        "image_y_px": 200.0,
+        "object_type": "star",
+        "pair_origin": "auto_match",
+        "quality_score": 0.88,
+        "auto_match_quality_score": 0.73,
+    }
+    record = star_pair_records_from_payloads([payload])[0]
+
+    assert StarPairTableGroupsMixin._record_quality_score(record) == 0.73

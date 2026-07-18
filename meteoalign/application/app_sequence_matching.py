@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 
 import numpy as np
 
+from ..auto_match_quality import AUTO_MATCH_QUALITY_SCORE_KEY
 from ..alignment.constants import (
     MIN_ALIGNMENT_PAIRS,
     SKY_KNOWN_PROJECTION_MODELS,
@@ -76,6 +77,17 @@ class SequenceMatchingMixin:
                 )
             ):
                 continue
+            auto_match_quality_score = None
+            if record.is_auto_match:
+                try:
+                    candidate_quality = float(
+                        record.extra_fields[AUTO_MATCH_QUALITY_SCORE_KEY]
+                    )
+                except (KeyError, TypeError, ValueError):
+                    pass
+                else:
+                    if math.isfinite(candidate_quality):
+                        auto_match_quality_score = candidate_quality
             templates.append(
                 _SequencePairTemplate(
                     star_id=record.star_id,
@@ -84,6 +96,7 @@ class SequenceMatchingMixin:
                     fit_constraint_mode=record.fit_constraint_mode,
                     fit_weight=float(record.fit_weight),
                     pair_origin=record.pair_origin,
+                    auto_match_quality_score=auto_match_quality_score,
                 )
             )
         if len(templates) < MIN_ALIGNMENT_PAIRS:
@@ -643,6 +656,7 @@ class SequenceMatchingMixin:
                     fit_constraint_mode=template.fit_constraint_mode,
                     fit_weight=template.fit_weight,
                     pair_origin=template.pair_origin,
+                    auto_match_quality_score=template.auto_match_quality_score,
                     predicted_x_px=template.fitted_position.x,
                     predicted_y_px=template.fitted_position.y,
                     search_x_px=template.fitted_position.x,

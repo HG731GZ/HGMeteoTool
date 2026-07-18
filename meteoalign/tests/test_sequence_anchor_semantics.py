@@ -9,6 +9,7 @@ from meteoalign.alignment import SKY_MATCHING_MODEL_RECTILINEAR
 from meteoalign.application import app_sequence_matching
 from meteoalign.application.app_constants import AUTO_MATCH_CONSTRAINT_SOFT
 from meteoalign.application.app_sequence import SequenceBatchMixin, _SequenceCandidate, _SequencePairTemplate
+from meteoalign.auto_match_quality import AUTO_MATCH_QUALITY_SCORE_KEY
 from meteoalign.simulator import (
     ObserverSettings,
     ReferenceStar,
@@ -17,6 +18,8 @@ from meteoalign.simulator import (
     local_vectors_from_altaz,
 )
 from meteoalign.star_fitting import FittedStarPosition
+from meteoalign.star_pair_model import PAIR_ORIGIN_AUTO_MATCH, PsfFit, StarPairRecord
+from meteoalign.star_pair_store import StarPairStore
 
 
 def _star(star_id: str, mag_v: float = 1.0) -> ReferenceStar:
@@ -100,6 +103,48 @@ def test_sequence_pair_target_keeps_eighty_percent_floor() -> None:
 
     assert minimum_count == 80
     assert target_count == 86
+
+
+def test_first_frame_export_preserves_auto_match_quality_only_for_auto_pairs() -> None:
+    """固定相机首帧重建 fit_pairs 时不得丢失自动匹配综合质量。"""
+
+    store = StarPairStore()
+    for index in range(4):
+        fitted = FittedStarPosition(
+            x=100.0 + index,
+            y=120.0 + index,
+            amplitude=10.0,
+            background=1.0,
+            sigma_x=1.5,
+            sigma_y=1.5,
+            quality_score=0.80 + index * 0.01,
+        )
+        is_auto_match = index == 3
+        store.add(
+            StarPairRecord(
+                reference_star=_star(f"HR{index}"),
+                image_x_px=fitted.x,
+                image_y_px=fitted.y,
+                psf=PsfFit.from_fitted_position(fitted),
+                pair_origin=PAIR_ORIGIN_AUTO_MATCH if is_auto_match else "manual",
+                extra_fields=(
+                    {AUTO_MATCH_QUALITY_SCORE_KEY: 0.73}
+                    if is_auto_match
+                    else {}
+                ),
+            )
+        )
+    harness = SequenceBatchMixin()
+    harness._star_pair_store = store
+
+    templates = harness._sequence_base_templates()
+    pairs = harness._first_frame_matched_pairs(templates)
+    payloads = harness._sequence_pair_records(pairs)
+    payload_by_id = {str(payload["star_id"]): payload for payload in payloads}
+
+    assert payload_by_id["HR3"][AUTO_MATCH_QUALITY_SCORE_KEY] == 0.73
+    assert AUTO_MATCH_QUALITY_SCORE_KEY not in payload_by_id["HR0"]
+    assert payload_by_id["HR0"]["quality_score"] == 0.80
 
 
 def test_fixed_camera_fit_recomputes_altaz_for_current_observation_time(monkeypatch) -> None:  # type: ignore[no-untyped-def]

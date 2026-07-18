@@ -44,6 +44,8 @@ from ..auto_match_quality import (
 )
 from ..simulator import ReferenceStar
 from ..star_fitting import FittedStarPosition
+from ..star_pair_model import StarPairRecord
+
 
 class StarPairTableGroupsMixin:
     """星对表格列、分组、排序和约束显示。"""
@@ -340,15 +342,98 @@ class StarPairTableGroupsMixin:
             table.setItem(row, STAR_PAIR_POSITION_COLUMN, position_item)
         position_item.setText(self._star_pair_mode_display_text(row))
 
-    def _star_pair_quality_score(self, row: int) -> float | None:
-        record = self._star_pair_record_for_row(row)
-        if record is None or not record.is_auto_match:
-            return None
+    @staticmethod
+    def _finite_quality_value(value: object) -> float | None:
         try:
-            quality_score = float(record.extra_fields[AUTO_MATCH_QUALITY_SCORE_KEY])
-        except (KeyError, TypeError, ValueError):
+            quality_score = float(value)
+        except (TypeError, ValueError):
             return None
         return quality_score if math.isfinite(quality_score) else None
+
+    @classmethod
+    def _record_quality_score(cls, record: StarPairRecord | None) -> float | None:
+        """优先显示自动匹配综合质量，旧记录则回退到 PSF 拟合质量。"""
+
+        if record is None:
+            return None
+        if record.is_auto_match:
+            auto_quality = cls._finite_quality_value(
+                record.extra_fields.get(AUTO_MATCH_QUALITY_SCORE_KEY)
+            )
+            return auto_quality
+        return cls._record_psf_quality_score(record)
+
+    @classmethod
+    def _record_psf_quality_score(cls, record: StarPairRecord | None) -> float | None:
+        """返回明确保存且有效的 PSF 质量评分。"""
+
+        if record is None:
+            return None
+        if record.psf is None:
+            return None
+        psf_quality = cls._finite_quality_value(record.psf.quality_score)
+        # 早期 JSON 可能只有部分 PSF 字段，缺失质量时默认为 0，不应当作真实评分。
+        return psf_quality if psf_quality is not None and psf_quality > 0.0 else None
+
+    def _star_pair_quality_score(self, row: int) -> float | None:
+        return StarPairTableGroupsMixin._record_quality_score(
+            self._star_pair_record_for_row(row)
+        )
+
+    @classmethod
+    def _saved_star_pair_quality_score(
+        cls,
+        saved_state: dict[str, object],
+        row_type: str,
+    ) -> float | None:
+        """从表格重建快照读取与实时单元格一致的质量评分。"""
+
+        if row_type == STAR_PAIR_ROW_TYPE_AUTO_MATCH:
+            extra_fields = saved_state.get("extra_fields")
+            if isinstance(extra_fields, dict):
+                auto_quality = cls._finite_quality_value(
+                    extra_fields.get(AUTO_MATCH_QUALITY_SCORE_KEY)
+                )
+                return auto_quality
+            return None
+        fit_payload = saved_state.get("fit_payload")
+        if not isinstance(fit_payload, dict):
+            return None
+        psf_quality = cls._finite_quality_value(fit_payload.get("quality_score"))
+        return psf_quality if psf_quality is not None and psf_quality > 0.0 else None
+
+    @classmethod
+    def _psf_quality_tooltip(cls, record: StarPairRecord) -> str:
+        """生成从 JSON 恢复的 PSF 质量参数说明。"""
+
+        psf = record.psf
+        psf_quality = cls._record_psf_quality_score(record)
+        if psf is None or psf_quality is None:
+            return "当前匹配没有可用的质量评分。"
+        details = [f"PSF 拟合质量：{psf_quality:.2f}（越高越可靠）。"]
+        if math.isfinite(psf.snr) and psf.snr > 0.0:
+            details.append(f"SNR {psf.snr:.2f}，归一化拟合误差 {psf.fit_error:.3f}。")
+        if math.isfinite(psf.fwhm_x) and math.isfinite(psf.fwhm_y) and max(psf.fwhm_x, psf.fwhm_y) > 0.0:
+            details.append(f"FWHM {psf.fwhm_x:.2f} × {psf.fwhm_y:.2f} px。")
+        if psf.saturated:
+            details.append(f"饱和兼容拟合，饱和像素比例 {psf.saturation_fraction:.1%}。")
+        if psf.blended:
+            details.append("该星点存在混合标记。")
+        return "\n".join(details)
+
+    def _star_pair_quality_tooltip(self, record: StarPairRecord | None) -> str:
+        if record is None:
+            return "当前匹配没有可用的质量评分。"
+        if record.is_auto_match:
+            auto_tooltip = self._auto_match_quality_tooltip(record.extra_fields)
+            if self._finite_quality_value(
+                record.extra_fields.get(AUTO_MATCH_QUALITY_SCORE_KEY)
+            ) is None:
+                return auto_tooltip
+            if self._record_psf_quality_score(record) is None:
+                return auto_tooltip
+            return auto_tooltip + "\n" + self._psf_quality_tooltip(record)
+        return self._psf_quality_tooltip(record)
 
     def _auto_match_quality_tooltip(self, fields: dict[str, object]) -> str:
         """生成自动扩展匹配质量的分项说明。"""
@@ -388,7 +473,7 @@ class StarPairTableGroupsMixin:
         return "\n".join(details)
 
     def _refresh_star_pair_quality_cell(self, row: int) -> None:
-        """刷新自动扩展匹配质量；手动匹配和旧记录保持空白。"""
+        """刷新匹配质量，并兼容只保存 PSF 质量的旧 JSON。"""
 
         if row < 0 or row >= self.ui.tableWidgetStarPairs.rowCount():
             return
@@ -406,10 +491,7 @@ class StarPairTableGroupsMixin:
         quality_score = self._star_pair_quality_score(row)
         quality_item.setText("" if quality_score is None else f"{quality_score:.2f}")
         record = self._star_pair_record_for_row(row)
-        if record is None or not record.is_auto_match:
-            quality_item.setToolTip("手动匹配不计算自动扩展匹配质量。")
-        else:
-            quality_item.setToolTip(self._auto_match_quality_tooltip(record.extra_fields))
+        quality_item.setToolTip(self._star_pair_quality_tooltip(record))
 
     def _set_star_pair_constraint(self, row: int, mode: str, fit_weight: float | None = None) -> None:
         if row < 0 or row >= self.ui.tableWidgetStarPairs.rowCount() or self._is_star_pair_group_row(row):
@@ -892,17 +974,11 @@ class StarPairTableGroupsMixin:
             item.setToolTip(constraint_tip)
         if position is not None:
             position_item.setText(f"({fit_weight:.2f})" if mode == AUTO_MATCH_CONSTRAINT_SOFT else "锚点")
-        extra_fields = saved_state.get("extra_fields")
-        if row_type == STAR_PAIR_ROW_TYPE_AUTO_MATCH and isinstance(extra_fields, dict):
-            try:
-                quality_score = float(extra_fields[AUTO_MATCH_QUALITY_SCORE_KEY])
-            except (KeyError, TypeError, ValueError):
-                quality_score = float("nan")
-            if math.isfinite(quality_score):
-                quality_item.setText(f"{quality_score:.2f}")
-            quality_item.setToolTip(self._auto_match_quality_tooltip(extra_fields))
-        else:
-            quality_item.setToolTip("手动匹配不计算自动扩展匹配质量。")
+        record = self._star_pair_store.get(star_id)
+        quality_score = self._record_quality_score(record)
+        if quality_score is not None:
+            quality_item.setText(f"{quality_score:.2f}")
+        quality_item.setToolTip(self._star_pair_quality_tooltip(record))
 
         table.setItem(row, STAR_PAIR_INDEX_COLUMN, index_item)
         table.setItem(row, STAR_PAIR_NAME_COLUMN, name_item)
@@ -994,16 +1070,11 @@ class StarPairTableGroupsMixin:
         if self._star_pair_sort_key == STAR_PAIR_SORT_KEY_QUALITY:
             def quality_sort_key(entry: tuple[int, ReferenceStar, str, str, str]) -> tuple[int, float, int]:
                 sequence_number, star, _index_text, row_type, _group_id = entry
-                if row_type != STAR_PAIR_ROW_TYPE_AUTO_MATCH:
-                    return 1, 0.0, sequence_number
-                extra_fields = saved_states.get(star.star_id.strip(), {}).get("extra_fields")
-                if not isinstance(extra_fields, dict):
-                    return 1, 0.0, sequence_number
-                try:
-                    quality_score = float(extra_fields[AUTO_MATCH_QUALITY_SCORE_KEY])
-                except (KeyError, TypeError, ValueError):
-                    return 1, 0.0, sequence_number
-                if not math.isfinite(quality_score):
+                quality_score = StarPairTableGroupsMixin._saved_star_pair_quality_score(
+                    saved_states.get(star.star_id.strip(), {}),
+                    row_type,
+                )
+                if quality_score is None:
                     return 1, 0.0, sequence_number
                 sort_value = -quality_score if self._star_pair_sort_descending else quality_score
                 return 0, sort_value, sequence_number

@@ -255,7 +255,7 @@ def test_position_quality_uses_wider_relative_scale() -> None:
 
 
 def test_quality_column_ignores_manual_pair_even_if_extra_field_exists() -> None:
-    """新指标列必须只显示自动扩展匹配，手动匹配始终留空。"""
+    """手动匹配不得误用自动匹配扩展字段作为质量。"""
 
     records = [
         StarPairRecord(
