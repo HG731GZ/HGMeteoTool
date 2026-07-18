@@ -595,6 +595,8 @@ class MainWindow(
         ViewControlsMixin.resizeEvent(self, event)
 
     def eventFilter(self, watched, event) -> bool:  # type: ignore[no-untyped-def]
+        if self._handle_mosaic_batch_event_filter(watched, event):
+            return True
         if self._handle_mosaic_event_filter(watched, event):
             return True
         return ViewControlsMixin.eventFilter(self, watched, event)

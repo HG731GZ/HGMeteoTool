@@ -6,12 +6,13 @@ from pathlib import Path
 from threading import Event
 from time import monotonic
 
-from PyQt5.QtCore import QObject, Qt, pyqtSignal
-from PyQt5.QtGui import QBrush, QColor
+from PyQt5.QtCore import QEvent, QObject, QRectF, QTimer, Qt, pyqtSignal
+from PyQt5.QtGui import QBrush, QColor, QImage, QPainter, QPen
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QFileDialog,
+    QGraphicsScene,
     QHeaderView,
     QMessageBox,
     QProgressDialog,
@@ -19,7 +20,11 @@ from PyQt5.QtWidgets import (
 )
 
 from .app_constants import SOURCE_MODEL_JSON_FILTER
+from .app_graphics_items import GraphicsImageItem
+from .app_mosaic import MOSAIC_PREVIEW_MAG_LIMIT
+from ..alignment.constants import SKY_KNOWN_PROJECTION_DISPLAY_NAMES
 from ..catalog import project_root
+from ..mosaic.render_types import MosaicRenderRequest
 from ..mosaic_export import (
     MOSAIC_EXPORT_TIFF_FILTER,
     load_mosaic_export_source_image,
@@ -33,6 +38,7 @@ from ..mosaic.model_io import MosaicSourceModel, _load_mosaic_source_model
 from ..meteor_selection import MeteorBox, load_meteor_selection, meteor_json_path
 from ..qt_tasks import start_qt_worker_task
 from ..simulator import CameraSettings, ObserverSettings, RECTILINEAR_LENS_MODEL, ViewSettings
+from ..sky_scene_service import SkySceneData
 
 
 MOSAIC_BATCH_FRAMING_JSON_FILTER = "自由投影取景 JSON (*.json);;JSON 文件 (*.json);;所有文件 (*)"
@@ -241,6 +247,9 @@ class MosaicBatchMixin:
         self._mosaic_batch_thread: object | None = None
         self._mosaic_batch_worker: MosaicBatchExportWorker | None = None
         self._mosaic_batch_progress: QProgressDialog | None = None
+        self._mosaic_batch_cancel_requested = False
+        self._mosaic_batch_terminal_handled = False
+        self._init_mosaic_batch_preview()
         self.ui.comboBoxMosaicBatchMode.setCurrentIndex(MOSAIC_BATCH_MODE_SKY_INDEX)
         if hasattr(self.ui, "doubleSpinBoxMosaicBatchMapTileSize"):
             self.ui.doubleSpinBoxMosaicBatchMapTileSize.setValue(float(self._mosaic_batch_config_map_tile_size_px()))
@@ -252,6 +261,23 @@ class MosaicBatchMixin:
             if hasattr(self.ui, label_name):
                 getattr(self.ui, label_name).installEventFilter(self)
         self._update_mosaic_batch_controls()
+
+    def _init_mosaic_batch_preview(self) -> None:
+        """初始化批处理页的只读模拟星空预览。"""
+
+        if not hasattr(self.ui, "mosaicBatchPreviewView"):
+            return
+        self.mosaic_batch_preview_scene = QGraphicsScene(self)
+        self.mosaic_batch_preview_image_item = GraphicsImageItem()
+        self.mosaic_batch_preview_scene.addItem(self.mosaic_batch_preview_image_item)
+        self.ui.mosaicBatchPreviewView.setScene(self.mosaic_batch_preview_scene)
+        self.ui.mosaicBatchPreviewView.installEventFilter(self)
+        self.ui.mosaicBatchPreviewView.viewport().installEventFilter(self)
+
+        self.mosaic_batch_preview_timer = QTimer(self)
+        self.mosaic_batch_preview_timer.setSingleShot(True)
+        self.mosaic_batch_preview_timer.timeout.connect(self.render_mosaic_batch_preview_now)
+        self._set_mosaic_batch_preview_placeholder("请先导入取景 JSON")
 
     def _connect_mosaic_batch_inputs(self) -> None:
         if not hasattr(self.ui, "comboBoxMosaicBatchMode"):
@@ -340,6 +366,8 @@ class MosaicBatchMixin:
             start_tooltip = "请先导入图像模型 JSON。"
         self.ui.pushButtonStartMosaicBatch.setToolTip(start_tooltip)
         self._update_mosaic_batch_summary_labels()
+        self._update_mosaic_batch_preview_info()
+        self.schedule_mosaic_batch_preview()
 
     def _mosaic_batch_meteor_only_enabled(self) -> bool:
         return bool(
@@ -364,6 +392,203 @@ class MosaicBatchMixin:
             )
         count = len(self._mosaic_batch_items)
         self.ui.labelMosaicBatchImageCount.setText(f"{count} 张" if count else "未导入")
+
+    @staticmethod
+    def _mosaic_batch_pixel_text(width_px: int, height_px: int) -> str:
+        """把输出尺寸和总像素数压缩为适合标题栏显示的文本。"""
+
+        width = max(0, int(width_px))
+        height = max(0, int(height_px))
+        if width <= 0 or height <= 0:
+            return "-"
+        megapixels = width * height / 1_000_000.0
+        return f"{width} × {height} px（{megapixels:.2f} MP）"
+
+    def _mosaic_batch_projection_display_name(self) -> str:
+        """返回当前批处理目标的投影名称。"""
+
+        if self._mosaic_batch_is_sky_mode():
+            framing = self._mosaic_batch_framing
+            if framing is None:
+                return "-"
+            projection_payload = framing.payload.get("projection")
+            if isinstance(projection_payload, dict):
+                display_name = str(projection_payload.get("display_name") or "").strip()
+                projection_model = str(projection_payload.get("model") or framing.camera.lens_model)
+                return display_name or SKY_KNOWN_PROJECTION_DISPLAY_NAMES.get(projection_model, projection_model)
+            projection_model = str(framing.camera.lens_model)
+            return SKY_KNOWN_PROJECTION_DISPLAY_NAMES.get(projection_model, projection_model)
+
+        base_model = self._mosaic_batch_base_model
+        if base_model is None:
+            return "-"
+        projection_model = str(base_model.model.camera_calibration_profile.base_projection_type)
+        return SKY_KNOWN_PROJECTION_DISPLAY_NAMES.get(projection_model, projection_model)
+
+    def _update_mosaic_batch_preview_info(self) -> None:
+        """刷新预览标题栏中的投影、画布和裁剪像素信息。"""
+
+        if not hasattr(self.ui, "labelMosaicBatchPreviewInfo"):
+            return
+        geometry = self._mosaic_batch_target_geometry()
+        if geometry is None:
+            self.ui.labelMosaicBatchPreviewInfo.setText("投影：-  |  完整画布：-  |  裁剪输出：-")
+            return
+        projection_name = self._mosaic_batch_projection_display_name()
+        boundary_text = self._mosaic_batch_pixel_text(
+            geometry.boundary_width_px,
+            geometry.boundary_height_px,
+        )
+        output_text = self._mosaic_batch_pixel_text(
+            geometry.output_width_px,
+            geometry.output_height_px,
+        )
+        self.ui.labelMosaicBatchPreviewInfo.setText(
+            f"投影：{projection_name}  |  完整画布：{boundary_text}  |  裁剪输出：{output_text}"
+        )
+
+    def schedule_mosaic_batch_preview(self, *unused, delay_ms: int = 30) -> None:  # type: ignore[no-untyped-def]
+        """合并连续刷新请求，避免导入和布局变化时重复渲染。"""
+
+        timer = getattr(self, "mosaic_batch_preview_timer", None)
+        if timer is None:
+            return
+        timer.start(max(0, int(delay_ms)))
+
+    def _mosaic_batch_preview_render_size(self, camera: CameraSettings) -> tuple[int, int]:
+        """在视图可用区域内按完整输出画布比例计算预览尺寸。"""
+
+        viewport_size = self.ui.mosaicBatchPreviewView.viewport().size()
+        available_width = max(64, int(viewport_size.width()))
+        available_height = max(64, int(viewport_size.height()))
+        aspect = max(1.0, float(camera.image_width_px)) / max(1.0, float(camera.image_height_px))
+        width = available_width
+        height = max(1, int(round(width / aspect)))
+        if height > available_height:
+            height = available_height
+            width = max(1, int(round(height * aspect)))
+        return max(1, width), max(1, height)
+
+    @staticmethod
+    def _mosaic_batch_preview_camera(
+        camera: CameraSettings,
+        width_px: int,
+        height_px: int,
+    ) -> CameraSettings:
+        """缩小相机输出像素数，同时保留原取景的投影几何。"""
+
+        return CameraSettings(
+            sensor_width_mm=float(camera.sensor_width_mm),
+            sensor_height_mm=float(camera.sensor_height_mm),
+            image_width_px=int(width_px),
+            image_height_px=int(height_px),
+            focal_length_mm=float(camera.focal_length_mm),
+            lens_model=str(camera.lens_model),
+            fisheye_fov_deg=float(camera.fisheye_fov_deg),
+        )
+
+    def _paint_mosaic_batch_crop_rect(
+        self,
+        image: QImage,
+        geometry: MosaicExportGeometry,
+    ) -> None:
+        """按完整画布比例在模拟星空上绘制红色裁剪框。"""
+
+        if image.isNull() or geometry.boundary_width_px <= 0 or geometry.boundary_height_px <= 0:
+            return
+        scale_x = image.width() / float(geometry.boundary_width_px)
+        scale_y = image.height() / float(geometry.boundary_height_px)
+        rect = QRectF(
+            float(geometry.crop_left_px) * scale_x,
+            float(geometry.crop_top_px) * scale_y,
+            float(geometry.output_width_px) * scale_x,
+            float(geometry.output_height_px) * scale_y,
+        )
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        pen = QPen(QColor(255, 32, 32, 230))
+        pen.setWidthF(max(1.5, min(float(image.width()), float(image.height())) / 320.0))
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        inset = pen.widthF() * 0.5
+        painter.drawRect(rect.adjusted(inset, inset, -inset, -inset))
+        painter.end()
+
+    def _set_mosaic_batch_preview_placeholder(self, message: str) -> None:
+        """在没有可渲染取景时显示简洁的占位提示。"""
+
+        if not hasattr(self.ui, "mosaicBatchPreviewView"):
+            return
+        width = max(320, int(self.ui.mosaicBatchPreviewView.viewport().width()))
+        height = max(180, int(self.ui.mosaicBatchPreviewView.viewport().height()))
+        image = QImage(width, height, QImage.Format_ARGB32_Premultiplied)
+        image.fill(QColor(16, 18, 22))
+        painter = QPainter(image)
+        painter.setPen(QColor(168, 174, 184))
+        painter.drawText(image.rect(), Qt.AlignCenter, str(message))
+        painter.end()
+        self._show_mosaic_batch_preview_image(image)
+
+    def _show_mosaic_batch_preview_image(self, image: QImage) -> None:
+        """把图像放入批处理预览场景并保持宽高比。"""
+
+        if not hasattr(self, "mosaic_batch_preview_image_item"):
+            return
+        width = max(1, int(image.width()))
+        height = max(1, int(image.height()))
+        self.mosaic_batch_preview_image_item.set_image(image)
+        self.mosaic_batch_preview_scene.setSceneRect(0.0, 0.0, float(width), float(height))
+        self.ui.mosaicBatchPreviewView.fitInView(
+            self.mosaic_batch_preview_scene.sceneRect(),
+            Qt.KeepAspectRatio,
+        )
+
+    def render_mosaic_batch_preview_now(self) -> None:
+        """复用全景构图渲染链路，只绘制模拟星空与输出裁剪框。"""
+
+        if not hasattr(self.ui, "mosaicBatchPreviewView"):
+            return
+        framing = self._mosaic_batch_framing if self._mosaic_batch_is_sky_mode() else None
+        if framing is None:
+            message = "请先导入取景 JSON" if self._mosaic_batch_is_sky_mode() else "底图模式仅显示目标画布信息"
+            self._set_mosaic_batch_preview_placeholder(message)
+            return
+        try:
+            width, height = self._mosaic_batch_preview_render_size(framing.camera)
+            camera = self._mosaic_batch_preview_camera(framing.camera, width, height)
+            observer = framing.observer
+            scene = SkySceneData(
+                horizontal_catalog=self._get_horizontal_catalog(observer, MOSAIC_PREVIEW_MAG_LIMIT),
+                horizontal_milky_way=self._get_horizontal_milky_way(observer),
+                horizontal_constellations=self._get_horizontal_constellations(observer),
+                horizontal_solar_system=self._get_horizontal_solar_system(observer),
+            )
+            request = MosaicRenderRequest(
+                camera=camera,
+                view=framing.view,
+                observer=observer,
+                scene=scene,
+                visible_mag_limit=MOSAIC_PREVIEW_MAG_LIMIT,
+                sky_style=self._mosaic_sky_preview_style(),
+                sources=(),
+                overlay_enabled=False,
+            )
+            result = self._mosaic_render_coordinator.render(request)
+            self._paint_mosaic_batch_crop_rect(result.image, framing.geometry)
+            self._show_mosaic_batch_preview_image(result.image)
+        except Exception as exc:  # noqa: BLE001 - 预览错误需要反馈到界面但不能阻断批处理导入。
+            self._set_mosaic_batch_preview_placeholder("模拟星空预览渲染失败")
+            self.ui.statusbar.showMessage(f"全景图批处理预览渲染失败: {exc}")
+
+    def _handle_mosaic_batch_event_filter(self, watched, event) -> bool:  # type: ignore[no-untyped-def]
+        """视图尺寸变化后按新宽高重绘批处理预览。"""
+
+        preview_view = getattr(self.ui, "mosaicBatchPreviewView", None)
+        if preview_view is None:
+            return False
+        if watched in (preview_view, preview_view.viewport()) and event.type() in (QEvent.Resize, QEvent.Show):
+            self.schedule_mosaic_batch_preview()
+        return False
 
     def import_mosaic_batch_framing_json(self) -> None:
         if not self._mosaic_batch_is_sky_mode():
@@ -432,6 +657,9 @@ class MosaicBatchMixin:
         if not isinstance(observer_payload, dict):
             raise ValueError("取景 JSON 缺少 observer 对象。")
         observer, _utc_offset_hours = self._observer_from_mosaic_framing_payload(observer_payload)
+        view_payload = payload.get("view")
+        if not isinstance(view_payload, dict):
+            raise ValueError("取景 JSON 缺少 view 对象。")
         return MosaicBatchFraming(
             json_path=json_path,
             payload=payload,
@@ -439,7 +667,11 @@ class MosaicBatchMixin:
             target_icrs_to_pixel_payload=target_payload,
             observer=observer,
             camera=self._mosaic_batch_camera_from_target_payload(target_payload),
-            view=ViewSettings(center_az_deg=0.0, center_alt_deg=0.0, roll_deg=0.0),
+            view=ViewSettings(
+                center_az_deg=float(view_payload.get("center_az_deg", 0.0)) % 360.0,
+                center_alt_deg=max(-90.0, min(90.0, float(view_payload.get("center_alt_deg", 0.0)))),
+                roll_deg=float(view_payload.get("roll_deg", 0.0)),
+            ),
         )
 
     def _mosaic_batch_camera_from_target_payload(self, payload: dict[str, object]) -> CameraSettings:
@@ -703,6 +935,8 @@ class MosaicBatchMixin:
         progress.setAutoReset(False)
         progress.setValue(0)
         progress.show()
+        self._mosaic_batch_cancel_requested = False
+        self._mosaic_batch_terminal_handled = False
         worker = MosaicBatchExportWorker(tuple(tasks))
         worker.item_started.connect(self._handle_mosaic_batch_item_started)
         worker.item_succeeded.connect(self._handle_mosaic_batch_item_succeeded)
@@ -768,8 +1002,13 @@ class MosaicBatchMixin:
 
         worker = self._mosaic_batch_worker
         progress = self._mosaic_batch_progress
-        if worker is None:
+        if (
+            worker is None
+            or self._mosaic_batch_cancel_requested
+            or self._mosaic_batch_terminal_handled
+        ):
             return
+        self._mosaic_batch_cancel_requested = True
         worker.request_cancel()
         if progress is not None:
             progress.setCancelButton(None)
@@ -777,8 +1016,10 @@ class MosaicBatchMixin:
         self.ui.statusbar.showMessage("正在取消全景图批处理...")
 
     def _handle_mosaic_batch_completed(self, success_count: int, failed_count: int, canceled: bool) -> None:
+        self._mosaic_batch_terminal_handled = True
         progress = self._mosaic_batch_progress
         if progress is not None:
+            self._disconnect_mosaic_batch_cancel_signal(progress)
             if not canceled:
                 total = max(1, success_count + failed_count)
                 progress.setRange(0, total)
@@ -797,7 +1038,9 @@ class MosaicBatchMixin:
             QMessageBox.information(self, "批处理完成", f"成功导出 {success_count} 张 TIFF。")
 
     def _handle_mosaic_batch_worker_failed(self, error_message: str) -> None:
+        self._mosaic_batch_terminal_handled = True
         if self._mosaic_batch_progress is not None:
+            self._disconnect_mosaic_batch_cancel_signal(self._mosaic_batch_progress)
             self._mosaic_batch_progress.close()
         for row, item in enumerate(self._mosaic_batch_items):
             if item.status == "处理中":
@@ -808,12 +1051,24 @@ class MosaicBatchMixin:
     def _cleanup_mosaic_batch_worker(self) -> None:
         progress = self._mosaic_batch_progress
         if progress is not None:
+            self._disconnect_mosaic_batch_cancel_signal(progress)
             progress.close()
             progress.deleteLater()
         self._mosaic_batch_thread = None
         self._mosaic_batch_worker = None
         self._mosaic_batch_progress = None
+        self._mosaic_batch_cancel_requested = False
+        self._mosaic_batch_terminal_handled = False
         self._update_mosaic_batch_controls()
+
+    def _disconnect_mosaic_batch_cancel_signal(self, progress: QProgressDialog) -> None:
+        """任务进入终态后断开取消信号，避免关闭弹窗再次覆盖状态栏。"""
+
+        try:
+            progress.canceled.disconnect(self._cancel_mosaic_batch_processing)
+        except (TypeError, RuntimeError):
+            # 信号可能已断开，或者 Qt 对象正处于销毁阶段。
+            pass
 
     def _mosaic_batch_map_tile_size_px(self) -> int:
         if hasattr(self.ui, "doubleSpinBoxMosaicBatchMapTileSize"):

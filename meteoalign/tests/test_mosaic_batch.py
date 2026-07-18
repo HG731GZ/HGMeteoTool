@@ -245,3 +245,79 @@ def test_mosaic_batch_controls_are_locked_while_worker_is_active() -> None:
     assert not window.ui.pushButtonImportMosaicBatchImageJson.enabled
     assert not window.ui.pushButtonClearMosaicBatchImports.enabled
     assert not window.ui.pushButtonStartMosaicBatch.enabled
+
+
+def test_mosaic_batch_preview_info_contains_projection_and_pixel_counts() -> None:
+    """批处理预览标题应同时显示完整画布和裁剪后的像素数量。"""
+
+    window = _batch_window(0)
+    window.ui.labelMosaicBatchPreviewInfo = _Control()
+    window._mosaic_batch_framing = SimpleNamespace(
+        payload={"projection": {"model": "fisheye_equidistant", "display_name": "等距鱼眼(ARC)"}},
+        geometry=MosaicExportGeometry(8000, 4000, 1000, 500, 6000, 3000),
+    )
+
+    window._update_mosaic_batch_preview_info()
+
+    assert "投影：等距鱼眼(ARC)" in window.ui.labelMosaicBatchPreviewInfo.text
+    assert "8000 × 4000 px（32.00 MP）" in window.ui.labelMosaicBatchPreviewInfo.text
+    assert "6000 × 3000 px（18.00 MP）" in window.ui.labelMosaicBatchPreviewInfo.text
+
+
+def test_mosaic_batch_progress_close_does_not_restore_canceling_status() -> None:
+    """取消完成后关闭进度弹窗，不得再次把状态栏改回“正在取消”。"""
+
+    class _Signal:
+        def __init__(self) -> None:
+            self.slot = None
+
+        def connect(self, slot) -> None:  # type: ignore[no-untyped-def]
+            self.slot = slot
+
+        def disconnect(self, slot) -> None:  # type: ignore[no-untyped-def]
+            if self.slot != slot:
+                raise TypeError("信号未连接")
+            self.slot = None
+
+        def emit(self) -> None:
+            if self.slot is not None:
+                self.slot()
+
+    class _Progress:
+        def __init__(self) -> None:
+            self.canceled = _Signal()
+
+        def setCancelButton(self, _button) -> None:  # noqa: N802 - Qt 控件接口命名
+            return
+
+        def setLabelText(self, _text: str) -> None:  # noqa: N802 - Qt 控件接口命名
+            return
+
+        def close(self) -> None:
+            # 模拟部分平台上关闭 QProgressDialog 时再次发出 canceled。
+            self.canceled.emit()
+
+    class _Worker:
+        def __init__(self) -> None:
+            self.cancel_count = 0
+
+        def request_cancel(self) -> None:
+            self.cancel_count += 1
+
+    window = _batch_window(0)
+    progress = _Progress()
+    worker = _Worker()
+    window._mosaic_batch_progress = progress
+    window._mosaic_batch_worker = worker
+    window._mosaic_batch_cancel_requested = False
+    window._mosaic_batch_terminal_handled = False
+    progress.canceled.connect(window._cancel_mosaic_batch_processing)
+
+    progress.canceled.emit()
+    assert worker.cancel_count == 1
+    assert window.ui.statusbar.message == "正在取消全景图批处理..."
+
+    window._handle_mosaic_batch_completed(0, 0, True)
+
+    assert worker.cancel_count == 1
+    assert window.ui.statusbar.message == "全景图批处理已取消：已成功导出 0 张。"

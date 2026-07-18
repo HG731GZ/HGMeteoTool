@@ -336,6 +336,23 @@ def test_mosaic_projection_omits_fixed_preview_controls() -> None:
     window.close()
 
 
+def test_mosaic_batch_page_contains_panorama_preview() -> None:
+    """批处理页右侧应提供独立的全景图预览和基础信息栏。"""
+
+    app = QApplication.instance() or QApplication([])
+    window = QMainWindow()
+    ui = Ui_MainWindow()
+    ui.setupUi(window)
+
+    assert ui.horizontalLayoutMosaicBatch.itemAt(1).widget() is ui.groupBoxMosaicBatchPreview
+    assert ui.verticalLayoutMosaicBatchPreview.itemAt(1).widget() is ui.mosaicBatchPreviewView
+    assert ui.labelMosaicBatchPreviewTitle.text() == "全景图预览"
+    assert "完整画布" in ui.labelMosaicBatchPreviewInfo.text()
+    assert "裁剪输出" in ui.labelMosaicBatchPreviewInfo.text()
+
+    window.close()
+
+
 def test_sequence_table_columns_can_be_resized_by_user() -> None:
     """序列表应提供足够宽的文件名列，且不在刷新时覆盖用户调整。"""
 
