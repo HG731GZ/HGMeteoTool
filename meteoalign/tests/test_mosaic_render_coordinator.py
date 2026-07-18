@@ -144,7 +144,6 @@ def test_coordinator_composites_source_layers_in_request_order() -> None:
         sky_style=SkyPreviewStyle(),
         sources=(first, second),
         overlay_enabled=True,
-        overlay_mode="source_image",
         source_texture_long_sides_px=(1, 1),
     )
 
@@ -174,7 +173,6 @@ def test_coordinator_passes_meteor_regions_only_for_sources_with_selection() -> 
         sky_style=SkyPreviewStyle(),
         sources=(selected, unselected),
         overlay_enabled=True,
-        overlay_mode="source_image",
         source_texture_long_sides_px=(1, 1),
         meteor_only=True,
     )

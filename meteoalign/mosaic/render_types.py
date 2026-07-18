@@ -23,7 +23,6 @@ class MosaicRenderRequest:
     sky_style: SkyPreviewStyle
     sources: tuple[MosaicSourceState, ...] = ()
     overlay_enabled: bool = False
-    overlay_mode: str = "coverage"
     overlay_opacity: float = 1.0
     interaction_active: bool = False
     source_texture_long_sides_px: tuple[int, ...] = ()

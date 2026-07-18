@@ -347,8 +347,8 @@ def test_mosaic_batch_page_contains_panorama_preview() -> None:
     assert ui.horizontalLayoutMosaicBatch.itemAt(1).widget() is ui.groupBoxMosaicBatchPreview
     assert ui.verticalLayoutMosaicBatchPreview.itemAt(1).widget() is ui.mosaicBatchPreviewView
     assert ui.labelMosaicBatchPreviewTitle.text() == "全景图预览"
-    assert "完整画布" in ui.labelMosaicBatchPreviewInfo.text()
-    assert "裁剪输出" in ui.labelMosaicBatchPreviewInfo.text()
+    assert ui.labelMosaicBatchPreviewInfo.text() == "投影：-  |  输出尺寸：-"
+    assert not hasattr(ui, "comboBoxMosaicOverlayMode")
 
     window.close()
 

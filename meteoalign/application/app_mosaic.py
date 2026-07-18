@@ -34,9 +34,6 @@ from ..mosaic_common import (
     MOSAIC_COVERAGE_GRID_LONG_SIDE,
     MOSAIC_GRID_MAX_PRECISION,
     MOSAIC_GRID_MIN_PRECISION,
-    MOSAIC_OVERLAY_MODE_COVERAGE,
-    MOSAIC_OVERLAY_MODE_SOURCE_IMAGE,
-    MOSAIC_OVERLAY_MODES,
     MOSAIC_PROJECTION_MODELS,
     MOSAIC_RENDER_MIN_SIZE_PX,
     MOSAIC_SOURCE_TEXTURE_LONG_SIDE_PX,
@@ -328,16 +325,12 @@ class MosaicProjectionMixin:
             self.ui.doubleSpinBoxMosaicAlt.setValue(self._mosaic_center_alt_deg)
         if hasattr(self.ui, "doubleSpinBoxMosaicRoll"):
             self.ui.doubleSpinBoxMosaicRoll.setValue(self._mosaic_roll_deg)
-        if hasattr(self.ui, "comboBoxMosaicOverlayMode"):
-            self.ui.comboBoxMosaicOverlayMode.setCurrentIndex(0)
         if hasattr(self.ui, "checkBoxMosaicSkyOnly"):
             self.ui.checkBoxMosaicSkyOnly.setChecked(False)
         if hasattr(self.ui, "checkBoxMosaicMeteorOnly"):
             self.ui.checkBoxMosaicMeteorOnly.setChecked(False)
         if hasattr(self.ui, "doubleSpinBoxMosaicOverlayOpacity"):
             self.ui.doubleSpinBoxMosaicOverlayOpacity.setValue(100.0)
-        elif hasattr(self.ui, "doubleSpinBoxMosaicCoverageOpacity"):
-            self.ui.doubleSpinBoxMosaicCoverageOpacity.setValue(100.0)
         if hasattr(self.ui, "spinBoxMosaicGridPrecision"):
             self.ui.spinBoxMosaicGridPrecision.setValue(self._mosaic_default_grid_precision())
         if hasattr(self.ui, "doubleSpinBoxMosaicMapTileSize"):
@@ -411,18 +404,12 @@ class MosaicProjectionMixin:
             self.ui.doubleSpinBoxMosaicAlt.valueChanged.connect(self._handle_mosaic_view_controls_changed)
         if hasattr(self.ui, "doubleSpinBoxMosaicRoll"):
             self.ui.doubleSpinBoxMosaicRoll.valueChanged.connect(self._handle_mosaic_view_controls_changed)
-        if hasattr(self.ui, "checkBoxMosaicShowCoverage"):
-            self.ui.checkBoxMosaicShowCoverage.toggled.connect(self.schedule_mosaic_render)
-        if hasattr(self.ui, "comboBoxMosaicOverlayMode"):
-            self.ui.comboBoxMosaicOverlayMode.currentIndexChanged.connect(self.schedule_mosaic_render)
         if hasattr(self.ui, "checkBoxMosaicSkyOnly"):
             self.ui.checkBoxMosaicSkyOnly.toggled.connect(self.schedule_mosaic_render)
         if hasattr(self.ui, "checkBoxMosaicMeteorOnly"):
             self.ui.checkBoxMosaicMeteorOnly.toggled.connect(self._handle_mosaic_meteor_only_toggled)
         if hasattr(self.ui, "doubleSpinBoxMosaicOverlayOpacity"):
             self.ui.doubleSpinBoxMosaicOverlayOpacity.valueChanged.connect(self.schedule_mosaic_render)
-        elif hasattr(self.ui, "doubleSpinBoxMosaicCoverageOpacity"):
-            self.ui.doubleSpinBoxMosaicCoverageOpacity.valueChanged.connect(self.schedule_mosaic_render)
         if hasattr(self.ui, "comboBoxMosaicDisplayModel"):
             self.ui.comboBoxMosaicDisplayModel.currentIndexChanged.connect(
                 self._handle_mosaic_display_model_changed
@@ -1484,7 +1471,7 @@ class MosaicProjectionMixin:
             (item.source_model for item in items if item.source_model.source_image_path is not None),
             items[0].source_model,
         )
-        self._set_mosaic_overlay_defaults_for_model(representative)
+        self._set_mosaic_overlay_defaults()
 
     def _clear_mosaic_interaction_caches(self) -> None:
         for item in self._mosaic_current_source_items():
@@ -1550,7 +1537,7 @@ class MosaicProjectionMixin:
         keep_imported_framing = self._mosaic_imported_framing_ready()
         if not keep_imported_framing:
             self._set_mosaic_projection_from_source_model(source_model)
-        self._set_mosaic_overlay_defaults_for_model(source_model)
+        self._set_mosaic_overlay_defaults()
         if not keep_imported_framing:
             self._set_mosaic_observer_controls_from_source_model(source_model)
         if not keep_imported_framing:
@@ -1684,27 +1671,15 @@ class MosaicProjectionMixin:
         self._update_mosaic_projection_controls()
         return True
 
-    def _set_mosaic_overlay_defaults_for_model(self, source_model: MosaicSourceModel) -> None:
+    def _set_mosaic_overlay_defaults(self) -> None:
+        """导入模型后恢复原图叠加的默认显示状态。"""
+
         if hasattr(self.ui, "checkBoxMosaicSkyOnly"):
             was_blocked = self.ui.checkBoxMosaicSkyOnly.blockSignals(True)
             self.ui.checkBoxMosaicSkyOnly.setChecked(False)
             self.ui.checkBoxMosaicSkyOnly.blockSignals(was_blocked)
-        if hasattr(self.ui, "comboBoxMosaicOverlayMode"):
-            overlay_mode = (
-                MOSAIC_OVERLAY_MODE_SOURCE_IMAGE
-                if source_model.source_image_path is not None
-                else MOSAIC_OVERLAY_MODE_COVERAGE
-            )
-            index = MOSAIC_OVERLAY_MODES.index(overlay_mode)
-            was_blocked = self.ui.comboBoxMosaicOverlayMode.blockSignals(True)
-            self.ui.comboBoxMosaicOverlayMode.setCurrentIndex(index)
-            self.ui.comboBoxMosaicOverlayMode.blockSignals(was_blocked)
-        opacity_control = None
         if hasattr(self.ui, "doubleSpinBoxMosaicOverlayOpacity"):
             opacity_control = self.ui.doubleSpinBoxMosaicOverlayOpacity
-        elif hasattr(self.ui, "doubleSpinBoxMosaicCoverageOpacity"):
-            opacity_control = self.ui.doubleSpinBoxMosaicCoverageOpacity
-        if opacity_control is not None:
             was_blocked = opacity_control.blockSignals(True)
             opacity_control.setValue(50.0)
             opacity_control.blockSignals(was_blocked)
@@ -2070,18 +2045,9 @@ class MosaicProjectionMixin:
         observer = self._mosaic_observer_from_controls() or source_model.observer
         return source_model.model, self._mosaic_coverage_cache, observer
 
-    def _mosaic_overlay_mode(self) -> str:
-        if hasattr(self.ui, "comboBoxMosaicOverlayMode"):
-            index = self.ui.comboBoxMosaicOverlayMode.currentIndex()
-            if 0 <= index < len(MOSAIC_OVERLAY_MODES):
-                return MOSAIC_OVERLAY_MODES[index]
-        return MOSAIC_OVERLAY_MODE_COVERAGE
-
     def _mosaic_overlay_opacity(self) -> float:
         if hasattr(self.ui, "doubleSpinBoxMosaicOverlayOpacity"):
             value = self.ui.doubleSpinBoxMosaicOverlayOpacity.value()
-        elif hasattr(self.ui, "doubleSpinBoxMosaicCoverageOpacity"):
-            value = self.ui.doubleSpinBoxMosaicCoverageOpacity.value()
         else:
             value = 100.0
         return max(0.0, min(1.0, float(value) / 100.0))
@@ -2089,10 +2055,6 @@ class MosaicProjectionMixin:
     def _mosaic_overlay_enabled(self) -> bool:
         if hasattr(self.ui, "checkBoxMosaicSkyOnly") and self.ui.checkBoxMosaicSkyOnly.isChecked():
             return False
-        if hasattr(self.ui, "comboBoxMosaicOverlayMode"):
-            return True
-        if hasattr(self.ui, "checkBoxMosaicShowCoverage"):
-            return bool(self.ui.checkBoxMosaicShowCoverage.isChecked())
         return True
 
     def _mosaic_meteor_only_enabled(self) -> bool:
@@ -2187,7 +2149,6 @@ class MosaicProjectionMixin:
                 sky_style=self._mosaic_sky_preview_style(),
                 sources=source_items,
                 overlay_enabled=self._mosaic_overlay_enabled(),
-                overlay_mode=self._mosaic_overlay_mode(),
                 overlay_opacity=self._mosaic_overlay_opacity(),
                 interaction_active=bool(getattr(self, "_mosaic_interaction_active", False)),
                 source_texture_long_sides_px=tuple(

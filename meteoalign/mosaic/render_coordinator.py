@@ -9,15 +9,12 @@ import numpy as np
 from PyQt5.QtGui import QColor, QImage, QPainter
 
 from .model_io import MosaicCoverageCache, MosaicSourceTextureCache
-from .overlay_renderer import coverage_altaz, load_source_texture, paint_coverage_overlay
+from .overlay_renderer import coverage_altaz, load_source_texture
 from ..projected_texture_renderer import ProjectedTextureRenderer
 from ..sky_scene_service import SkyPreviewRenderService
 from ..texture_projection import rgba_array_to_qimage
 from .render_types import MosaicRenderRequest, MosaicRenderResult
 from .state import MosaicSourceState
-
-
-MOSAIC_OVERLAY_MODE_SOURCE_IMAGE = "source_image"
 
 
 class MosaicRenderCoordinator:
@@ -63,37 +60,7 @@ class MosaicRenderCoordinator:
                 cache_keys=(),
             )
 
-        if request.overlay_mode == MOSAIC_OVERLAY_MODE_SOURCE_IMAGE:
-            return self._render_source_texture_overlays(image, request)
-        return self._render_coverage_overlays(image, request)
-
-    def _render_coverage_overlays(
-        self,
-        image: QImage,
-        request: MosaicRenderRequest,
-    ) -> MosaicRenderResult:
-        assert request.observer is not None
-        rendered_count = 0
-        for source in request.sources:
-            cache = self.render_coverage_cache(source, interaction_active=request.interaction_active)
-            if cache is None:
-                continue
-            paint_coverage_overlay(
-                image,
-                cache,
-                request.camera,
-                request.view,
-                request.observer,
-                request.overlay_opacity,
-            )
-            rendered_count += 1
-        return MosaicRenderResult(
-            image=image,
-            rendered_coverage_count=rendered_count,
-            rendered_texture_count=0,
-            diagnostics=(),
-            cache_keys=(),
-        )
+        return self._render_source_texture_overlays(image, request)
 
     def _render_source_texture_overlays(
         self,

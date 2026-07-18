@@ -250,7 +250,7 @@ def test_mosaic_batch_controls_are_locked_while_worker_is_active() -> None:
 
 
 def test_mosaic_batch_preview_info_contains_projection_and_pixel_counts() -> None:
-    """批处理预览标题应同时显示完整画布和裁剪后的像素数量。"""
+    """批处理预览标题应只显示投影和最终输出像素数量。"""
 
     window = _batch_window(0)
     window.ui.labelMosaicBatchPreviewInfo = _Control()
@@ -262,8 +262,8 @@ def test_mosaic_batch_preview_info_contains_projection_and_pixel_counts() -> Non
     window._update_mosaic_batch_preview_info()
 
     assert "投影：等距鱼眼(ARC)" in window.ui.labelMosaicBatchPreviewInfo.text
-    assert "8000 × 4000 px（32.00 MP）" in window.ui.labelMosaicBatchPreviewInfo.text
-    assert "6000 × 3000 px（18.00 MP）" in window.ui.labelMosaicBatchPreviewInfo.text
+    assert "输出尺寸：6000 × 3000 px（18.00 MP）" in window.ui.labelMosaicBatchPreviewInfo.text
+    assert "完整画布" not in window.ui.labelMosaicBatchPreviewInfo.text
 
 
 def test_mosaic_batch_base_preview_is_8bit_and_cached(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]

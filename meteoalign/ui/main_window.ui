@@ -3240,20 +3240,6 @@
               </spacer>
              </item>
              <item>
-              <widget class="QComboBox" name="comboBoxMosaicOverlayMode">
-               <item>
-                <property name="text">
-                 <string>显示范围</string>
-                </property>
-               </item>
-               <item>
-                <property name="text">
-                 <string>显示原图</string>
-                </property>
-               </item>
-              </widget>
-             </item>
-             <item>
               <widget class="QLabel" name="labelMosaicOverlayOpacity">
                <property name="text">
                 <string>透明度</string>
@@ -3645,7 +3631,7 @@
                 </sizepolicy>
                </property>
                <property name="text">
-                <string>投影：-  |  完整画布：-  |  裁剪输出：-</string>
+                <string>投影：-  |  输出尺寸：-</string>
                </property>
                <property name="alignment">
                 <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>

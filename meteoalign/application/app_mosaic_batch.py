@@ -429,25 +429,21 @@ class MosaicBatchMixin:
         return SKY_KNOWN_PROJECTION_DISPLAY_NAMES.get(projection_model, projection_model)
 
     def _update_mosaic_batch_preview_info(self) -> None:
-        """刷新预览标题栏中的投影、画布和裁剪像素信息。"""
+        """刷新预览标题栏中的投影和最终输出尺寸。"""
 
         if not hasattr(self.ui, "labelMosaicBatchPreviewInfo"):
             return
         geometry = self._mosaic_batch_target_geometry()
         if geometry is None:
-            self.ui.labelMosaicBatchPreviewInfo.setText("投影：-  |  完整画布：-  |  裁剪输出：-")
+            self.ui.labelMosaicBatchPreviewInfo.setText("投影：-  |  输出尺寸：-")
             return
         projection_name = self._mosaic_batch_projection_display_name()
-        boundary_text = self._mosaic_batch_pixel_text(
-            geometry.boundary_width_px,
-            geometry.boundary_height_px,
-        )
         output_text = self._mosaic_batch_pixel_text(
             geometry.output_width_px,
             geometry.output_height_px,
         )
         self.ui.labelMosaicBatchPreviewInfo.setText(
-            f"投影：{projection_name}  |  完整画布：{boundary_text}  |  裁剪输出：{output_text}"
+            f"投影：{projection_name}  |  输出尺寸：{output_text}"
         )
 
     def schedule_mosaic_batch_preview(self, *unused, delay_ms: int = 30) -> None:  # type: ignore[no-untyped-def]

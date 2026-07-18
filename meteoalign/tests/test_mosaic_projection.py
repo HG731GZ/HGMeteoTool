@@ -17,8 +17,6 @@ from meteoalign.application.app_mosaic import (
 from meteoalign.mosaic.render_coordinator import MosaicRenderCoordinator
 from meteoalign.mosaic_framing import MOSAIC_FRAMING_SCHEMA
 from meteoalign.mosaic_common import (
-    MOSAIC_OVERLAY_MODE_SOURCE_IMAGE,
-    MOSAIC_OVERLAY_MODES,
     MOSAIC_PROJECTION_MODELS,
 )
 from meteoalign.mosaic_export import MosaicExportGeometry
@@ -114,7 +112,6 @@ def _mosaic_window() -> MosaicProjectionMixin:
     window = MosaicProjectionMixin.__new__(MosaicProjectionMixin)
     window.ui = SimpleNamespace(
         comboBoxMosaicProjection=_ComboBox(0),
-        comboBoxMosaicOverlayMode=_ComboBox(0),
         doubleSpinBoxMosaicOverlayOpacity=_SpinBox(100.0),
         checkBoxMosaicSkyOnly=_CheckBox(True),
     )
@@ -131,20 +128,20 @@ def _source_model(base_projection: str, source_image_path: Path | None = Path("s
     )
 
 
-def test_mosaic_model_defaults_apply_json_projection_and_source_overlay() -> None:
+def test_mosaic_model_defaults_apply_json_projection_and_source_image_overlay() -> None:
+    """导入模型后应使用其投影，并固定恢复原图叠加显示。"""
+
     window = _mosaic_window()
     source_model = _source_model(SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT)
 
     applied = MosaicProjectionMixin._set_mosaic_projection_from_source_model(window, source_model)
-    MosaicProjectionMixin._set_mosaic_overlay_defaults_for_model(window, source_model)
+    MosaicProjectionMixin._set_mosaic_overlay_defaults(window)
 
     assert applied
     assert window.ui.comboBoxMosaicProjection.currentIndex() == MOSAIC_PROJECTION_MODELS.index(
         SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT
     )
-    assert window.ui.comboBoxMosaicOverlayMode.currentIndex() == MOSAIC_OVERLAY_MODES.index(
-        MOSAIC_OVERLAY_MODE_SOURCE_IMAGE
-    )
+    assert not hasattr(window.ui, "comboBoxMosaicOverlayMode")
     assert window.ui.doubleSpinBoxMosaicOverlayOpacity.value() == 50.0
     assert not window.ui.checkBoxMosaicSkyOnly.isChecked()
     assert MosaicProjectionMixin._mosaic_overlay_enabled(window)
@@ -441,7 +438,7 @@ def test_quiet_mosaic_model_load_replaces_all_existing_models(monkeypatch) -> No
     window._set_mosaic_observer_controls_enabled = observer_updates.append  # type: ignore[method-assign]
     for method_name in (
         "_set_mosaic_projection_from_source_model",
-        "_set_mosaic_overlay_defaults_for_model",
+        "_set_mosaic_overlay_defaults",
         "_set_mosaic_grid_controls_enabled",
         "_update_mosaic_grid_precision_tooltip",
         "_reset_mosaic_center_from_model",
