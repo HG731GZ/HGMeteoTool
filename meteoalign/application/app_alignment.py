@@ -539,15 +539,11 @@ class AlignmentMixin:
         return manual_pair_count < MIN_ALIGNMENT_PAIRS and self._has_rough_framing()
 
     def _show_adjacent_framing_workflow_status(self, _manual_pair_count: int, using_rough_framing: bool) -> None:
-        """在底部状态栏说明粗略取景和手工匹配之间的当前切换状态。"""
+        """仅在粗略取景实际接管同步时显示状态，避免正常刷新覆盖有用提示。"""
 
-        if not self._has_rough_framing():
+        if not self._has_rough_framing() or not using_rough_framing:
             return
-        if using_rough_framing:
-            message = "参考星图同步目前由粗略取景提供"
-        else:
-            message = "参考星图同步基于当前匹配求解"
-        self.ui.statusbar.showMessage(message)
+        self.ui.statusbar.showMessage("参考星图同步目前由粗略取景提供")
 
     def _star_pair_alignment_residual(self, row: int) -> tuple[float, float, float] | None:
         transform = self._sky_alignment_transform
