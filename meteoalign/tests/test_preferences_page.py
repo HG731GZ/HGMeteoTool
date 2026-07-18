@@ -8,7 +8,8 @@ from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QPoint, QPointF, Qt
+from PyQt5.QtGui import QWheelEvent
 from PyQt5.QtWidgets import QApplication, QGroupBox
 import pytest
 
@@ -294,6 +295,49 @@ def test_preferences_dialog_is_non_modal_and_launcher_uses_text_buttons(tmp_path
     app.processEvents()
     assert not dialog.isVisible()
     launcher.close()
+
+
+def test_preferences_value_controls_ignore_wheel_and_scroll_page(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """选项页数值与下拉控件不得响应滚轮，滚轮应继续滚动外层页面。"""
+
+    app = QApplication.instance() or QApplication([])
+    page = PreferencesPage(preference_path=tmp_path / "preference.json")
+    page.resize(760, 420)
+    page.show()
+    app.processEvents()
+
+    spin_box = page.ui.spinBoxStarNameFontSize
+    combo_box = page.ui.comboBoxAutoMatchDefaultConstraintMode
+    spin_box.setValue(20)
+    combo_box.setCurrentIndex(0)
+    scrollbar = page.ui.scrollAreaPreferences.verticalScrollBar()
+    scrollbar.setValue(0)
+
+    def wheel_event(control) -> QWheelEvent:  # type: ignore[no-untyped-def]
+        local_position = QPointF(control.rect().center())
+        global_position = QPointF(control.mapToGlobal(control.rect().center()))
+        return QWheelEvent(
+            local_position,
+            global_position,
+            QPoint(),
+            QPoint(0, -120),
+            Qt.NoButton,
+            Qt.NoModifier,
+            Qt.ScrollUpdate,
+            False,
+        )
+
+    QApplication.sendEvent(spin_box, wheel_event(spin_box))
+    first_scroll_value = scrollbar.value()
+    QApplication.sendEvent(combo_box, wheel_event(combo_box))
+    app.processEvents()
+
+    assert spin_box.value() == 20
+    assert combo_box.currentIndex() == 0
+    assert first_scroll_value > 0
+    assert scrollbar.value() > first_scroll_value
+
+    page.close()
 
 
 def test_about_dialog_displays_qrcodes_and_project_links() -> None:

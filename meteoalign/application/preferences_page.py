@@ -4,7 +4,7 @@ import re
 from dataclasses import replace
 from pathlib import Path
 
-from PyQt5.QtCore import pyqtSignal
+from PyQt5.QtCore import QEvent, pyqtSignal
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import QColorDialog, QMessageBox, QWidget
 
@@ -12,6 +12,7 @@ from ..config import StarMapUiConfig, load_star_map_ui_config
 from ..meteor_showers import METEOR_SHOWER_BY_ID
 from ..preference_manager import update_preference_values
 from ..ui.ui_preferences_page import Ui_PreferencesPage
+from .app_widgets import AppWidgetMixin
 from .meteor_shower_selection_dialog import MeteorShowerSelectionDialog
 
 
@@ -95,7 +96,7 @@ DEFAULT_ONLY_PREFERENCE_KEYS = frozenset(
 )
 
 
-class PreferencesPage(QWidget):
+class PreferencesPage(QWidget, AppWidgetMixin):
     """读取、编辑、应用并保存普通软件参数的标签页。"""
 
     preferences_applied = pyqtSignal(object)
@@ -106,6 +107,7 @@ class PreferencesPage(QWidget):
         super().__init__(parent)
         self.ui = Ui_PreferencesPage()
         self.ui.setupUi(self)
+        self._install_value_control_wheel_filters()
         self._preference_path = preference_path
         self._populating_controls = False
         self._selected_meteor_shower_ids: tuple[str, ...] = ()
@@ -123,6 +125,13 @@ class PreferencesPage(QWidget):
         self._runtime_config = self._persisted_config
         self._populate_controls(self._persisted_config)
         self._connect_immediate_apply_controls()
+
+    def eventFilter(self, watched, event) -> bool:  # type: ignore[no-untyped-def]
+        """忽略数值控件的滚轮调整，并继续滚动外层选项页面。"""
+
+        if event.type() == QEvent.Wheel and self._is_wheel_value_control(watched):
+            return self._forward_value_control_wheel_to_scroll_area(watched, event)
+        return QWidget.eventFilter(self, watched, event)
 
     def read_preferences(self) -> None:
         """从磁盘重读配置，并把其中非默认参数应用到当前会话。"""

@@ -3,10 +3,47 @@ from __future__ import annotations
 from html import escape
 
 from PyQt5.QtCore import QTimer, Qt
-from PyQt5.QtGui import QFont
-from PyQt5.QtWidgets import QAbstractSlider, QAbstractSpinBox, QComboBox, QLabel, QWidget
+from PyQt5.QtGui import QFont, QWheelEvent
+from PyQt5.QtWidgets import QApplication, QAbstractSlider, QAbstractSpinBox, QComboBox, QLabel, QWidget
 
 from ..config import StarMapUiConfig
+
+
+def forward_value_control_wheel_to_scroll_area(control, event: QWheelEvent) -> bool:  # type: ignore[no-untyped-def]
+    """阻止参数控件吃掉滚轮，并将其交给最近的外层滚动区域。"""
+
+    ancestor = control.parentWidget()
+    while ancestor is not None:
+        inherits = getattr(ancestor, "inherits", None)
+        if callable(inherits) and inherits("QAbstractScrollArea"):
+            # 不能把同一个滚轮事件再次投递到 viewport：Qt 会把事件沿父级
+            # 重新分发，最终又回到当前控件，从而触发递归。直接调整滚动条即可。
+            pixel_delta = event.pixelDelta()
+            angle_delta = event.angleDelta()
+            if pixel_delta.y() != 0 or angle_delta.y() != 0:
+                scrollbar = ancestor.verticalScrollBar()
+                delta = pixel_delta.y()
+                if delta == 0:
+                    delta = round(
+                        angle_delta.y()
+                        / 120.0
+                        * max(1, QApplication.wheelScrollLines())
+                        * max(1, scrollbar.singleStep())
+                    )
+            else:
+                scrollbar = ancestor.horizontalScrollBar()
+                delta = pixel_delta.x()
+                if delta == 0:
+                    delta = round(
+                        angle_delta.x()
+                        / 120.0
+                        * max(1, QApplication.wheelScrollLines())
+                        * max(1, scrollbar.singleStep())
+                    )
+            scrollbar.setValue(scrollbar.value() - delta)
+            return True
+        ancestor = ancestor.parentWidget()
+    return True
 
 
 class AppWidgetMixin:
@@ -70,6 +107,11 @@ class AppWidgetMixin:
             bool(inherits(class_name))
             for class_name in ("QAbstractSpinBox", "QComboBox", "QAbstractSlider")
         )
+
+    def _forward_value_control_wheel_to_scroll_area(self, control, event: QWheelEvent) -> bool:  # type: ignore[no-untyped-def]
+        """使用全局统一规则转交数值控件上的滚轮事件。"""
+
+        return forward_value_control_wheel_to_scroll_area(control, event)
 
     def _set_plain_label_text(self, label: QLabel, text: str, tooltip: str | None = None) -> None:
         """设置标签纯文本，并同步设置 tooltip。"""
