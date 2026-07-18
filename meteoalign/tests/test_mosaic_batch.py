@@ -3,7 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from meteoalign.application.app_mosaic_batch import MosaicBatchMixin
+import meteoalign.application.app_mosaic_batch as app_mosaic_batch
+from meteoalign.application.app_mosaic_batch import (
+    MosaicBatchExportTask,
+    MosaicBatchExportWorker,
+    MosaicBatchImageItem,
+    MosaicBatchMixin,
+)
+from meteoalign.mosaic.export.geometry import MosaicExportGeometry
 from meteoalign.meteor_selection import MeteorBox, save_meteor_selection
 
 
@@ -145,3 +152,96 @@ def test_mosaic_batch_meteor_only_uses_detected_box_regions() -> None:
     item = SimpleNamespace(meteor_boxes=(MeteorBox(10.2, 20.4, 100.6, 200.8),))
 
     assert window._mosaic_batch_item_source_regions(item) == ((10, 20, 101, 201),)
+
+
+def _worker_task(row: int, tmp_path: Path) -> MosaicBatchExportTask:
+    source_model = SimpleNamespace(
+        json_path=tmp_path / f"source_{row}.json",
+        source_image_path=tmp_path / f"source_{row}.tif",
+    )
+    return MosaicBatchExportTask(
+        row=row,
+        item=MosaicBatchImageItem(source_model=source_model),  # type: ignore[arg-type]
+        geometry=MosaicExportGeometry(10, 8, 0, 0, 10, 8),
+        output_path=tmp_path / f"output_{row}.tif",
+        framing=None,
+        base_model=None,
+        block_rows=8,
+        map_tile_size_px=4,
+        exact_remap_repair=False,
+        tiff_lzw_compression=False,
+        source_pixel_regions=None,
+    )
+
+
+def test_mosaic_batch_worker_continues_after_single_file_failure(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """后台批处理应记录单张失败，并继续导出后续图像。"""
+
+    tasks = tuple(_worker_task(row, tmp_path) for row in range(3))
+
+    def fake_write(task, progress_callback) -> None:  # type: ignore[no-untyped-def]
+        progress_callback("测试导出", 1, 2)
+        if task.row == 1:
+            raise ValueError("测试失败")
+        progress_callback("测试导出", 2, 2)
+
+    monkeypatch.setattr(app_mosaic_batch, "_write_mosaic_batch_export_task", fake_write)
+    worker = MosaicBatchExportWorker(tasks)
+    started_rows: list[int] = []
+    succeeded_rows: list[int] = []
+    failed_rows: list[tuple[int, str]] = []
+    completed: list[tuple[int, int, bool]] = []
+    worker.item_started.connect(started_rows.append)
+    worker.item_succeeded.connect(lambda row, _path: succeeded_rows.append(row))
+    worker.item_failed.connect(lambda row, message: failed_rows.append((row, message)))
+    worker.completed.connect(lambda success, failed, canceled: completed.append((success, failed, canceled)))
+
+    worker.run()
+
+    assert started_rows == [0, 1, 2]
+    assert succeeded_rows == [0, 2]
+    assert failed_rows == [(1, "测试失败")]
+    assert completed == [(2, 1, False)]
+
+
+def test_mosaic_batch_worker_stops_cooperatively_after_cancel(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """取消请求应在下一个进度检查点停止，且不能启动下一张图。"""
+
+    tasks = tuple(_worker_task(row, tmp_path) for row in range(2))
+    worker = MosaicBatchExportWorker(tasks)
+
+    def fake_write(_task, progress_callback) -> None:  # type: ignore[no-untyped-def]
+        progress_callback("开始", 0, 10)
+        worker.request_cancel()
+        progress_callback("继续", 1, 10)
+
+    monkeypatch.setattr(app_mosaic_batch, "_write_mosaic_batch_export_task", fake_write)
+    started_rows: list[int] = []
+    completed: list[tuple[int, int, bool]] = []
+    worker.item_started.connect(started_rows.append)
+    worker.completed.connect(lambda success, failed, canceled: completed.append((success, failed, canceled)))
+
+    worker.run()
+
+    assert started_rows == [0]
+    assert completed == [(0, 0, True)]
+
+
+def test_mosaic_batch_controls_are_locked_while_worker_is_active() -> None:
+    """后台任务运行时不得再次导入、清空或重复启动。"""
+
+    window = _batch_window(0)
+    window._mosaic_batch_thread = object()
+    window._mosaic_batch_framing = SimpleNamespace(
+        json_path=Path("framing.json"),
+        geometry=MosaicExportGeometry(10, 8, 0, 0, 10, 8),
+    )
+    window._mosaic_batch_items = [object()]
+
+    window._update_mosaic_batch_controls()
+
+    assert not window.ui.comboBoxMosaicBatchMode.enabled
+    assert not window.ui.pushButtonImportMosaicBatchFramingJson.enabled
+    assert not window.ui.pushButtonImportMosaicBatchImageJson.enabled
+    assert not window.ui.pushButtonClearMosaicBatchImports.enabled
+    assert not window.ui.pushButtonStartMosaicBatch.enabled

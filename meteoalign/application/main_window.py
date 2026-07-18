@@ -574,6 +574,10 @@ class MainWindow(
         )
 
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        if getattr(self, "_mosaic_batch_thread", None) is not None:
+            QMessageBox.information(self, "正在导出全景图", "全景图批处理仍在后台导出，请先取消或等待完成后再关闭窗口。")
+            event.ignore()
+            return
         if getattr(self, "_meteor_mask_import_thread", None) is not None:
             QMessageBox.information(self, "正在导入流星蒙版", "流星检测蒙版仍在导入，请等待完成后再关闭窗口。")
             event.ignore()

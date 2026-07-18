@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Event
+from time import monotonic
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QObject, Qt, pyqtSignal
 from PyQt5.QtGui import QBrush, QColor
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -29,6 +31,7 @@ from ..mosaic.export.target_transform import target_icrs_to_pixel_transform_payl
 from ..mosaic.framing import MOSAIC_FRAMING_SCHEMA
 from ..mosaic.model_io import MosaicSourceModel, _load_mosaic_source_model
 from ..meteor_selection import MeteorBox, load_meteor_selection, meteor_json_path
+from ..qt_tasks import start_qt_worker_task
 from ..simulator import CameraSettings, ObserverSettings, RECTILINEAR_LENS_MODEL, ViewSettings
 
 
@@ -61,6 +64,168 @@ class MosaicBatchImageItem:
     error_message: str = ""
 
 
+@dataclass(frozen=True)
+class MosaicBatchExportTask:
+    """后台批处理所需的只读参数快照。"""
+
+    row: int
+    item: MosaicBatchImageItem
+    geometry: MosaicExportGeometry
+    output_path: Path
+    framing: MosaicBatchFraming | None
+    base_model: MosaicSourceModel | None
+    block_rows: int
+    map_tile_size_px: int
+    exact_remap_repair: bool
+    tiff_lzw_compression: bool
+    source_pixel_regions: tuple[tuple[int, int, int, int], ...] | None
+
+
+def _write_mosaic_batch_export_task(
+    task: MosaicBatchExportTask,
+    update_export_progress,
+) -> None:  # type: ignore[no-untyped-def]
+    """执行单张批处理导出；此函数只在后台线程中调用。"""
+
+    source_model = task.item.source_model
+    if source_model.source_image_path is None:
+        raise ValueError("源图模型 JSON 未记录原图路径。")
+    output_path = task.output_path
+    temp_path = output_path.with_name(f"{output_path.stem}.tmp{output_path.suffix or '.tif'}")
+    try:
+        update_export_progress("正在读取源图...", 0, 0)
+        source_image = load_mosaic_export_source_image(source_model.source_image_path)
+        if source_image.width_px != source_model.image_width_px or source_image.height_px != source_model.image_height_px:
+            raise ValueError(
+                "原图尺寸与源图模型不一致："
+                f"原图 {source_image.width_px} x {source_image.height_px} px，"
+                f"模型 {source_model.image_width_px} x {source_model.image_height_px} px。"
+            )
+        if task.framing is None and task.base_model is None:
+            raise ValueError("当前批处理模式缺少目标取景或底图模型。")
+        write_mosaic_reprojection_tiff(
+            output_path=temp_path,
+            source_model=source_model.model,
+            source_image=source_image,
+            camera=None if task.framing is None else task.framing.camera,
+            view=None if task.framing is None else task.framing.view,
+            observer=None if task.framing is None else task.framing.observer,
+            geometry=task.geometry,
+            framing_payload=None if task.framing is None else task.framing.payload,
+            block_rows=task.block_rows,
+            export_progress_callback=update_export_progress,
+            target_icrs_to_pixel_payload=(
+                None if task.framing is None else task.framing.target_icrs_to_pixel_payload
+            ),
+            target_model=None if task.base_model is None else task.base_model.model,
+            map_tile_size_px=task.map_tile_size_px,
+            exact_remap_repair=task.exact_remap_repair,
+            tiff_lzw_compression=task.tiff_lzw_compression,
+            source_pixel_regions=task.source_pixel_regions,
+        )
+        update_export_progress("正在完成文件写入...", 0, 0)
+        temp_path.replace(output_path)
+        update_export_progress("导出完成。", 1, 1)
+    except Exception:
+        try:
+            if temp_path.exists():
+                temp_path.unlink()
+        except OSError:
+            pass
+        raise
+
+
+class MosaicBatchExportWorker(QObject):
+    """在独立线程内串行导出全景图，避免阻塞 Qt 主事件循环。"""
+
+    progress = pyqtSignal(int, int, str, int, int)
+    item_started = pyqtSignal(int)
+    item_succeeded = pyqtSignal(int, object)
+    item_failed = pyqtSignal(int, str)
+    completed = pyqtSignal(int, int, bool)
+    failed = pyqtSignal(str)
+
+    def __init__(self, tasks: tuple[MosaicBatchExportTask, ...]) -> None:
+        super().__init__()
+        self.tasks = tasks
+        self._cancel_requested = Event()
+        self._last_progress_signature: tuple[str, int] | None = None
+        self._last_progress_emitted_at = 0.0
+
+    def request_cancel(self) -> None:
+        """线程安全地请求在下一个可中断进度点停止。"""
+
+        self._cancel_requested.set()
+
+    def run(self) -> None:
+        success_count = 0
+        failed_count = 0
+        try:
+            total_count = len(self.tasks)
+            for current_index, task in enumerate(self.tasks):
+                if self._cancel_requested.is_set():
+                    self.completed.emit(success_count, failed_count, True)
+                    return
+                self._last_progress_signature = None
+                self._last_progress_emitted_at = 0.0
+                self.item_started.emit(task.row)
+
+                def update_export_progress(label: str, value: int, maximum: int) -> None:
+                    # 文件已经原子替换完成后必须登记成功，不能因最后一刻的取消把成品误报为未完成。
+                    if self._cancel_requested.is_set() and label != "导出完成。":
+                        raise InterruptedError("用户取消了批处理。")
+                    self._emit_throttled_progress(
+                        current_index,
+                        total_count,
+                        label,
+                        value,
+                        maximum,
+                    )
+
+                try:
+                    _write_mosaic_batch_export_task(task, update_export_progress)
+                except InterruptedError:
+                    self.completed.emit(success_count, failed_count, True)
+                    return
+                except Exception as exc:  # noqa: BLE001 - 单张失败后继续处理其余任务。
+                    failed_count += 1
+                    self.item_failed.emit(task.row, str(exc))
+                    continue
+                success_count += 1
+                self.item_succeeded.emit(task.row, task.output_path)
+            self.completed.emit(success_count, failed_count, False)
+        except Exception as exc:  # noqa: BLE001 - 后台线程异常必须回传主线程。
+            self.failed.emit(str(exc))
+
+    def _emit_throttled_progress(
+        self,
+        current_index: int,
+        total_count: int,
+        label: str,
+        value: int,
+        maximum: int,
+    ) -> None:
+        """限制高频进度信号，避免大量小网格任务淹没主事件队列。"""
+
+        safe_value = int(value)
+        safe_maximum = int(maximum)
+        signature = (str(label), safe_maximum)
+        now = monotonic()
+        phase_changed = signature != self._last_progress_signature
+        phase_finished = safe_maximum > 0 and safe_value >= safe_maximum
+        if not phase_changed and not phase_finished and now - self._last_progress_emitted_at < 0.05:
+            return
+        self._last_progress_signature = signature
+        self._last_progress_emitted_at = now
+        self.progress.emit(
+            int(current_index),
+            int(total_count),
+            str(label),
+            safe_value,
+            safe_maximum,
+        )
+
+
 class MosaicBatchMixin:
     """全景图批处理页面 Mixin。"""
 
@@ -73,6 +238,9 @@ class MosaicBatchMixin:
         self._mosaic_batch_framing: MosaicBatchFraming | None = None
         self._mosaic_batch_base_model: MosaicSourceModel | None = None
         self._mosaic_batch_items: list[MosaicBatchImageItem] = []
+        self._mosaic_batch_thread: object | None = None
+        self._mosaic_batch_worker: MosaicBatchExportWorker | None = None
+        self._mosaic_batch_progress: QProgressDialog | None = None
         self.ui.comboBoxMosaicBatchMode.setCurrentIndex(MOSAIC_BATCH_MODE_SKY_INDEX)
         if hasattr(self.ui, "doubleSpinBoxMosaicBatchMapTileSize"):
             self.ui.doubleSpinBoxMosaicBatchMapTileSize.setValue(float(self._mosaic_batch_config_map_tile_size_px()))
@@ -141,19 +309,27 @@ class MosaicBatchMixin:
             return
         has_imports = self._mosaic_batch_has_imports()
         sky_mode = self._mosaic_batch_is_sky_mode()
-        self.ui.comboBoxMosaicBatchMode.setEnabled(not has_imports)
+        batch_active = getattr(self, "_mosaic_batch_thread", None) is not None
+        self.ui.comboBoxMosaicBatchMode.setEnabled(not has_imports and not batch_active)
         target_name = "取景" if sky_mode else "底图"
         self.ui.labelMosaicBatchFramingPathTitle.setText(target_name)
         self.ui.pushButtonImportMosaicBatchFramingJson.setText(f"导入{target_name}JSON")
         self.ui.pushButtonImportMosaicBatchFramingJson.setToolTip(
             "导入自由投影页面导出的取景 JSON。" if sky_mode else "导入底图的 model.json，作为输出像素坐标参考。"
         )
-        self.ui.pushButtonImportMosaicBatchFramingJson.setEnabled(True)
-        self.ui.pushButtonImportMosaicBatchImageJson.setEnabled(True)
-        self.ui.pushButtonClearMosaicBatchImports.setEnabled(has_imports)
+        self.ui.pushButtonImportMosaicBatchFramingJson.setEnabled(not batch_active)
+        self.ui.pushButtonImportMosaicBatchImageJson.setEnabled(not batch_active)
+        self.ui.pushButtonClearMosaicBatchImports.setEnabled(has_imports and not batch_active)
         target_geometry = self._mosaic_batch_target_geometry()
         can_start = target_geometry is not None and bool(self._mosaic_batch_processable_rows())
-        self.ui.pushButtonStartMosaicBatch.setEnabled(can_start)
+        self.ui.pushButtonStartMosaicBatch.setEnabled(can_start and not batch_active)
+        for control_name in (
+            "checkBoxMosaicBatchMeteorOnly",
+            "doubleSpinBoxMosaicBatchMapTileSize",
+            "checkBoxMosaicBatchExactRemapRepair",
+        ):
+            if hasattr(self.ui, control_name):
+                getattr(self.ui, control_name).setEnabled(not batch_active)
         if can_start:
             start_tooltip = ""
         elif target_geometry is None:
@@ -439,6 +615,8 @@ class MosaicBatchMixin:
                 item.setBackground(brush)
 
     def start_mosaic_batch_processing(self) -> None:
+        if getattr(self, "_mosaic_batch_thread", None) is not None:
+            return
         geometry = self._mosaic_batch_target_geometry()
         if geometry is None:
             target_name = "取景" if self._mosaic_batch_is_sky_mode() else "底图"
@@ -483,8 +661,40 @@ class MosaicBatchMixin:
         if geometry is None:
             return
         used_output_paths: set[Path] = set()
-        success_count = 0
-        failed_count = 0
+        processable_rows = self._mosaic_batch_processable_rows()
+        framing = self._mosaic_batch_framing if self._mosaic_batch_is_sky_mode() else None
+        base_model = self._mosaic_batch_base_model if not self._mosaic_batch_is_sky_mode() else None
+        block_rows = self._mosaic_export_block_rows()
+        map_tile_size_px = self._mosaic_batch_map_tile_size_px()
+        exact_remap_repair = self._mosaic_batch_exact_remap_repair_enabled()
+        tiff_lzw_compression = self._mosaic_tiff_lzw_compression_enabled()
+        tasks: list[MosaicBatchExportTask] = []
+        for row, item in enumerate(self._mosaic_batch_items):
+            if row not in processable_rows:
+                self._set_mosaic_batch_item_status(row, "跳过：无流星框选")
+                continue
+            self._set_mosaic_batch_item_status(row, "待处理")
+            tasks.append(
+                MosaicBatchExportTask(
+                    row=row,
+                    item=item,
+                    geometry=geometry,
+                    output_path=self._mosaic_batch_unique_output_path(
+                        output_dir,
+                        item.source_model,
+                        geometry,
+                        used_output_paths,
+                    ),
+                    framing=framing,
+                    base_model=base_model,
+                    block_rows=block_rows,
+                    map_tile_size_px=map_tile_size_px,
+                    exact_remap_repair=exact_remap_repair,
+                    tiff_lzw_compression=tiff_lzw_compression,
+                    source_pixel_regions=self._mosaic_batch_item_source_regions(item),
+                )
+            )
+
         progress = QProgressDialog("正在准备批处理...", "取消", 0, 0, self)
         progress.setWindowTitle("全景图批处理")
         progress.setWindowModality(Qt.WindowModal)
@@ -493,127 +703,117 @@ class MosaicBatchMixin:
         progress.setAutoReset(False)
         progress.setValue(0)
         progress.show()
-        processable_rows = self._mosaic_batch_processable_rows()
-        for row, item in enumerate(self._mosaic_batch_items):
-            if row in processable_rows:
-                self._set_mosaic_batch_item_status(row, "待处理")
-            else:
-                self._set_mosaic_batch_item_status(row, "跳过：无流星框选")
-        try:
-            QApplication.setOverrideCursor(Qt.WaitCursor)
-            for current_index, row in enumerate(processable_rows):
-                item = self._mosaic_batch_items[row]
-                if progress.wasCanceled():
-                    raise InterruptedError("用户取消了批处理。")
-                output_path = self._mosaic_batch_unique_output_path(
-                    output_dir,
-                    item.source_model,
-                    geometry,
-                    used_output_paths,
-                )
-                self._set_mosaic_batch_item_status(row, "处理中")
+        worker = MosaicBatchExportWorker(tuple(tasks))
+        worker.item_started.connect(self._handle_mosaic_batch_item_started)
+        worker.item_succeeded.connect(self._handle_mosaic_batch_item_succeeded)
+        worker.item_failed.connect(self._handle_mosaic_batch_item_failed)
+        progress.canceled.connect(self._cancel_mosaic_batch_processing)
+        task_handle = start_qt_worker_task(
+            parent=self,
+            worker=worker,
+            finished_signal=worker.completed,
+            failed_signal=worker.failed,
+            on_finished=self._handle_mosaic_batch_completed,
+            on_failed=self._handle_mosaic_batch_worker_failed,
+            progress_signal=worker.progress,
+            on_progress=self._handle_mosaic_batch_progress,
+            on_cleanup=self._cleanup_mosaic_batch_worker,
+            progress_dialog=progress,
+            start_delay_ms=1,
+        )
+        self._mosaic_batch_thread = task_handle.thread
+        self._mosaic_batch_worker = worker
+        self._mosaic_batch_progress = progress
+        self._update_mosaic_batch_controls()
+        self.ui.statusbar.showMessage(f"全景图批处理已在后台开始，共 {len(tasks)} 张。")
 
-                def update_export_progress(
-                    label: str,
-                    value: int,
-                    maximum: int,
-                    *,
-                    progress_index: int = current_index,
-                ) -> None:
-                    file_prefix = f"[{progress_index + 1}/{len(processable_rows)}] "
-                    progress.setLabelText(file_prefix + label)
-                    if maximum <= 0:
-                        progress.setRange(0, 0)
-                    else:
-                        progress.setRange(0, max(1, len(processable_rows) * 1000))
-                        file_progress = int(round(1000.0 * max(0, min(int(value), int(maximum))) / max(1, int(maximum))))
-                        progress.setValue(progress_index * 1000 + file_progress)
-                    QApplication.processEvents()
-                    if progress.wasCanceled():
-                        raise InterruptedError("用户取消了批处理。")
+    def _handle_mosaic_batch_item_started(self, row: int) -> None:
+        self._set_mosaic_batch_item_status(row, "处理中")
 
-                try:
-                    self._write_mosaic_batch_item(
-                        item,
-                        geometry,
-                        output_path,
-                        update_export_progress,
-                    )
-                except InterruptedError:
-                    raise
-                except Exception as exc:  # noqa: BLE001 - 批处理需要逐张记录失败原因并继续。
-                    failed_count += 1
-                    self._set_mosaic_batch_item_status(row, "失败", error_message=str(exc))
-                    self.ui.statusbar.showMessage(f"批处理失败: {item.source_model.json_path.name}: {exc}")
-                    continue
-                success_count += 1
-                self._set_mosaic_batch_item_status(row, "已完成", output_path=output_path)
-            progress.setRange(0, max(1, len(processable_rows) * 1000))
-            progress.setValue(len(processable_rows) * 1000)
-        except InterruptedError as exc:
-            self.ui.statusbar.showMessage(str(exc))
+    def _handle_mosaic_batch_progress(
+        self,
+        current_index: int,
+        total_count: int,
+        label: str,
+        value: int,
+        maximum: int,
+    ) -> None:
+        """在主线程更新批处理进度弹窗。"""
+
+        progress = self._mosaic_batch_progress
+        if progress is None:
             return
-        finally:
-            QApplication.restoreOverrideCursor()
+        if not progress.isVisible():
+            # 某些平台在不定进度与定量进度切换时会意外隐藏对话框，继续显示可保证任务入口始终可见。
+            progress.show()
+        progress.setLabelText(f"[{current_index + 1}/{total_count}] {label}")
+        if maximum <= 0:
+            progress.setRange(0, 0)
+            return
+        total_maximum = max(1, int(total_count) * 1000)
+        file_progress = int(round(1000.0 * max(0, min(int(value), int(maximum))) / max(1, int(maximum))))
+        progress.setRange(0, total_maximum)
+        progress.setValue(int(current_index) * 1000 + file_progress)
+
+    def _handle_mosaic_batch_item_succeeded(self, row: int, output_path: object) -> None:
+        self._set_mosaic_batch_item_status(row, "已完成", output_path=Path(output_path))
+
+    def _handle_mosaic_batch_item_failed(self, row: int, error_message: str) -> None:
+        self._set_mosaic_batch_item_status(row, "失败", error_message=error_message)
+        item = self._mosaic_batch_items[row]
+        self.ui.statusbar.showMessage(f"批处理失败: {item.source_model.json_path.name}: {error_message}")
+
+    def _cancel_mosaic_batch_processing(self) -> None:
+        """请求后台任务安全停止，并保持进度窗口直至线程真正结束。"""
+
+        worker = self._mosaic_batch_worker
+        progress = self._mosaic_batch_progress
+        if worker is None:
+            return
+        worker.request_cancel()
+        if progress is not None:
+            progress.setCancelButton(None)
+            progress.setLabelText("正在取消批处理，请等待当前计算步骤结束...")
+        self.ui.statusbar.showMessage("正在取消全景图批处理...")
+
+    def _handle_mosaic_batch_completed(self, success_count: int, failed_count: int, canceled: bool) -> None:
+        progress = self._mosaic_batch_progress
+        if progress is not None:
+            if not canceled:
+                total = max(1, success_count + failed_count)
+                progress.setRange(0, total)
+                progress.setValue(total)
             progress.close()
+        if canceled:
+            for row, item in enumerate(self._mosaic_batch_items):
+                if item.status in {"待处理", "处理中"}:
+                    self._set_mosaic_batch_item_status(row, "已取消")
+            self.ui.statusbar.showMessage(f"全景图批处理已取消：已成功导出 {success_count} 张。")
+            return
         self.ui.statusbar.showMessage(f"全景图批处理完成：成功 {success_count} 张，失败 {failed_count} 张。")
         if failed_count:
             QMessageBox.warning(self, "批处理完成", f"成功 {success_count} 张，失败 {failed_count} 张。")
         else:
             QMessageBox.information(self, "批处理完成", f"成功导出 {success_count} 张 TIFF。")
 
-    def _write_mosaic_batch_item(
-        self,
-        item: MosaicBatchImageItem,
-        geometry: MosaicExportGeometry,
-        output_path: Path,
-        update_export_progress,
-    ) -> None:  # type: ignore[no-untyped-def]
-        source_model = item.source_model
-        if source_model.source_image_path is None:
-            raise ValueError("源图模型 JSON 未记录原图路径。")
-        temp_path = output_path.with_name(f"{output_path.stem}.tmp{output_path.suffix or '.tif'}")
-        try:
-            update_export_progress("正在读取源图...", 0, 0)
-            source_image = load_mosaic_export_source_image(source_model.source_image_path)
-            if source_image.width_px != source_model.image_width_px or source_image.height_px != source_model.image_height_px:
-                raise ValueError(
-                    "原图尺寸与源图模型不一致："
-                    f"原图 {source_image.width_px} x {source_image.height_px} px，"
-                    f"模型 {source_model.image_width_px} x {source_model.image_height_px} px。"
-                )
-            framing = self._mosaic_batch_framing if self._mosaic_batch_is_sky_mode() else None
-            base_model = self._mosaic_batch_base_model if not self._mosaic_batch_is_sky_mode() else None
-            if framing is None and base_model is None:
-                raise ValueError("当前批处理模式缺少目标取景或底图模型。")
-            write_mosaic_reprojection_tiff(
-                output_path=temp_path,
-                source_model=source_model.model,
-                source_image=source_image,
-                camera=None if framing is None else framing.camera,
-                view=None if framing is None else framing.view,
-                observer=None if framing is None else framing.observer,
-                geometry=geometry,
-                framing_payload=None if framing is None else framing.payload,
-                block_rows=self._mosaic_export_block_rows(),
-                export_progress_callback=update_export_progress,
-                target_icrs_to_pixel_payload=None if framing is None else framing.target_icrs_to_pixel_payload,
-                target_model=None if base_model is None else base_model.model,
-                map_tile_size_px=self._mosaic_batch_map_tile_size_px(),
-                exact_remap_repair=self._mosaic_batch_exact_remap_repair_enabled(),
-                tiff_lzw_compression=self._mosaic_tiff_lzw_compression_enabled(),
-                source_pixel_regions=self._mosaic_batch_item_source_regions(item),
-            )
-            update_export_progress("正在完成文件写入...", 0, 0)
-            temp_path.replace(output_path)
-            update_export_progress("导出完成。", 1, 1)
-        except Exception:
-            try:
-                if temp_path.exists():
-                    temp_path.unlink()
-            except OSError:
-                pass
-            raise
+    def _handle_mosaic_batch_worker_failed(self, error_message: str) -> None:
+        if self._mosaic_batch_progress is not None:
+            self._mosaic_batch_progress.close()
+        for row, item in enumerate(self._mosaic_batch_items):
+            if item.status == "处理中":
+                self._set_mosaic_batch_item_status(row, "失败", error_message=error_message)
+        self.ui.statusbar.showMessage(f"全景图批处理异常终止: {error_message}")
+        QMessageBox.critical(self, "批处理失败", error_message)
+
+    def _cleanup_mosaic_batch_worker(self) -> None:
+        progress = self._mosaic_batch_progress
+        if progress is not None:
+            progress.close()
+            progress.deleteLater()
+        self._mosaic_batch_thread = None
+        self._mosaic_batch_worker = None
+        self._mosaic_batch_progress = None
+        self._update_mosaic_batch_controls()
 
     def _mosaic_batch_map_tile_size_px(self) -> int:
         if hasattr(self.ui, "doubleSpinBoxMosaicBatchMapTileSize"):
@@ -687,4 +887,4 @@ class MosaicBatchMixin:
         return output_dir if output_dir.exists() else project_root()
 
 
-__all__ = ["MosaicBatchMixin"]
+__all__ = ["MosaicBatchExportTask", "MosaicBatchExportWorker", "MosaicBatchMixin"]
