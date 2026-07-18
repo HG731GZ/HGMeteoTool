@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 
 import numpy as np
 
+from meteoalign.application.app_constants import REFERENCE_LABEL_MODE_FIXED_COUNT
+from meteoalign.application.app_rendering import RenderingMixin
 from meteoalign.reference import build_reference_payload
 from meteoalign.simulator import (
     CameraSettings,
@@ -48,6 +50,58 @@ def test_reference_selection_does_not_filter_below_horizon_star() -> None:
 
     assert len(selected) == 1
     assert selected[0].star_id == "below"
+
+
+class _ValueControl:
+    """提供星空模拟标注限制所需的最小数值控件。"""
+
+    def __init__(self, value: float) -> None:
+        self._value = value
+
+    def value(self) -> float:
+        return self._value
+
+
+def test_simulator_annotations_only_follow_simulator_count_limit() -> None:
+    """匹配列表即使保留更多星，模拟页标注仍只能使用自身数量限制。"""
+
+    harness = RenderingMixin()
+    harness.ui = type(
+        "Ui",
+        (),
+        {
+            "spinBoxReferenceStarCount": _ValueControl(1),
+            "doubleSpinBoxReferenceMagLimit": _ValueControl(6.0),
+        },
+    )()
+    harness._reference_label_mode = lambda: REFERENCE_LABEL_MODE_FIXED_COUNT
+    harness._auto_match_reference_star_ids = ["above"]
+
+    selected = harness._select_simulator_annotation_stars(_projected_star_map_for_selection())
+
+    assert [star.star_id for star in selected] == ["below"]
+
+
+def test_render_routes_limited_annotations_and_full_pair_rows_separately() -> None:
+    """一次重渲染不得再把完整匹配集合传给星空模拟标注。"""
+
+    harness = RenderingMixin()
+    star_map = _projected_star_map_for_selection()
+    limited_annotations = ("受限标注",)
+    complete_pair_rows = ("匹配一", "匹配二", "匹配三")
+    displayed: list[tuple[object, tuple[object, ...]]] = []
+    table_updates: list[tuple[object, ...]] = []
+    harness._build_projected_star_map = lambda: (None, None, None, None, star_map)
+    harness._select_simulator_annotation_stars = lambda _star_map: limited_annotations
+    harness._select_current_reference_stars = lambda _star_map: complete_pair_rows
+    harness._display_star_map = lambda rendered_map, stars: displayed.append((rendered_map, stars))
+    harness._update_star_pair_table = lambda stars: table_updates.append(stars)
+    harness.ui = type("Ui", (), {"statusbar": type("Status", (), {"showMessage": lambda *_args: None})()})()
+
+    harness.render_now()
+
+    assert displayed == [(star_map, limited_annotations)]
+    assert table_updates == [complete_pair_rows]
 
 
 def test_reference_payload_keeps_configured_count_separate_from_saved_star_records() -> None:

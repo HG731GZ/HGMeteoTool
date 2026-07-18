@@ -22,6 +22,10 @@ from ..adjacent_alignment import RoughFramingTransform
 from ..camera_calibration import CameraCalibrationProfile
 from ..coordinates import radec_to_unit_vectors
 from ..frame_astrometry import FrameAstrometricModel
+from ..simulator_view_sync import (
+    preliminary_alignment_rotation_matrix,
+    view_settings_from_icrs_to_camera,
+)
 from ..simulator import (
     ReferenceStar, camera_basis_from_view, local_vectors_from_altaz,
 )
@@ -293,6 +297,67 @@ class AlignmentMixin:
         self._update_lens_model_controls()
         self._update_reference_label_controls()
 
+    def _alignment_rotation_matrix_for_simulator_view(self) -> np.ndarray | None:
+        """提取当前配准结果的姿态，供星空模拟自动同步取景。"""
+
+        source_model = getattr(self, "_source_astrometric_model", None)
+        if source_model is not None and hasattr(source_model, "to_frame_astrometric_model"):
+            try:
+                frame_model = source_model.to_frame_astrometric_model()
+                return frame_model.frame_pose.icrs_to_camera.copy()
+            except (AttributeError, TypeError, ValueError, np.linalg.LinAlgError):
+                pass
+
+        transform = getattr(self, "_sky_alignment_transform", None)
+        rotation_matrix = getattr(transform, "rotation_matrix", None)
+        if rotation_matrix is not None:
+            rotation = np.asarray(rotation_matrix, dtype=np.float64)
+            if rotation.shape == (3, 3) and np.all(np.isfinite(rotation)):
+                return rotation.copy()
+        if isinstance(transform, PreliminarySkyAlignmentTransform) and self.current_image_preview is not None:
+            image = self.current_image_preview.image
+            try:
+                return preliminary_alignment_rotation_matrix(
+                    transform,
+                    (int(image.width()), int(image.height())),
+                )
+            except (TypeError, ValueError, np.linalg.LinAlgError):
+                return None
+        return None
+
+    def _sync_simulator_view_from_alignment(self) -> bool:
+        """自动写入求解后的取景；控件锁定只限制用户，不限制本次同步。"""
+
+        if not all(
+            hasattr(self.ui, name)
+            for name in ("doubleSpinBoxAz", "doubleSpinBoxAlt", "doubleSpinBoxRoll")
+        ):
+            return False
+        rotation_matrix = self._alignment_rotation_matrix_for_simulator_view()
+        if rotation_matrix is None:
+            return False
+        try:
+            view = view_settings_from_icrs_to_camera(rotation_matrix, self._observer_settings())
+        except (AttributeError, TypeError, ValueError, np.linalg.LinAlgError):
+            return False
+
+        changed = False
+        for widget, value in (
+            (self.ui.doubleSpinBoxAz, float(view.center_az_deg) % 360.0),
+            (self.ui.doubleSpinBoxAlt, float(view.center_alt_deg)),
+            (self.ui.doubleSpinBoxRoll, float(view.roll_deg)),
+        ):
+            previous_value = float(widget.value())
+            signals_were_blocked = widget.blockSignals(True)
+            try:
+                widget.setValue(value)
+            finally:
+                widget.blockSignals(signals_were_blocked)
+            changed = changed or previous_value != float(widget.value())
+        if changed and hasattr(self, "schedule_render"):
+            self.schedule_render(delay_ms=0)
+        return changed
+
     def _reference_star_lookup(self) -> dict[str, ReferenceStar]:
         return {star.star_id.strip(): star for star in self._current_reference_stars if star.star_id.strip()}
 
@@ -528,6 +593,7 @@ class AlignmentMixin:
             self._reference_alignment_error_message = ""
             self._sky_alignment_error_message = ""
             self._source_model_error_message = ""
+            self._sync_simulator_view_from_alignment()
             self._update_star_pair_residual_columns()
             self._update_reference_alignment_display()
             self._show_adjacent_framing_workflow_status(manual_pair_count, using_rough_framing=True)
@@ -571,6 +637,7 @@ class AlignmentMixin:
             except Exception as exc:  # noqa: BLE001 - 预配准失败需要直接反馈给交互界面。
                 self._reference_alignment_error_message = str(exc)
                 self._sky_alignment_error_message = str(exc)
+            self._sync_simulator_view_from_alignment()
             self._source_model_error_message = (
                 f"当前只有 {manual_pair_count} 对星点；自动扩展匹配和导出映射至少需要 {MIN_ALIGNMENT_PAIRS} 对。"
             )
@@ -628,6 +695,7 @@ class AlignmentMixin:
                     )
             except Exception as exc:  # noqa: BLE001 - 源图模型错误要保留给导出按钮和状态栏。
                 self._source_model_error_message = str(exc)
+        self._sync_simulator_view_from_alignment()
         self._update_star_pair_residual_columns()
         self._update_reference_alignment_display()
         self._show_adjacent_framing_workflow_status(manual_pair_count, using_rough_framing=False)

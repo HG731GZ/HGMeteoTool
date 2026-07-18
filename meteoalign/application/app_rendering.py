@@ -208,19 +208,25 @@ class RenderingMixin:
             matched_star_ids.append(star_id)
         return matched_star_ids
 
-    def _select_current_reference_stars(self, star_map: ProjectedStarMap) -> tuple[ReferenceStar, ...]:
-        self._normalize_auto_match_groups()
+    def _select_simulator_annotation_stars(self, star_map: ProjectedStarMap) -> tuple[ReferenceStar, ...]:
+        """只按星空模拟页的数量或星等限制选择标注，不附加匹配列表中的星。"""
+
         if self._reference_label_mode() == REFERENCE_LABEL_MODE_FIXED_MAG_LIMIT:
-            auto_reference_stars = select_reference_stars(
+            selected_stars = select_reference_stars(
                 star_map=star_map,
                 max_count=None,
                 mag_limit=self.ui.doubleSpinBoxReferenceMagLimit.value(),
             )
         else:
-            auto_reference_stars = select_reference_stars(
+            selected_stars = select_reference_stars(
                 star_map=star_map,
                 max_count=self.ui.spinBoxReferenceStarCount.value(),
             )
+        return tuple(selected_stars)
+
+    def _select_current_reference_stars(self, star_map: ProjectedStarMap) -> tuple[ReferenceStar, ...]:
+        self._normalize_auto_match_groups()
+        auto_reference_stars = self._select_simulator_annotation_stars(star_map)
 
         # 手动点选的参考星以星表编号保存；每次渲染后用当前投影坐标重新生成行。
         ordered_stars: list[ReferenceStar] = []
@@ -777,8 +783,9 @@ class RenderingMixin:
             _observer, _camera, _view, _mag_limit, star_map = self._build_projected_star_map()
             self._current_star_map = star_map
             self._current_reference_star_map = star_map
+            simulator_annotation_stars = self._select_simulator_annotation_stars(star_map)
             reference_stars = self._select_current_reference_stars(star_map)
-            self._display_star_map(star_map, reference_stars)
+            self._display_star_map(star_map, simulator_annotation_stars)
             self._update_star_pair_table(reference_stars)
         except Exception as exc:  # noqa: BLE001 - 界面层需要把可恢复输入错误显示出来。
             self.ui.statusbar.showMessage(f"渲染失败: {exc}")
