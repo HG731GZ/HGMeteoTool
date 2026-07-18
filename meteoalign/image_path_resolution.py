@@ -82,11 +82,11 @@ def _metadata_file_stem(metadata: Mapping[str, object]) -> str:
 
     value = metadata.get("file_stem")
     if isinstance(value, str) and value.strip():
-        return Path(value.strip()).name
+        return Path(value.strip().replace("\\", "/")).name
     for key in ("file_name", "relative_path", "path"):
         path_value = metadata.get(key)
         if isinstance(path_value, str) and path_value.strip():
-            return image_file_stem(path_value.strip())
+            return image_file_stem(path_value.strip().replace("\\", "/"))
     return ""
 
 
@@ -143,38 +143,37 @@ def associated_image_candidates(
     *,
     include_raw: bool = False,
 ) -> list[Path]:
-    """生成 JSON 关联图像候选，位置优先于同一位置内的图像格式优先级。"""
+    """按同目录跨后缀、相对路径、绝对路径的顺序生成图像候选。"""
 
     source_path = Path(json_path).expanduser().resolve()
     suffix_priority = METEOR_IMAGE_SUFFIX_PRIORITY if include_raw else STANDARD_IMAGE_SUFFIX_PRIORITY
     file_stem = _metadata_file_stem(metadata)
     candidates: list[Path] = []
 
-    def append_location(directory: Path, exact_path: Path | None = None) -> None:
-        for candidate in _same_stem_candidates(directory, file_stem, suffix_priority):
+    # 第一阶段只在 JSON 同目录按主文件名跨后缀搜索，格式优先级高于 JSON 原后缀。
+    for candidate in _same_stem_candidates(source_path.parent, file_stem, suffix_priority):
+        _append_unique(candidates, candidate)
+
+    def append_exact_path(candidate: Path) -> None:
+        """追加后缀完全一致的路径；不支持 RAW 的调用方跳过 RAW 文件。"""
+
+        if include_raw or candidate.suffix.casefold() not in RAW_IMAGE_SUFFIXES:
             _append_unique(candidates, candidate)
-        if exact_path is not None and (include_raw or exact_path.suffix.casefold() not in RAW_IMAGE_SUFFIXES):
-            _append_unique(candidates, exact_path)
 
-    file_name = metadata.get("file_name")
-    same_directory_exact = (
-        source_path.parent / Path(file_name.strip()).name
-        if isinstance(file_name, str) and file_name.strip()
-        else None
-    )
-    append_location(source_path.parent, same_directory_exact)
-
+    # 第二阶段只检查 JSON 记录的相对路径，不在该目录继续尝试其他后缀。
     relative_path = metadata.get("relative_path")
     if isinstance(relative_path, str) and relative_path.strip():
-        exact_path = source_path.parent / Path(relative_path.strip()).expanduser()
-        append_location(exact_path.parent.resolve(), exact_path)
+        normalized_relative_path = relative_path.strip().replace("\\", "/")
+        exact_path = Path(normalized_relative_path).expanduser()
+        if not exact_path.is_absolute():
+            append_exact_path(source_path.parent / exact_path)
 
+    # 第三阶段只检查 JSON 记录的绝对路径，同样要求文件名和后缀完全一致。
     raw_path = metadata.get("path")
     if isinstance(raw_path, str) and raw_path.strip():
         exact_path = Path(raw_path.strip()).expanduser()
-        if not exact_path.is_absolute():
-            exact_path = source_path.parent / exact_path
-        append_location(exact_path.parent.resolve(), exact_path)
+        if exact_path.is_absolute():
+            append_exact_path(exact_path)
     return candidates
 
 

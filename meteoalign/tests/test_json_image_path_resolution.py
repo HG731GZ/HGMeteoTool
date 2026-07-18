@@ -198,13 +198,13 @@ def test_star_pair_export_path_is_always_next_to_current_image(tmp_path: Path) -
 
 def test_mosaic_source_image_lookup_prefers_same_dir_name_then_relative_then_absolute(tmp_path: Path) -> None:
     json_path = tmp_path / "model.json"
-    same_dir_image = _touch(tmp_path / "same.fit")
-    relative_image = _touch(tmp_path / "images" / "relative.fit")
-    absolute_image = _touch(tmp_path / "elsewhere" / "absolute.fit")
+    same_dir_image = _touch(tmp_path / "same.jpg")
+    relative_image = _touch(tmp_path / "images" / "relative.jpg")
+    absolute_image = _touch(tmp_path / "elsewhere" / "absolute.jpg")
     payload = {
         "source_image": {
             "file_name": same_dir_image.name,
-            "relative_path": "images/relative.fit",
+            "relative_path": "images/relative.jpg",
             "path": str(absolute_image),
         },
     }
@@ -218,6 +218,65 @@ def test_mosaic_source_image_lookup_prefers_same_dir_name_then_relative_then_abs
     relative_image.unlink()
 
     assert _resolve_source_image_path(payload, json_path)[0] == absolute_image.resolve()
+
+
+def test_relative_and_absolute_lookup_require_exact_recorded_file_name(tmp_path: Path) -> None:
+    """相对与绝对路径目录中存在同主名其他后缀时，不得发生跨后缀误匹配。"""
+
+    json_path = tmp_path / "metadata" / "session.json"
+    relative_tif = _touch(tmp_path / "metadata" / "relative" / "scene.tif")
+    absolute_png = _touch(tmp_path / "absolute" / "scene.png")
+    absolute_jpg = tmp_path / "absolute" / "scene.jpg"
+    metadata = {
+        "file_name": "scene.jpg",
+        "file_stem": "scene",
+        "relative_path": "relative/scene.jpg",
+        "path": str(absolute_jpg),
+    }
+
+    candidates = associated_image_candidates(metadata, json_path)
+
+    assert relative_tif.resolve() not in candidates
+    assert absolute_png.resolve() not in candidates
+    assert candidates == [
+        (tmp_path / "metadata" / "relative" / "scene.jpg").resolve(),
+        absolute_jpg.resolve(),
+    ]
+
+
+def test_missing_exact_relative_path_falls_back_to_exact_absolute_path(tmp_path: Path) -> None:
+    """相对路径缺少精确文件时，应跳过同主名转换图并使用绝对路径精确文件。"""
+
+    json_path = tmp_path / "metadata" / "session.json"
+    _touch(tmp_path / "metadata" / "relative" / "scene.tif")
+    absolute_image = _touch(tmp_path / "absolute" / "scene.jpg")
+    payload = {
+        "format": "meteoalign_star_pair_session",
+        "real_image": {
+            "file_name": "scene.jpg",
+            "file_stem": "scene",
+            "relative_path": "relative/scene.jpg",
+            "path": str(absolute_image),
+        },
+    }
+
+    assert _resolve_star_pair_session_real_image_path(payload, json_path) == absolute_image.resolve()
+
+
+def test_relative_path_accepts_windows_separator_on_other_platforms(tmp_path: Path) -> None:
+    """相对路径使用 Windows 分隔符时，跨平台读取仍应定位到精确文件。"""
+
+    json_path = tmp_path / "metadata" / "session.json"
+    relative_image = _touch(tmp_path / "metadata" / "images" / "scene.jpg")
+    payload = {
+        "format": "meteoalign_star_pair_session",
+        "real_image": {
+            "file_name": "scene.jpg",
+            "relative_path": r"images\scene.jpg",
+        },
+    }
+
+    assert _resolve_star_pair_session_real_image_path(payload, json_path) == relative_image.resolve()
 
 
 def test_json_image_lookup_uses_tif_png_jpg_priority_and_skips_wrong_size(tmp_path: Path) -> None:
