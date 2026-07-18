@@ -5,7 +5,9 @@ from datetime import datetime, timezone
 import numpy as np
 import tifffile
 
+import meteoalign.mosaic_export as mosaic_export_module
 from meteoalign.coordinates import unit_vectors_to_radec
+from meteoalign.mosaic.export.remap_repair import fill_forward_inverse_map_holes_fast
 from meteoalign.mosaic_export import (
     MosaicExportGeometry,
     MosaicExportSourceImage,
@@ -790,3 +792,77 @@ def test_mosaic_export_low_weight_map_points_use_exact_reverse_projection() -> N
     assert abs(float(map_x[2, 2]) - 2.0) < 1e-3
     assert abs(float(map_y[2, 2]) - 2.0) < 1e-3
     assert source_model.projected_vector_count == 1
+
+
+def test_fast_forward_remap_fill_preserves_smooth_affine_coordinates() -> None:
+    """单次传播应填满内部空洞，并保持平滑仿射映射的坐标精度。"""
+
+    height, width = 72, 96
+    grid_x, grid_y = np.meshgrid(
+        np.arange(width, dtype=np.float32),
+        np.arange(height, dtype=np.float32),
+    )
+    expected_x = 20.0 + grid_x * 0.8 + grid_y * 0.1
+    expected_y = 10.0 - grid_x * 0.05 + grid_y * 0.9
+    covered = np.ones((height, width), dtype=bool)
+    covered[18:25, 20:29] = False
+    covered[36:45, 52:63] = False
+    target_mask = np.ones_like(covered)
+    map_x = np.where(covered, expected_x, -1.0).astype(np.float32)
+    map_y = np.where(covered, expected_y, -1.0).astype(np.float32)
+    progress: list[tuple[int, int]] = []
+
+    filled = fill_forward_inverse_map_holes_fast(
+        map_x,
+        map_y,
+        covered,
+        target_mask,
+        tile_size=4,
+        progress_callback=lambda value, maximum: progress.append((value, maximum)),
+    )
+
+    missing = ~covered
+    errors = np.hypot(map_x[missing] - expected_x[missing], map_y[missing] - expected_y[missing])
+    assert filled.all()
+    assert float(np.percentile(errors, 99)) < 5.0
+    assert float(np.max(errors)) < 5.0
+    assert progress[0][0] == 0
+    assert progress[-1][0] == progress[-1][1]
+
+
+def test_mosaic_tiff_writer_consumes_rgba_blocks_without_vstack(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """TIFF 写入应逐块编码，不得重新用 vstack 组装完整 RGBA。"""
+
+    top = np.full((2, 5, 4), (100, 200, 300, 65535), dtype=np.uint16)
+    bottom = np.full((2, 5, 4), (400, 500, 600, 65535), dtype=np.uint16)
+
+    def fake_blocks(**_kwargs):  # type: ignore[no-untyped-def]
+        yield top
+        yield bottom
+
+    def forbidden_vstack(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("流式 TIFF 写入不应调用 np.vstack")
+
+    monkeypatch.setattr(mosaic_export_module, "mosaic_reprojection_blocks", fake_blocks)
+    monkeypatch.setattr(mosaic_export_module.np, "vstack", forbidden_vstack)
+    output_path = tmp_path / "streamed_blocks.tif"
+    write_mosaic_reprojection_tiff(
+        output_path=output_path,
+        source_model=object(),
+        source_image=MosaicExportSourceImage(
+            path=tmp_path / "source.tif",
+            rgb=np.zeros((2, 2, 3), dtype=np.uint16),
+            exif_tags=(),
+            icc_profile=None,
+        ),
+        camera=None,
+        view=None,
+        observer=None,
+        geometry=MosaicExportGeometry(5, 4, 0, 0, 5, 4),
+        block_rows=2,
+        tiff_lzw_compression=True,
+    )
+
+    exported = tifffile.imread(output_path)
+    assert np.array_equal(exported[:2], top)
+    assert np.array_equal(exported[2:], bottom)

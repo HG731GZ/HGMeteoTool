@@ -5,6 +5,8 @@ import json
 import os
 import tempfile
 import warnings
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator
@@ -53,6 +55,11 @@ try:
     import tifffile
 except ImportError:  # pragma: no cover - tifffile 由环境声明，兜底用于给界面友好报错。
     tifffile = None
+
+try:
+    import imagecodecs
+except ImportError:  # pragma: no cover - LZW 流式压缩依赖；环境诊断时保留友好错误。
+    imagecodecs = None
 
 try:
     import tifftools
@@ -377,11 +384,10 @@ def mosaic_reprojection_blocks(
         )
     )
     if normalized_regions is not None and not normalized_regions:
-        empty = np.zeros(
-            (int(geometry.output_height_px), int(geometry.output_width_px), 4),
-            dtype=source.dtype,
-        )
-        yield empty
+        safe_block_rows = max(1, int(block_rows))
+        for row_start in range(0, int(geometry.output_height_px), safe_block_rows):
+            rows = min(safe_block_rows, int(geometry.output_height_px) - row_start)
+            yield np.zeros((rows, int(geometry.output_width_px), 4), dtype=source.dtype)
         return
     if normalized_regions is not None and target_icrs_to_pixel_payload is None and target_model is None:
         if camera is None or view is None or observer is None:
@@ -427,9 +433,10 @@ def mosaic_reprojection_blocks(
             yield block
         return
 
-    yield _render_mosaic_forward_remap_from_source_to_target(
+    map_x, map_y = _build_mosaic_forward_remap_from_source_to_target(
         source_model=source_model,
-        source_rgb=source,
+        source_width_px=int(source.shape[1]),
+        source_height_px=int(source.shape[0]),
         target_icrs_to_pixel_payload=target_icrs_to_pixel_payload,
         target_model=target_model,
         geometry=geometry,
@@ -439,12 +446,29 @@ def mosaic_reprojection_blocks(
         export_progress_callback=export_progress_callback,
         source_pixel_regions=normalized_regions,
     )
+    safe_block_rows = max(1, int(block_rows))
+    output_height = int(geometry.output_height_px)
+    for row_start in range(0, output_height, safe_block_rows):
+        row_end = min(output_height, row_start + safe_block_rows)
+        block = _render_mosaic_reprojection_block_from_map(
+            source_rgb=source,
+            map_x=map_x[row_start:row_end],
+            map_y=map_y[row_start:row_end],
+        )
+        _emit_export_progress(
+            export_progress_callback,
+            "正在重采样源图...",
+            row_end,
+            output_height,
+        )
+        yield block
 
 
-def _render_mosaic_forward_remap_from_source_to_target(
+def _build_mosaic_forward_remap_from_source_to_target(
     *,
     source_model: object,
-    source_rgb: np.ndarray,
+    source_width_px: int,
+    source_height_px: int,
     target_icrs_to_pixel_payload: dict[str, object] | None,
     target_model: object | None,
     geometry: MosaicExportGeometry,
@@ -453,12 +477,13 @@ def _render_mosaic_forward_remap_from_source_to_target(
     progress_callback: Callable[[int], None] | None = None,
     export_progress_callback: MosaicExportProgressCallback | None = None,
     source_pixel_regions: tuple[SourcePixelRegion, ...] | None = None,
-) -> np.ndarray:
-    """按源图的固定 tile 建立全景图到源图的近似 remap，再由 OpenCV 反向采样。"""
+) -> tuple[np.ndarray, np.ndarray]:
+    """按源图固定网格建立全景图到源图的近似 remap。"""
 
     output_width = int(geometry.output_width_px)
     output_height = int(geometry.output_height_px)
-    source_height, source_width = source_rgb.shape[:2]
+    source_width = int(source_width_px)
+    source_height = int(source_height_px)
     tile_size = max(1, int(map_tile_size_px))
     accum_x = np.zeros((output_height, output_width), dtype=np.float32)
     accum_y = np.zeros((output_height, output_width), dtype=np.float32)
@@ -548,14 +573,43 @@ def _render_mosaic_forward_remap_from_source_to_target(
     )
     if source_pixel_regions is not None:
         map_x, map_y = restrict_reprojection_map_to_source_regions(map_x, map_y, source_pixel_regions)
+    return map_x, map_y
+
+
+def _render_mosaic_forward_remap_from_source_to_target(
+    *,
+    source_model: object,
+    source_rgb: np.ndarray,
+    target_icrs_to_pixel_payload: dict[str, object] | None,
+    target_model: object | None,
+    geometry: MosaicExportGeometry,
+    map_tile_size_px: int,
+    exact_remap_repair: bool,
+    progress_callback: Callable[[int], None] | None = None,
+    export_progress_callback: MosaicExportProgressCallback | None = None,
+    source_pixel_regions: tuple[SourcePixelRegion, ...] | None = None,
+) -> np.ndarray:
+    """兼容旧调用：构建完整 remap 后一次性重采样整张图。"""
+
+    map_x, map_y = _build_mosaic_forward_remap_from_source_to_target(
+        source_model=source_model,
+        source_width_px=int(source_rgb.shape[1]),
+        source_height_px=int(source_rgb.shape[0]),
+        target_icrs_to_pixel_payload=target_icrs_to_pixel_payload,
+        target_model=target_model,
+        geometry=geometry,
+        map_tile_size_px=map_tile_size_px,
+        exact_remap_repair=exact_remap_repair,
+        progress_callback=progress_callback,
+        export_progress_callback=export_progress_callback,
+        source_pixel_regions=source_pixel_regions,
+    )
     _emit_export_progress(export_progress_callback, "正在重采样源图...", 0, 0)
-    rendered = _render_mosaic_reprojection_block_from_map(
+    return _render_mosaic_reprojection_block_from_map(
         source_rgb=source_rgb,
         map_x=map_x,
         map_y=map_y,
     )
-    _emit_export_progress(export_progress_callback, "正在写入 TIFF...", 0, 0)
-    return rendered
 
 
 def _accumulate_forward_source_regions(
@@ -1218,38 +1272,102 @@ def write_mosaic_reprojection_tiff(
                 f"边界 {geometry.boundary_width_px} x {geometry.boundary_height_px} px。"
             )
     description = _mosaic_export_description(framing_payload)
-    blocks = list(
-        mosaic_reprojection_blocks(
-            source_model=source_model,
-            source_rgb=source_image.rgb,
-            camera=camera,
-            view=view,
-            observer=observer,
-            geometry=geometry,
-            block_rows=block_rows,
-            progress_callback=progress_callback,
-            export_progress_callback=export_progress_callback,
-            target_icrs_to_pixel_payload=target_icrs_to_pixel_payload,
-            target_model=target_model,
-            map_tile_size_px=map_tile_size_px,
-            exact_remap_repair=exact_remap_repair,
-            source_pixel_regions=source_pixel_regions,
-        )
-    )
-    if not blocks:
-        raise ValueError("重投影没有生成任何输出块。")
-    output_image = np.ascontiguousarray(blocks[0] if len(blocks) == 1 else np.vstack(blocks))
-    if output_image.shape != (int(geometry.output_height_px), int(geometry.output_width_px), 4):
-        raise ValueError(f"重投影输出尺寸异常：{output_image.shape}")
+    output_height = int(geometry.output_height_px)
+    output_width = int(geometry.output_width_px)
+    safe_block_rows = max(1, min(int(block_rows), output_height))
+    output_dtype = np.dtype(source_image.rgb.dtype)
     compression = "lzw" if tiff_lzw_compression else None
     compression_label = "LZW 压缩" if tiff_lzw_compression else "无压缩"
-    _emit_export_progress(export_progress_callback, f"正在写入 {compression_label} TIFF...", 0, 0)
+    if tiff_lzw_compression and imagecodecs is None:
+        raise RuntimeError("当前环境缺少 imagecodecs，无法流式写入 LZW TIFF。")
+
+    blocks = mosaic_reprojection_blocks(
+        source_model=source_model,
+        source_rgb=source_image.rgb,
+        camera=camera,
+        view=view,
+        observer=observer,
+        geometry=geometry,
+        block_rows=safe_block_rows,
+        progress_callback=progress_callback,
+        export_progress_callback=export_progress_callback,
+        target_icrs_to_pixel_payload=target_icrs_to_pixel_payload,
+        target_model=target_model,
+        map_tile_size_px=map_tile_size_px,
+        exact_remap_repair=exact_remap_repair,
+        source_pixel_regions=source_pixel_regions,
+    )
+
+    def validated_blocks() -> Iterator[np.ndarray]:
+        completed_rows = 0
+        for block in blocks:
+            values = np.ascontiguousarray(block, dtype=output_dtype)
+            if values.ndim != 3 or values.shape[1:] != (output_width, 4):
+                raise ValueError(f"重投影输出块尺寸异常：{values.shape}")
+            if values.shape[0] <= 0 or values.shape[0] > safe_block_rows:
+                raise ValueError(f"重投影输出块行数异常：{values.shape[0]}")
+            completed_rows += int(values.shape[0])
+            if completed_rows > output_height:
+                raise ValueError("重投影输出行数超过目标高度。")
+            yield values
+        if completed_rows != output_height:
+            raise ValueError(f"重投影输出行数异常：{completed_rows}，预期 {output_height}。")
+
+    def emit_written_progress(completed_rows: int) -> None:
+        _emit_export_progress(
+            export_progress_callback,
+            f"正在写入 {compression_label} TIFF...",
+            completed_rows,
+            output_height,
+        )
+
+    def encoded_strips() -> Iterator[bytes]:
+        if not tiff_lzw_compression:
+            completed_rows = 0
+            for values in validated_blocks():
+                completed_rows += int(values.shape[0])
+                emit_written_progress(completed_rows)
+                yield values.tobytes(order="C")
+            return
+
+        # LZW 编码由 imagecodecs 释放 GIL；少量有界线程可恢复 tifffile 原有并行压缩速度，
+        # 同时只保留几个行块，避免重新持有整张 RGBA 图。
+        cpu_count = max(1, int(os.cpu_count() or 1))
+        worker_count = min(4, max(1, cpu_count // 2))
+        pending: deque[tuple[int, Future[bytes]]] = deque()
+        completed_rows = 0
+        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="mosaic-lzw") as executor:
+            for values in validated_blocks():
+                pending.append((int(values.shape[0]), executor.submit(imagecodecs.lzw_encode, values)))
+                if len(pending) < worker_count * 2:
+                    continue
+                rows, future = pending.popleft()
+                encoded = future.result()
+                completed_rows += rows
+                emit_written_progress(completed_rows)
+                yield encoded
+            while pending:
+                rows, future = pending.popleft()
+                encoded = future.result()
+                completed_rows += rows
+                emit_written_progress(completed_rows)
+                yield encoded
+
+    _emit_export_progress(
+        export_progress_callback,
+        "正在准备分块 TIFF 写入...",
+        0,
+        0,
+    )
     tifffile.imwrite(
         str(output_path),
-        output_image,
+        encoded_strips(),
+        shape=(output_height, output_width, 4),
+        dtype=output_dtype,
         photometric="rgb",
         planarconfig="contig",
         extrasamples=("unassalpha",),
+        rowsperstrip=safe_block_rows,
         compression=compression,
         metadata=None,
         description=description,
