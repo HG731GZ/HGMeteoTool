@@ -14,8 +14,9 @@ from meteoalign.application.app_utils import (
     _validate_star_pair_session_current_image,
 )
 from meteoalign.application.app_workers import StarPairSessionImportWorker
-from meteoalign.image_path_resolution import associated_image_candidates
-from meteoalign.mosaic_model_io import _resolve_source_image_path
+from meteoalign.image_path_resolution import associated_image_candidates, image_size_matches
+from meteoalign.image_sequence import read_image_capture_time
+from meteoalign.mosaic_model_io import _load_mosaic_source_model, _resolve_source_image_path
 
 
 def _touch(path: Path) -> Path:
@@ -263,6 +264,49 @@ def test_missing_exact_relative_path_falls_back_to_exact_absolute_path(tmp_path:
     assert _resolve_star_pair_session_real_image_path(payload, json_path) == absolute_image.resolve()
 
 
+def test_mosaic_missing_candidates_do_not_return_stale_absolute_path(tmp_path: Path) -> None:
+    """所有候选均不存在时，不得把旧绝对路径伪装成已连接的源图。"""
+
+    json_path = tmp_path / "metadata" / "model.json"
+    stale_absolute_path = tmp_path / "old" / "scene.jpg"
+    payload = {
+        "source_image": {
+            "file_name": "scene.jpg",
+            "relative_path": "images/scene.jpg",
+            "path": str(stale_absolute_path),
+        },
+    }
+
+    image_path, image_text = _resolve_source_image_path(payload, json_path)
+
+    assert image_path is None
+    assert image_text == "scene.jpg"
+
+
+def test_tiff_size_check_falls_back_when_qt_cannot_read_header(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """第三方重写的 TIFF 即使 Qt 头部读取失败，也应使用 tifffile 校验尺寸。"""
+
+    import meteoalign.image_path_resolution as path_resolution
+
+    tiff_path = _write_image(tmp_path / "scene.tif", 120, 80)
+
+    class _UnreadableQtImageReader:
+        def __init__(self, _path: str) -> None:
+            pass
+
+        @staticmethod
+        def size():
+            return SimpleNamespace(isValid=lambda: False)
+
+    monkeypatch.setattr(path_resolution, "QImageReader", _UnreadableQtImageReader)
+
+    assert image_size_matches(tiff_path, (120, 80))
+    assert not image_size_matches(tiff_path, (60, 40))
+
+
 def test_relative_path_accepts_windows_separator_on_other_platforms(tmp_path: Path) -> None:
     """相对路径使用 Windows 分隔符时，跨平台读取仍应定位到精确文件。"""
 
@@ -343,3 +387,30 @@ def test_meteor_json_candidate_order_places_raw_between_tif_and_png(tmp_path: Pa
     )
 
     assert [path.suffix for path in candidates[:4]] == [".tif", ".dng", ".png", ".jpg"]
+
+
+def test_starless_model_uses_sibling_processed_tiff_and_json_observer() -> None:
+    """无拍摄时间 EXIF 的 Starless TIFF 应连接成功，并使用 model.json 中的观测信息。"""
+
+    model_path = (
+        Path(__file__).resolve().parents[2]
+        / "testimages"
+        / "28mm测试"
+        / "Starless"
+        / "IMG_0116_model.json"
+    )
+    if not model_path.exists():
+        pytest.skip("仓库中没有 Starless 真实测试文件。")
+
+    with pytest.raises(ValueError, match="没有可用的原始拍摄时间"):
+        read_image_capture_time(model_path.with_name("IMG_0116.TIF"))
+
+    source_model = _load_mosaic_source_model(model_path)
+
+    assert source_model.source_image_path == model_path.with_name("IMG_0116.TIF").resolve()
+    assert source_model.image_width_px == 5472
+    assert source_model.image_height_px == 3648
+    assert source_model.observer.observation_time_utc.isoformat() == "2025-12-14T19:45:07.290000+00:00"
+    assert source_model.observer.latitude_deg == 25.0
+    assert source_model.observer.longitude_deg == 102.0
+    assert source_model.observer.elevation_m == 200.0

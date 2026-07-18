@@ -248,9 +248,9 @@ def _resolve_source_image_path(payload: dict[str, object], json_path: Path) -> t
     image_path = first_matching_image_path(candidates, expected_size)
     if image_path is not None:
         return image_path, image_path.name
-    if candidates:
-        fallback = candidates[-1]
-        return fallback, fallback.name
+    recorded_name = _source_image_file_name(source_image)
+    if recorded_name:
+        return None, recorded_name
     return None, "未记录源图路径"
 
 

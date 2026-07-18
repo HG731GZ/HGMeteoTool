@@ -189,15 +189,30 @@ def expected_image_size(metadata: Mapping[str, object]) -> tuple[int, int] | Non
 
 
 def image_size_matches(path: Path, expected_size: tuple[int, int] | None) -> bool:
-    """检查普通图像头部尺寸；没有期望尺寸时直接接受。"""
+    """检查图像头部尺寸；没有期望尺寸时直接接受。"""
 
     if expected_size is None:
         return True
     reader = QImageReader(str(path))
     size = reader.size()
-    if not size.isValid():
+    if size.isValid():
+        return (size.width(), size.height()) == expected_size
+    if path.suffix.casefold() not in {".tif", ".tiff"}:
         return False
-    return (size.width(), size.height()) == expected_size
+
+    # 部分第三方软件重写的 TIFF 缺少常见元数据，Qt 插件可能无法读取图像头；
+    # 最终重投影本来就由 tifffile 读取，因此这里用同一解码库校验像素尺寸。
+    try:
+        import tifffile
+
+        with tifffile.TiffFile(path) as tiff:
+            if not tiff.pages:
+                return False
+            page = tiff.pages[0]
+            tiff_size = (int(page.imagewidth), int(page.imagelength))
+    except Exception:  # noqa: BLE001 - 候选路径校验失败时继续尝试下一项。
+        return False
+    return tiff_size == expected_size
 
 
 def first_matching_image_path(
