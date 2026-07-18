@@ -5,6 +5,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
 from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import (
     QFileDialog, QMessageBox, QTableWidgetItem,
@@ -27,6 +28,7 @@ from .app_utils import (
 )
 from .app_workers import StarPairSessionImportWorker
 from ..catalog import project_root
+from ..frame_astrometry import FrameAstrometricModel, FramePose
 from ..image_preview import load_image_preview, ImagePreview
 from ..qt_tasks import start_qt_worker_task
 from ..star_pair_model import (
@@ -52,6 +54,76 @@ class StarPairSessionMixin:
 
     def _star_pair_records(self) -> list[dict[str, object]]:
         return self._star_pair_store.records_to_json_payloads()
+
+    def _current_solved_frame_pose_payload(self) -> dict[str, object] | None:
+        """返回当前已求解姿态，供匹配 JSON 在下次加载时作为稳定拟合初值。"""
+
+        source_model = getattr(self, "_source_astrometric_model", None)
+        if source_model is not None and hasattr(source_model, "to_frame_astrometric_model"):
+            try:
+                frame_model = source_model.to_frame_astrometric_model()
+                return frame_model.frame_pose.to_json_payload()
+            except (TypeError, ValueError, AttributeError):
+                pass
+
+        sky_transform = getattr(self, "_sky_alignment_transform", None)
+        rotation_matrix = getattr(sky_transform, "rotation_matrix", None)
+        if rotation_matrix is None:
+            return None
+        try:
+            return FramePose(np.asarray(rotation_matrix, dtype=np.float64)).to_json_payload()
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _frame_pose_rotation_from_payload(payload: object) -> np.ndarray | None:
+        """从 JSON 对象读取姿态矩阵；字段缺失或损坏时返回空。"""
+
+        if not isinstance(payload, dict):
+            return None
+        frame_pose_payload = payload.get("frame_pose")
+        if not isinstance(frame_pose_payload, dict):
+            return None
+        try:
+            frame_pose = FramePose.from_json_payload(frame_pose_payload)
+        except (TypeError, ValueError):
+            return None
+        return frame_pose.icrs_to_camera.copy()
+
+    def _sibling_model_frame_pose_rotation(
+        self,
+        image_path: Path,
+        expected_size: tuple[int, int] | None,
+    ) -> np.ndarray | None:
+        """从图像同名 model.json 读取姿态，兼容尚未内嵌姿态的旧匹配 JSON。"""
+
+        model_path = self._source_model_path_for_image(image_path)
+        if not model_path.is_file():
+            return None
+        try:
+            model_payload = json.loads(model_path.read_text(encoding="utf-8"))
+            frame_model = FrameAstrometricModel.from_json_payload(model_payload)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            return None
+        if expected_size is not None and (
+            int(frame_model.image_width_px),
+            int(frame_model.image_height_px),
+        ) != expected_size:
+            return None
+        return frame_model.frame_pose.icrs_to_camera.copy()
+
+    def _restored_frame_pose_rotation(
+        self,
+        payload: dict[str, object],
+        image_path: Path,
+        expected_size: tuple[int, int] | None,
+    ) -> np.ndarray | None:
+        """优先恢复匹配 JSON 姿态，旧文件再回退到图像同名 model.json。"""
+
+        session_rotation = self._frame_pose_rotation_from_payload(payload)
+        if session_rotation is not None:
+            return session_rotation
+        return self._sibling_model_frame_pose_rotation(image_path, expected_size)
 
     def _auto_match_constraints_payload(self) -> dict[str, dict[str, object]]:
         payload: dict[str, dict[str, object]] = {}
@@ -191,7 +263,7 @@ class StarPairSessionMixin:
             "display_height_px": preview.image.height(),
         }
         real_image_payload.update(self._current_real_image_capture_payload())
-        return self._with_current_simulator_time({
+        payload = self._with_current_simulator_time({
             "format": STAR_PAIR_SESSION_FORMAT,
             "version": STAR_PAIR_SESSION_VERSION,
             "generated_at_utc": generated_time.isoformat(),
@@ -207,6 +279,10 @@ class StarPairSessionMixin:
             "mask": self._sky_mask_payload(json_path),
             "matching": self._auto_match_settings_payload(),
         })
+        frame_pose_payload = self._current_solved_frame_pose_payload()
+        if frame_pose_payload is not None:
+            payload["frame_pose"] = frame_pose_payload
+        return payload
 
     def _write_current_star_pair_session(self) -> tuple[Path, int] | None:
         """把当前匹配写入默认同名 JSON；用户拒绝覆盖时返回空。"""
@@ -590,12 +666,28 @@ class StarPairSessionMixin:
 
         if preview is None:
             image_path = self._session_real_image_path(payload, source_path)
+            real_image = payload.get("real_image")
+            expected_size = None
+            if isinstance(real_image, dict):
+                try:
+                    width = int(real_image.get("original_width_px", 0))
+                    height = int(real_image.get("original_height_px", 0))
+                except (TypeError, ValueError):
+                    width, height = 0, 0
+                if width > 0 and height > 0:
+                    expected_size = (width, height)
         else:
             image_path = _validate_star_pair_session_current_image(
                 payload,
                 preview.path,
                 (preview.original_width, preview.original_height),
             )
+            expected_size = (int(preview.original_width), int(preview.original_height))
+        restored_rotation = self._restored_frame_pose_rotation(
+            payload,
+            image_path,
+            expected_size,
+        )
         self._active_star_pair_row = None
         current_tab = self.ui.tabWidgetMain.currentWidget() if not switch_to_reference else None
         previous_suspend_alignment = self._suspend_alignment_updates
@@ -635,6 +727,10 @@ class StarPairSessionMixin:
                         if record.star_id in auto_match_group_by_star_id
                         else record.group_name
                     ),
+                    # 匹配页每次加载都重新拟合并计算 RMS，不显示 JSON 中可能过期的残差。
+                    residual_dx_px=None,
+                    residual_dy_px=None,
+                    residual_px=None,
                 )
                 for record in pair_records
             ]
@@ -661,6 +757,9 @@ class StarPairSessionMixin:
             restored_count = self._restore_star_pair_records(pair_records, update_alignment=False)
         finally:
             self._suspend_alignment_updates = previous_suspend_alignment
+        self._restored_alignment_initial_rotation_matrix = restored_rotation
+        # 交互式匹配页图像数量有限，始终用全部当前匹配实时重算变换与 RMS。
+        # 图像序列表格仍由其专用批处理逻辑直接读取 JSON 中已保存的 RMS。
         self._update_reference_alignment_transform()
         if switch_to_reference:
             self.ui.tabWidgetMain.setCurrentWidget(self.ui.tabReferenceImage)

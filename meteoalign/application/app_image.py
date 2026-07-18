@@ -361,6 +361,7 @@ class ImageMixin:
         self._reset_sky_mask_status()
         self._sky_alignment_transform = None
         self._source_astrometric_model = None
+        self._restored_alignment_initial_rotation_matrix = None
         self._reference_alignment_error_message = ""
         self._sky_alignment_error_message = ""
         self._source_model_error_message = ""

@@ -58,6 +58,7 @@ class AlignmentMixin:
     ui: object
     _sky_alignment_transform: PreliminarySkyAlignmentTransform | SkyAlignmentTransform | RoughFramingTransform | None
     _source_astrometric_model: SourceAstrometricModel | FixedProfilePoseSourceModel | None
+    _restored_alignment_initial_rotation_matrix: np.ndarray | None
     _imported_camera_calibration_profile: CameraCalibrationProfile | None
     _imported_camera_calibration_profile_path: Path | None
     _imported_camera_calibration_image_name: str
@@ -404,6 +405,11 @@ class AlignmentMixin:
     def _manual_projection_initial_rotation_matrix(self) -> np.ndarray | None:
         """为四颗及以上手工匹配选择稳定初值，最终模型仍只由手工匹配求解。"""
 
+        restored_rotation = getattr(self, "_restored_alignment_initial_rotation_matrix", None)
+        if restored_rotation is not None:
+            rotation_matrix = np.asarray(restored_rotation, dtype=np.float64)
+            if rotation_matrix.shape == (3, 3) and np.all(np.isfinite(rotation_matrix)):
+                return rotation_matrix.copy()
         # 粗略姿态不会作为最终变换或残差锚点参与计算，只避免 TAN 在小视场下落入错误局部解。
         rough_rotation = self._rough_framing_initial_rotation_matrix()
         if rough_rotation is not None:
