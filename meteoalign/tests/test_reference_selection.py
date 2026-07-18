@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
+from pathlib import Path
 
 import numpy as np
 
@@ -15,6 +17,12 @@ from meteoalign.simulator import (
     ViewSettings,
     select_reference_stars,
 )
+from meteoalign.star_pair_model import (
+    PAIR_ORIGIN_AUTO_MATCH,
+    StarPairRecord,
+    star_pair_records_from_payloads,
+)
+from meteoalign.star_pair_store import StarPairStore
 
 
 def _projected_star_map_for_selection() -> ProjectedStarMap:
@@ -80,6 +88,87 @@ def test_simulator_annotations_only_follow_simulator_count_limit() -> None:
     selected = harness._select_simulator_annotation_stars(_projected_star_map_for_selection())
 
     assert [star.star_id for star in selected] == ["below"]
+
+
+def test_matched_star_stays_in_pair_rows_after_simulator_view_crops_it() -> None:
+    """模拟器重绘裁掉已匹配星时，表格仍应从统一存储恢复该星。"""
+
+    cropped_star = ReferenceStar(
+        index=3,
+        star_id="cropped-auto-match",
+        name="视场外匹配星",
+        display_name="视场外匹配星",
+        common_name="",
+        ra_deg=42.0,
+        dec_deg=18.0,
+        mag_v=3.2,
+        sim_x=1200.0,
+        sim_y=900.0,
+        alt_deg=38.0,
+        az_deg=210.0,
+    )
+    store = StarPairStore()
+    store.add(
+        StarPairRecord(
+            reference_star=cropped_star,
+            image_x_px=740.0,
+            image_y_px=510.0,
+            pair_origin=PAIR_ORIGIN_AUTO_MATCH,
+            group_id="A",
+        )
+    )
+    harness = RenderingMixin()
+    harness._star_pair_store = store
+    harness._manual_reference_star_ids = []
+    harness._auto_match_reference_star_ids = [cropped_star.star_id]
+    harness._excluded_reference_star_ids = []
+    harness._mask_excluded_reference_star_ids = set()
+    harness._imported_reference_star_by_id = {}
+    harness._normalize_auto_match_groups = lambda: None
+    harness._auto_match_group_id_for_star_id = lambda _star_id: "A"
+    harness._select_simulator_annotation_stars = lambda star_map: (
+        harness._reference_star_from_star_map_index(star_map, 0, 1),
+    )
+
+    selected = harness._select_current_reference_stars(_projected_star_map_for_selection())
+
+    assert [star.star_id for star in selected] == ["below", cropped_star.star_id]
+
+
+def test_a7r3_fisheye_matches_survive_rectilinear_simulator_crop() -> None:
+    """复现鱼眼匹配配合直线模拟镜头时，两批自动匹配不应被裁成少数几行。"""
+
+    session_path = (
+        Path(__file__).resolve().parents[2]
+        / "testimages"
+        / "A7R3_1214_DSC06601_starpairs.json"
+    )
+    payload = json.loads(session_path.read_text(encoding="utf-8"))
+    records = star_pair_records_from_payloads(payload["pairs"])
+    auto_records = [record for record in records if record.is_auto_match]
+    group_by_star_id = {record.star_id: record.group_id or "A" for record in auto_records}
+    store = StarPairStore()
+    store.add_records(records)
+
+    harness = RenderingMixin()
+    harness._star_pair_store = store
+    harness._manual_reference_star_ids = []
+    harness._auto_match_reference_star_ids = [record.star_id for record in auto_records]
+    harness._excluded_reference_star_ids = []
+    harness._mask_excluded_reference_star_ids = set()
+    harness._imported_reference_star_by_id = {}
+    harness._normalize_auto_match_groups = lambda: None
+    harness._auto_match_group_id_for_star_id = lambda star_id: group_by_star_id.get(star_id, "")
+    harness._select_simulator_annotation_stars = lambda star_map: (
+        harness._reference_star_from_star_map_index(star_map, 0, 1),
+    )
+
+    selected = harness._select_current_reference_stars(_projected_star_map_for_selection())
+    selected_star_ids = {star.star_id for star in selected}
+
+    assert len(records) == 54
+    assert len(auto_records) == 37
+    assert {record.star_id for record in records} <= selected_star_ids
 
 
 def test_render_routes_limited_annotations_and_full_pair_rows_separately() -> None:

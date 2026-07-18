@@ -21,9 +21,10 @@ from PyQt5.QtWidgets import (
     QTableWidget,
 )
 
-from meteoalign.application.app_sequence_table_preview import SequenceTablePreviewMixin
+from meteoalign.application.app_alignment import AlignmentMixin
 from meteoalign.application.app_mosaic import MosaicProjectionMixin, MosaicSourceItem
 from meteoalign.application.app_rendering import RenderingMixin
+from meteoalign.application.app_sequence_table_preview import SequenceTablePreviewMixin
 from meteoalign.application.app_star_pair_table_groups import StarPairTableGroupsMixin
 from meteoalign.application.main_window import MainWindow
 from meteoalign.application.star_pair_assistant_dialog import StarPairAssistantDialog
@@ -126,6 +127,40 @@ def test_dynamic_information_labels_are_not_collapsed_by_layout() -> None:
     value_label = ui.formLayoutImportedImage.itemAt(0, QFormLayout.FieldRole).widget()
     assert title_label.x() < value_label.x()
     assert value_label.width() > title_label.width()
+
+    window.close()
+
+
+def test_locked_simulator_keeps_lens_controls_available() -> None:
+    """匹配达到锁定门槛后仍应允许调整镜头投影，但继续锁定姿态等其他设置。"""
+
+    app = QApplication.instance() or QApplication([])
+    window = QMainWindow()
+    ui = Ui_MainWindow()
+    ui.setupUi(window)
+
+    class SimulatorControlsHost(AlignmentMixin, RenderingMixin):
+        pass
+
+    host = SimulatorControlsHost()
+    host.ui = ui
+    host._simulator_controls_locked = False
+    host.drag_start = None
+    host.last_drag_pos = None
+    ui.comboBoxLensModel.setCurrentIndex(1)
+    host._update_lens_model_controls()
+    host._update_simulator_controls_lock(4)
+
+    assert ui.doubleSpinBoxFocalLength.minimum() == 10.0
+    assert ui.doubleSpinBoxFocalLength.isEnabled()
+    assert ui.labelFocalLength.isEnabled()
+    assert ui.comboBoxLensModel.isEnabled()
+    assert ui.labelLensModel.isEnabled()
+    assert ui.doubleSpinBoxFisheyeFov.isEnabled()
+    assert ui.labelFisheyeFov.isEnabled()
+    assert not ui.doubleSpinBoxAz.isEnabled()
+    assert not ui.doubleSpinBoxRoll.isEnabled()
+    assert not ui.doubleSpinBoxSensorWidth.isEnabled()
 
     window.close()
 

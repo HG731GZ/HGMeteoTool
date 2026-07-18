@@ -13,6 +13,7 @@ from meteoalign.projection.camera_models import camera_basis_from_view
 from meteoalign.sequence_geometry import icrs_to_enu_rotation_matrix
 from meteoalign.simulator_view_sync import (
     preliminary_alignment_rotation_matrix,
+    view_center_from_icrs_direction,
     view_settings_from_icrs_to_camera,
 )
 
@@ -35,20 +36,26 @@ def _angle_delta_deg(left: float, right: float) -> float:
     return (float(left) - float(right) + 180.0) % 360.0 - 180.0
 
 
-def test_frame_pose_round_trips_to_simulator_view() -> None:
-    """正式匹配或粗略取景的姿态应恢复为相同的模拟取景。"""
+def test_frame_pose_round_trips_to_simulator_view_center() -> None:
+    """正式匹配或粗略取景的姿态应恢复为相同的模拟取景中心。"""
 
     observer = _observer()
     expected = ViewSettings(center_az_deg=217.3, center_alt_deg=42.6, roll_deg=-31.4)
 
+    center_az_deg, center_alt_deg = view_center_from_icrs_direction(
+        _icrs_to_camera(expected, observer)[2],
+        observer,
+    )
+
+    assert abs(_angle_delta_deg(center_az_deg, expected.center_az_deg)) < 0.01
+    assert abs(center_alt_deg - expected.center_alt_deg) < 0.01
+
     restored = view_settings_from_icrs_to_camera(_icrs_to_camera(expected, observer), observer)
 
-    assert abs(_angle_delta_deg(restored.center_az_deg, expected.center_az_deg)) < 0.01
-    assert abs(restored.center_alt_deg - expected.center_alt_deg) < 0.01
     assert abs(_angle_delta_deg(restored.roll_deg, expected.roll_deg)) < 0.01
 
 
-def test_preliminary_alignment_recovers_image_center_pose() -> None:
+def test_preliminary_alignment_recovers_image_center() -> None:
     """两点或三点预配准也应能同步图像中心和画面上方向。"""
 
     observer = _observer()
@@ -71,11 +78,12 @@ def test_preliminary_alignment_recovers_image_center_pose() -> None:
         orientation=-1,
     )
 
-    restored_rotation = preliminary_alignment_rotation_matrix(transform, image_size)
-    restored = view_settings_from_icrs_to_camera(restored_rotation, observer)
+    rotation_matrix = preliminary_alignment_rotation_matrix(transform, image_size)
+    center_az_deg, center_alt_deg = view_center_from_icrs_direction(rotation_matrix[2], observer)
+    restored = view_settings_from_icrs_to_camera(rotation_matrix, observer)
 
-    assert abs(_angle_delta_deg(restored.center_az_deg, expected.center_az_deg)) < 0.02
-    assert abs(restored.center_alt_deg - expected.center_alt_deg) < 0.02
+    assert abs(_angle_delta_deg(center_az_deg, expected.center_az_deg)) < 0.02
+    assert abs(center_alt_deg - expected.center_alt_deg) < 0.02
     assert abs(_angle_delta_deg(restored.roll_deg, expected.roll_deg)) < 0.02
 
 
@@ -102,8 +110,8 @@ class _SpinBox:
         return previous
 
 
-def test_locked_simulator_controls_still_accept_solved_view() -> None:
-    """四对后用户操作虽锁定，正式求解仍必须能写入新视角且只调度一次渲染。"""
+def test_known_projection_syncs_solved_center_and_roll() -> None:
+    """TAN、ARC 和 ZEA 应同步中心与画面旋转，且只调度一次渲染。"""
 
     observer = _observer()
     expected = ViewSettings(center_az_deg=246.4, center_alt_deg=36.2, roll_deg=-12.8)
@@ -114,13 +122,14 @@ def test_locked_simulator_controls_still_accept_solved_view() -> None:
     harness.ui = SimpleNamespace(
         doubleSpinBoxAz=_SpinBox(0.0),
         doubleSpinBoxAlt=_SpinBox(0.0),
-        doubleSpinBoxRoll=_SpinBox(0.0),
+        doubleSpinBoxRoll=_SpinBox(48.5),
     )
     harness._simulator_controls_locked = True
     harness._source_astrometric_model = SimpleNamespace(
         to_frame_astrometric_model=lambda: frame_model,
     )
     harness._sky_alignment_transform = None
+    harness._alignment_model = lambda: "fisheye_equisolid"
     harness._observer_settings = lambda: observer
     scheduled_delays: list[int] = []
     harness.schedule_render = lambda *, delay_ms: scheduled_delays.append(delay_ms)
@@ -132,3 +141,32 @@ def test_locked_simulator_controls_still_accept_solved_view() -> None:
     assert harness.ui.doubleSpinBoxAlt.value() == 36.2
     assert harness.ui.doubleSpinBoxRoll.value() == -12.8
     assert scheduled_delays == [0]
+
+
+def test_other_projection_only_syncs_solved_center() -> None:
+    """MER、CAR 和锚点插值等模型只同步中心，不覆盖模拟器 Roll。"""
+
+    observer = _observer()
+    expected = ViewSettings(center_az_deg=168.2, center_alt_deg=51.3, roll_deg=-27.0)
+    harness = AlignmentMixin()
+    harness.ui = SimpleNamespace(
+        doubleSpinBoxAz=_SpinBox(0.0),
+        doubleSpinBoxAlt=_SpinBox(0.0),
+        doubleSpinBoxRoll=_SpinBox(63.0),
+    )
+    harness._source_astrometric_model = SimpleNamespace(
+        to_frame_astrometric_model=lambda: SimpleNamespace(
+            frame_pose=FramePose(_icrs_to_camera(expected, observer)),
+        ),
+    )
+    harness._sky_alignment_transform = None
+    harness._alignment_model = lambda: "mercator"
+    harness._observer_settings = lambda: observer
+    harness.schedule_render = lambda *, delay_ms: None
+
+    changed = harness._sync_simulator_view_from_alignment()
+
+    assert changed
+    assert harness.ui.doubleSpinBoxAz.value() == 168.2
+    assert harness.ui.doubleSpinBoxAlt.value() == 51.3
+    assert harness.ui.doubleSpinBoxRoll.value() == 63.0

@@ -262,6 +262,10 @@ class RenderingMixin:
             if lookup_star is None:
                 lookup_star = imported_lookup.get(star_id)
             if lookup_star is None:
+                store = getattr(self, "_star_pair_store", None)
+                record = None if store is None else store.get(star_id)
+                lookup_star = None if record is None else record.reference_star
+            if lookup_star is None:
                 return
             seen_star_ids.add(star_id)
             ordered_stars.append(lookup_star)
@@ -384,13 +388,12 @@ class RenderingMixin:
     def _update_lens_model_controls(self) -> None:
         lens_model = self._lens_model()
         is_fisheye = lens_model != RECTILINEAR_LENS_MODEL
-        locked = bool(getattr(self, "_simulator_controls_locked", False))
         max_fov = 300.0
         self.ui.doubleSpinBoxFisheyeFov.setMaximum(max_fov)
         if self.ui.doubleSpinBoxFisheyeFov.value() > max_fov:
             self.ui.doubleSpinBoxFisheyeFov.setValue(max_fov)
-        self.ui.labelFisheyeFov.setEnabled(is_fisheye and not locked)
-        self.ui.doubleSpinBoxFisheyeFov.setEnabled(is_fisheye and not locked)
+        self.ui.labelFisheyeFov.setEnabled(is_fisheye)
+        self.ui.doubleSpinBoxFisheyeFov.setEnabled(is_fisheye)
 
     def _handle_lens_model_changed(self, *unused) -> None:  # type: ignore[no-untyped-def]
         self._update_lens_model_controls()

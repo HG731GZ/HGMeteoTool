@@ -278,7 +278,7 @@ class Ui_MainWindow(object):
         self.formLayoutCamera.setWidget(5, QtWidgets.QFormLayout.LabelRole, self.labelFocalLength)
         self.doubleSpinBoxFocalLength = QtWidgets.QDoubleSpinBox(self.groupBoxCamera)
         self.doubleSpinBoxFocalLength.setDecimals(2)
-        self.doubleSpinBoxFocalLength.setMinimum(1.0)
+        self.doubleSpinBoxFocalLength.setMinimum(10.0)
         self.doubleSpinBoxFocalLength.setMaximum(2000.0)
         self.doubleSpinBoxFocalLength.setObjectName("doubleSpinBoxFocalLength")
         self.formLayoutCamera.setWidget(5, QtWidgets.QFormLayout.FieldRole, self.doubleSpinBoxFocalLength)

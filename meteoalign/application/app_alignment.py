@@ -11,6 +11,9 @@ from ..alignment.constants import (
     MIN_ALIGNMENT_PAIRS,
     MIN_PRELIMINARY_ALIGNMENT_PAIRS,
     SKY_MATCHING_MODEL_ANCHOR_INTERPOLATION,
+    SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT,
+    SKY_MATCHING_MODEL_FISHEYE_EQUISOLID,
+    SKY_MATCHING_MODEL_RECTILINEAR,
 )
 from ..alignment.fitting import (
     fit_preliminary_sky_alignment,
@@ -24,6 +27,7 @@ from ..coordinates import radec_to_unit_vectors
 from ..frame_astrometry import FrameAstrometricModel
 from ..simulator_view_sync import (
     preliminary_alignment_rotation_matrix,
+    view_center_from_icrs_direction,
     view_settings_from_icrs_to_camera,
 )
 from ..simulator import (
@@ -53,6 +57,13 @@ PROFILE_SOLVE_MODES = (
     PROFILE_SOLVE_NOT_USED,
     PROFILE_SOLVE_IMPORTED_PROFILE_POSE_ONLY,
     PROFILE_SOLVE_IMPORTED_PROFILE_POSE_LOCAL_RESIDUAL,
+)
+SIMULATOR_FULL_POSE_ALIGNMENT_MODELS = frozenset(
+    (
+        SKY_MATCHING_MODEL_RECTILINEAR,
+        SKY_MATCHING_MODEL_FISHEYE_EQUIDISTANT,
+        SKY_MATCHING_MODEL_FISHEYE_EQUISOLID,
+    )
 )
 
 
@@ -258,9 +269,6 @@ class AlignmentMixin:
             "pushButtonSwapOrientation",
             "spinBoxImageWidth",
             "spinBoxImageHeight",
-            "doubleSpinBoxFocalLength",
-            "comboBoxLensModel",
-            "doubleSpinBoxFisheyeFov",
             "doubleSpinBoxMagLimit",
             "doubleSpinBoxAz",
             "doubleSpinBoxAlt",
@@ -272,9 +280,6 @@ class AlignmentMixin:
             "labelSensorHeight",
             "labelImageWidth",
             "labelImageHeight",
-            "labelFocalLength",
-            "labelLensModel",
-            "labelFisheyeFov",
             "labelMagLimit",
             "labelAz",
             "labelAlt",
@@ -304,7 +309,7 @@ class AlignmentMixin:
         self._update_reference_label_controls()
 
     def _alignment_rotation_matrix_for_simulator_view(self) -> np.ndarray | None:
-        """提取当前配准结果的姿态，供星空模拟自动同步取景。"""
+        """提取当前配准结果的相机姿态，供星空模拟同步取景。"""
 
         source_model = getattr(self, "_source_astrometric_model", None)
         if source_model is not None and hasattr(source_model, "to_frame_astrometric_model"):
@@ -332,27 +337,42 @@ class AlignmentMixin:
         return None
 
     def _sync_simulator_view_from_alignment(self) -> bool:
-        """自动写入求解后的取景；控件锁定只限制用户，不限制本次同步。"""
+        """已知方位投影同步完整姿态，其他模型只同步画面中心。"""
 
         if not all(
             hasattr(self.ui, name)
-            for name in ("doubleSpinBoxAz", "doubleSpinBoxAlt", "doubleSpinBoxRoll")
+            for name in ("doubleSpinBoxAz", "doubleSpinBoxAlt")
         ):
             return False
         rotation_matrix = self._alignment_rotation_matrix_for_simulator_view()
         if rotation_matrix is None:
             return False
         try:
-            view = view_settings_from_icrs_to_camera(rotation_matrix, self._observer_settings())
+            observer = self._observer_settings()
+            center_az_deg, center_alt_deg = view_center_from_icrs_direction(
+                rotation_matrix[2],
+                observer,
+            )
         except (AttributeError, TypeError, ValueError, np.linalg.LinAlgError):
             return False
 
+        synchronized_values = [
+            (self.ui.doubleSpinBoxAz, float(center_az_deg) % 360.0),
+            (self.ui.doubleSpinBoxAlt, float(center_alt_deg)),
+        ]
+        if self._alignment_model() in SIMULATOR_FULL_POSE_ALIGNMENT_MODELS:
+            try:
+                view = view_settings_from_icrs_to_camera(
+                    rotation_matrix,
+                    observer,
+                )
+            except (AttributeError, TypeError, ValueError, np.linalg.LinAlgError):
+                view = None
+            if view is not None and hasattr(self.ui, "doubleSpinBoxRoll"):
+                synchronized_values.append((self.ui.doubleSpinBoxRoll, float(view.roll_deg)))
+
         changed = False
-        for widget, value in (
-            (self.ui.doubleSpinBoxAz, float(view.center_az_deg) % 360.0),
-            (self.ui.doubleSpinBoxAlt, float(view.center_alt_deg)),
-            (self.ui.doubleSpinBoxRoll, float(view.roll_deg)),
-        ):
+        for widget, value in synchronized_values:
             previous_value = float(widget.value())
             signals_were_blocked = widget.blockSignals(True)
             try:

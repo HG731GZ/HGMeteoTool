@@ -1,4 +1,4 @@
-"""把星点求解得到的天球姿态转换为星空模拟取景。"""
+"""把星点求解得到的相机姿态转换为星空模拟取景。"""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ def preliminary_alignment_rotation_matrix(
     transform: PreliminarySkyAlignmentTransform,
     image_size: tuple[int, int],
 ) -> np.ndarray:
-    """从两点或三点预配准估计图像中心的 ICRS→Camera 姿态。"""
+    """从两点或三点预配准估计图像中心及画面上方向。"""
 
     image_width, image_height = int(image_size[0]), int(image_size[1])
     if image_width <= 0 or image_height <= 0:
@@ -67,16 +67,15 @@ def preliminary_alignment_rotation_matrix(
     return FramePose(np.vstack((right, up, forward))).icrs_to_camera.copy()
 
 
-def view_settings_from_icrs_to_camera(
-    icrs_to_camera: np.ndarray,
+def view_center_from_icrs_direction(
+    icrs_direction: np.ndarray,
     observer: ObserverSettings,
-) -> ViewSettings:
-    """把 ICRS→Camera 姿态分解为当前观测者的 Az、Alt 和 Roll。"""
+) -> tuple[float, float]:
+    """把 ICRS 中心方向转换为当前观测者的方位角和高度角。"""
 
-    pose = FramePose(np.asarray(icrs_to_camera, dtype=np.float64))
+    direction = _normalized_vector(icrs_direction, "相机中心方向")
     icrs_to_enu = icrs_to_enu_rotation_matrix(observer)
-    camera_from_enu = pose.icrs_to_camera @ icrs_to_enu.T
-    forward = _normalized_vector(camera_from_enu[2], "相机中心方向")
+    forward = _normalized_vector(icrs_to_enu @ direction, "相机本地中心方向")
 
     horizontal_norm = float(np.hypot(forward[0], forward[1]))
     if horizontal_norm <= 1e-10:
@@ -84,7 +83,23 @@ def view_settings_from_icrs_to_camera(
     else:
         center_az_deg = float(np.rad2deg(np.arctan2(forward[0], forward[1]))) % 360.0
     center_alt_deg = float(np.rad2deg(np.arcsin(np.clip(forward[2], -1.0, 1.0))))
+    return center_az_deg, center_alt_deg
 
+
+def view_settings_from_icrs_to_camera(
+    icrs_to_camera: np.ndarray,
+    observer: ObserverSettings,
+) -> ViewSettings:
+    """把 ICRS→Camera 姿态分解为当前观测者的中心和 Roll。"""
+
+    pose = FramePose(np.asarray(icrs_to_camera, dtype=np.float64))
+    center_az_deg, center_alt_deg = view_center_from_icrs_direction(
+        pose.icrs_to_camera[2],
+        observer,
+    )
+    icrs_to_enu = icrs_to_enu_rotation_matrix(observer)
+    camera_from_enu = pose.icrs_to_camera @ icrs_to_enu.T
+    forward = _normalized_vector(camera_from_enu[2], "相机本地中心方向")
     base_right, base_up, _base_forward = camera_basis_from_view(
         ViewSettings(
             center_az_deg=center_az_deg,
