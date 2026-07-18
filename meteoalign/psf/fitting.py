@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import sep
+from scipy.ndimage import gaussian_filter
 from scipy.optimize import least_squares
 
 from .models import FittedStarPosition, StarSourceCandidate
@@ -342,6 +343,31 @@ def _select_candidate(
     return best
 
 
+def _select_forced_candidate(
+    detection: _DetectionResult,
+    click_x: float,
+    click_y: float,
+    search_radius_px: int,
+) -> StarSourceCandidate | None:
+    """手动强制测量时只按距离和信噪比选星，不再用形态门槛拒绝。"""
+
+    eligible = [
+        candidate
+        for candidate in detection.candidates
+        if float(np.hypot(candidate.x - click_x, candidate.y - click_y))
+        <= float(search_radius_px)
+    ]
+    if not eligible:
+        return None
+    return min(
+        eligible,
+        key=lambda candidate: (
+            float(np.hypot(candidate.x - click_x, candidate.y - click_y)),
+            -candidate.snr,
+        ),
+    )
+
+
 def _candidate_neighbor_mask(
     detection: _DetectionResult,
     selected: StarSourceCandidate,
@@ -361,6 +387,16 @@ def _candidate_neighbor_mask(
 
 def _moffat_fwhm(alpha: float, beta: float) -> float:
     return 2.0 * alpha * math.sqrt(max(2.0 ** (1.0 / max(beta, 1e-6)) - 1.0, 1e-9))
+
+
+def _normalized_tolerance_multiplier(value: float) -> float:
+    """把直接数值接口收到的非法容限倍率恢复为不改变旧行为的 1。"""
+
+    try:
+        multiplier = float(value)
+    except (TypeError, ValueError):
+        return 1.0
+    return multiplier if math.isfinite(multiplier) and multiplier > 0.0 else 1.0
 
 
 def _radial_quality(
@@ -411,6 +447,9 @@ def _fit_selected_candidate(
     max_fit_radius_px: int,
     fit_error_limit: float | None = None,
     saturated_fit_error_limit: float | None = None,
+    center_shift_tolerance_multiplier: float = 1.0,
+    size_boundary_tolerance_multiplier: float = 1.0,
+    trust_selected_source: bool = False,
 ) -> FittedStarPosition:
     height, width = image.shape
     adaptive_radius = int(
@@ -422,7 +461,12 @@ def _fit_selected_candidate(
             )
         )
     )
-    fit_radius = min(max(adaptive_radius, 5), max(int(max_fit_radius_px), 5))
+    fit_radius_limit = max(int(max_fit_radius_px), 5)
+    fit_radius = (
+        fit_radius_limit
+        if trust_selected_source
+        else min(max(adaptive_radius, 5), fit_radius_limit)
+    )
     center_x = int(round(selected.x))
     center_y = int(round(selected.y))
     x0 = max(0, center_x - fit_radius)
@@ -567,11 +611,19 @@ def _fit_selected_candidate(
 
     if snr < 4.0:
         raise StarFitError("候选目标相对于局部背景过弱。", code="low_snr")
-    if center_shift > max(2.2, selected.major_axis * 0.65):
+    center_shift_limit = max(2.2, selected.major_axis * 0.65) * _normalized_tolerance_multiplier(
+        center_shift_tolerance_multiplier
+    )
+    if center_shift > center_shift_limit and not trust_selected_source:
         raise StarFitError("PSF 中心偏离检测星源，可能受到邻星或地景影响。", code="center_unstable")
     if axis_ratio > (5.0 if selected.saturated else 3.5):
         raise StarFitError("候选目标过于狭长，不符合可用星点形态。", code="elongated")
-    if max(fwhm_x, fwhm_y) >= fit_radius * 1.35:
+    size_boundary_limit = (
+        fit_radius
+        * 1.35
+        * _normalized_tolerance_multiplier(size_boundary_tolerance_multiplier)
+    )
+    if max(fwhm_x, fwhm_y) >= size_boundary_limit:
         raise StarFitError("PSF 尺寸触及拟合窗口边界，结果不可靠。", code="size_at_bound")
     default_residual_limit = 0.52 if selected.saturated else 0.42
     configured_residual_limit = (
@@ -626,6 +678,117 @@ def _fit_selected_candidate(
     )
 
 
+def _forced_windowed_centroid(
+    image: np.ndarray,
+    detection: _DetectionResult,
+    click_x: float,
+    click_y: float,
+    search_radius_px: int,
+    max_fit_radius_px: int,
+    selected: StarSourceCandidate | None,
+) -> FittedStarPosition:
+    """以用户选星圈为先验，用高斯窗口矩心提供不依赖完整 PSF 的最终兜底。"""
+
+    signal = np.asarray(image - detection.background.plane, dtype=np.float64)
+    yy, xx = np.indices(image.shape, dtype=np.float64)
+    if selected is not None:
+        center_x = float(selected.x)
+        center_y = float(selected.y)
+        source_scale = max(float(selected.major_axis), float(selected.minor_axis), 1.0)
+    else:
+        search_mask = (xx - click_x) ** 2 + (yy - click_y) ** 2 <= float(search_radius_px) ** 2
+        smoothed = gaussian_filter(np.maximum(signal, 0.0), sigma=1.0, mode="nearest")
+        if not np.any(search_mask):
+            raise StarFitError("选星圈内没有可用于强制测量的像素。", code="insufficient_pixels")
+        peak_values = np.where(search_mask, smoothed, -np.inf)
+        peak_index = int(np.argmax(peak_values))
+        if not math.isfinite(float(peak_values.flat[peak_index])):
+            raise StarFitError("选星圈内无法确定可靠亮度峰值。", code="no_source")
+        center_y, center_x = (float(value) for value in np.unravel_index(peak_index, image.shape))
+        source_scale = 2.0
+
+    window_radius = min(
+        max(int(max_fit_radius_px), 5),
+        max(8, int(math.ceil(source_scale * 5.0))),
+    )
+    window_sigma = max(window_radius / 3.0, source_scale * 1.5, 2.0)
+    positive_signal = np.maximum(signal, 0.0)
+    valid = np.isfinite(signal)
+    for _iteration in range(8):
+        distance_sq = (xx - center_x) ** 2 + (yy - center_y) ** 2
+        local = valid & (distance_sq <= window_radius**2)
+        weights = np.where(
+            local,
+            positive_signal * np.exp(-0.5 * distance_sq / window_sigma**2),
+            0.0,
+        )
+        weight_sum = float(np.sum(weights))
+        if not math.isfinite(weight_sum) or weight_sum <= 0.0:
+            raise StarFitError("选星圈内缺少可用于强制矩心测量的星点信号。", code="low_snr")
+        next_x = float(np.sum(weights * xx) / weight_sum)
+        next_y = float(np.sum(weights * yy) / weight_sum)
+        if float(np.hypot(next_x - center_x, next_y - center_y)) < 1e-3:
+            center_x, center_y = next_x, next_y
+            break
+        center_x, center_y = next_x, next_y
+
+    distance_sq = (xx - center_x) ** 2 + (yy - center_y) ** 2
+    local = valid & (distance_sq <= window_radius**2)
+    weights = np.where(
+        local,
+        positive_signal * np.exp(-0.5 * distance_sq / window_sigma**2),
+        0.0,
+    )
+    weight_sum = max(float(np.sum(weights)), 1e-9)
+    dx = xx - center_x
+    dy = yy - center_y
+    covariance = np.asarray(
+        [
+            [
+                float(np.sum(weights * dx * dx) / weight_sum),
+                float(np.sum(weights * dx * dy) / weight_sum),
+            ],
+            [
+                float(np.sum(weights * dx * dy) / weight_sum),
+                float(np.sum(weights * dy * dy) / weight_sum),
+            ],
+        ],
+        dtype=np.float64,
+    )
+    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+    eigenvalues = np.maximum(eigenvalues, 0.35**2)
+    major_index = int(np.argmax(eigenvalues))
+    minor_index = 1 - major_index
+    sigma_x = float(math.sqrt(float(eigenvalues[major_index])))
+    sigma_y = float(math.sqrt(float(eigenvalues[minor_index])))
+    major_vector = eigenvectors[:, major_index]
+    theta = float(math.atan2(float(major_vector[1]), float(major_vector[0])) % math.pi)
+    amplitude = max(float(np.max(positive_signal[local])) if np.any(local) else 0.0, 0.0)
+    snr = amplitude / max(detection.background.noise, 1e-6)
+    background_x = int(np.clip(round(center_x), 0, image.shape[1] - 1))
+    background_y = int(np.clip(round(center_y), 0, image.shape[0] - 1))
+    return FittedStarPosition(
+        x=center_x,
+        y=center_y,
+        amplitude=amplitude,
+        background=float(detection.background.plane[background_y, background_x]),
+        sigma_x=sigma_x,
+        sigma_y=sigma_y,
+        theta_rad=theta,
+        fwhm_x=sigma_x * _GAUSSIAN_FWHM_SCALE,
+        fwhm_y=sigma_y * _GAUSSIAN_FWHM_SCALE,
+        snr=max(snr, 0.0),
+        fit_error=1.0,
+        saturated=bool(selected.saturated) if selected is not None else False,
+        saturation_fraction=(
+            float(selected.saturation_fraction) if selected is not None else 0.0
+        ),
+        blended=bool(selected.blended) if selected is not None else False,
+        quality_score=0.35,
+        forced=True,
+    )
+
+
 def fit_star_position_from_array(
     luminance: np.ndarray,
     click_x: float,
@@ -638,8 +801,11 @@ def fit_star_position_from_array(
     selection_mode: str = "manual",
     fit_error_limit: float | None = None,
     saturated_fit_error_limit: float | None = None,
+    center_shift_tolerance_multiplier: float = 1.0,
+    size_boundary_tolerance_multiplier: float = 1.0,
+    force_reliable_source: bool = False,
 ) -> FittedStarPosition:
-    """先检测/去混叠，再用独立自适应窗口拟合单颗恒星。"""
+    """先严格拟合；手动可信模式失败时扩大窗口并最终退回加权矩心。"""
 
     source_array = np.asarray(luminance)
     resolved_saturation = _resolve_array_saturation_level(source_array, saturation_level)
@@ -655,22 +821,62 @@ def fit_star_position_from_array(
         raise StarFitError("星点搜索窗口内存在无效像素。", code="invalid_image")
 
     detection = _detect_sources(image, saturation_level=resolved_saturation)
-    selected = _select_candidate(
+    fit_radius_limit = max_fit_radius_px
+    if fit_radius_limit is None:
+        fit_radius_limit = 48
+    selected: StarSourceCandidate | None = None
+    try:
+        selected = _select_candidate(
+            detection,
+            click_x,
+            click_y,
+            radius_px,
+            reject_ambiguous=reject_ambiguous,
+            selection_mode="predicted" if selection_mode == "predicted" else "manual",
+        )
+        return _fit_selected_candidate(
+            image,
+            detection,
+            selected,
+            max_fit_radius_px=fit_radius_limit,
+            fit_error_limit=fit_error_limit,
+            saturated_fit_error_limit=saturated_fit_error_limit,
+            center_shift_tolerance_multiplier=center_shift_tolerance_multiplier,
+            size_boundary_tolerance_multiplier=size_boundary_tolerance_multiplier,
+        )
+    except StarFitError:
+        if not force_reliable_source:
+            raise
+
+    if selected is None:
+        selected = _select_forced_candidate(detection, click_x, click_y, radius_px)
+    if selected is not None:
+        try:
+            fitted = _fit_selected_candidate(
+                image,
+                detection,
+                selected,
+                max_fit_radius_px=fit_radius_limit,
+                fit_error_limit=fit_error_limit,
+                saturated_fit_error_limit=saturated_fit_error_limit,
+                center_shift_tolerance_multiplier=center_shift_tolerance_multiplier,
+                size_boundary_tolerance_multiplier=size_boundary_tolerance_multiplier,
+                trust_selected_source=True,
+            )
+            return replace(
+                fitted,
+                quality_score=min(float(fitted.quality_score), 0.55),
+                forced=True,
+            )
+        except StarFitError:
+            pass
+
+    return _forced_windowed_centroid(
+        image,
         detection,
         click_x,
         click_y,
         radius_px,
-        reject_ambiguous=reject_ambiguous,
-        selection_mode="predicted" if selection_mode == "predicted" else "manual",
-    )
-    fit_radius_limit = max_fit_radius_px
-    if fit_radius_limit is None:
-        fit_radius_limit = 48
-    return _fit_selected_candidate(
-        image,
-        detection,
+        fit_radius_limit,
         selected,
-        max_fit_radius_px=fit_radius_limit,
-        fit_error_limit=fit_error_limit,
-        saturated_fit_error_limit=saturated_fit_error_limit,
     )

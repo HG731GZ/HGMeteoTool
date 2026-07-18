@@ -89,7 +89,7 @@ def _fit_crop_geometry(
     max_fit_radius_px: int,
 ) -> tuple[int, int, int, int]:
     width, height = _image_dimensions(image)
-    padding = max(4, min(max_fit_radius_px, 48))
+    padding = max(4, max_fit_radius_px)
     crop_radius = int(search_radius_px + padding)
     center_x = int(round(click_x))
     center_y = int(round(click_y))
@@ -112,6 +112,9 @@ def fit_star_position(
     selection_mode: str = "manual",
     fit_error_limit: float | None = None,
     saturated_fit_error_limit: float | None = None,
+    center_shift_tolerance_multiplier: float = 1.0,
+    size_boundary_tolerance_multiplier: float = 1.0,
+    force_reliable_source: bool = False,
 ) -> FittedStarPosition:
     """在搜索圆中选择星源，再用独立的自适应窗口测量 PSF。"""
 
@@ -120,7 +123,7 @@ def fit_star_position(
         raise StarFitError("点击位置不在真实图像范围内。", code="outside_image")
     search_radius = max(4, int(radius_px))
     fit_radius_limit = (
-        max(8, min(64, int(max_fit_radius_px)))
+        max(8, min(200, int(max_fit_radius_px)))
         if max_fit_radius_px is not None
         else 48
     )
@@ -149,6 +152,9 @@ def fit_star_position(
         selection_mode=selection_mode,
         fit_error_limit=fit_error_limit,
         saturated_fit_error_limit=saturated_fit_error_limit,
+        center_shift_tolerance_multiplier=center_shift_tolerance_multiplier,
+        size_boundary_tolerance_multiplier=size_boundary_tolerance_multiplier,
+        force_reliable_source=force_reliable_source,
     )
     if not (math.isfinite(fitted.x) and math.isfinite(fitted.y)):
         raise StarFitError("PSF 拟合返回了无效坐标。", code="invalid_result")
@@ -168,6 +174,7 @@ def fit_star_position(
         saturation_fraction=fitted.saturation_fraction,
         blended=fitted.blended,
         quality_score=fitted.quality_score,
+        forced=fitted.forced,
     )
 
 

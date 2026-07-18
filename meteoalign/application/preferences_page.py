@@ -40,6 +40,8 @@ EDITABLE_PREFERENCE_KEYS = frozenset(
         "use_8bit_psf_precision",
         "star_pick_psf_fit_error_limit",
         "star_pick_saturated_psf_fit_error_limit",
+        "star_pick_psf_center_shift_tolerance_multiplier",
+        "star_pick_psf_size_boundary_tolerance_multiplier",
         "star_pair_psf_outer_diameter_multiplier",
         "auto_pair_search_rms_multiplier",
         "auto_pair_search_base_radius_px",
@@ -180,6 +182,12 @@ class PreferencesPage(QWidget, AppWidgetMixin):
             ui.doubleSpinBoxStarPickSaturatedPsfFitErrorLimit.setValue(
                 config.star_pick_saturated_psf_fit_error_limit
             )
+            ui.doubleSpinBoxStarPickPsfCenterShiftToleranceMultiplier.setValue(
+                config.star_pick_psf_center_shift_tolerance_multiplier
+            )
+            ui.doubleSpinBoxStarPickPsfSizeBoundaryToleranceMultiplier.setValue(
+                config.star_pick_psf_size_boundary_tolerance_multiplier
+            )
             ui.doubleSpinBoxStarPairPsfOuterDiameterMultiplier.setValue(
                 config.star_pair_psf_outer_diameter_multiplier
             )
@@ -248,6 +256,8 @@ class PreferencesPage(QWidget, AppWidgetMixin):
             ui.spinBoxStarPickPsfMaxRadius,
             ui.doubleSpinBoxStarPickPsfFitErrorLimit,
             ui.doubleSpinBoxStarPickSaturatedPsfFitErrorLimit,
+            ui.doubleSpinBoxStarPickPsfCenterShiftToleranceMultiplier,
+            ui.doubleSpinBoxStarPickPsfSizeBoundaryToleranceMultiplier,
             ui.doubleSpinBoxStarPairPsfOuterDiameterMultiplier,
             ui.doubleSpinBoxAutoPairSearchRmsMultiplier,
             ui.spinBoxAutoPairSearchBaseRadius,
@@ -427,6 +437,12 @@ class PreferencesPage(QWidget, AppWidgetMixin):
             "star_pick_psf_fit_error_limit": ui.doubleSpinBoxStarPickPsfFitErrorLimit.value(),
             "star_pick_saturated_psf_fit_error_limit": (
                 ui.doubleSpinBoxStarPickSaturatedPsfFitErrorLimit.value()
+            ),
+            "star_pick_psf_center_shift_tolerance_multiplier": (
+                ui.doubleSpinBoxStarPickPsfCenterShiftToleranceMultiplier.value()
+            ),
+            "star_pick_psf_size_boundary_tolerance_multiplier": (
+                ui.doubleSpinBoxStarPickPsfSizeBoundaryToleranceMultiplier.value()
             ),
             "star_pair_psf_outer_diameter_multiplier": (
                 ui.doubleSpinBoxStarPairPsfOuterDiameterMultiplier.value()

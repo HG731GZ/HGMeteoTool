@@ -32,6 +32,8 @@ class StarMapUiConfig:
     use_8bit_psf_precision: bool = True
     star_pick_psf_fit_error_limit: float = 0.42
     star_pick_saturated_psf_fit_error_limit: float = 0.52
+    star_pick_psf_center_shift_tolerance_multiplier: float = 1.0
+    star_pick_psf_size_boundary_tolerance_multiplier: float = 1.0
     star_pair_psf_outer_diameter_multiplier: float = 1.5
     auto_pair_search_rms_multiplier: float = 3.0
     auto_pair_search_base_radius_px: int = 6
@@ -273,6 +275,20 @@ def load_star_map_ui_config(path: Path | None = None) -> StarMapUiConfig:
             "star_pick_saturated_psf_fit_error_limit",
             0.52,
             0.05,
+            2.0,
+        ),
+        star_pick_psf_center_shift_tolerance_multiplier=_read_float(
+            raw_config,
+            "star_pick_psf_center_shift_tolerance_multiplier",
+            1.0,
+            0.5,
+            3.0,
+        ),
+        star_pick_psf_size_boundary_tolerance_multiplier=_read_float(
+            raw_config,
+            "star_pick_psf_size_boundary_tolerance_multiplier",
+            1.0,
+            0.5,
             2.0,
         ),
         star_pair_psf_outer_diameter_multiplier=_read_float(

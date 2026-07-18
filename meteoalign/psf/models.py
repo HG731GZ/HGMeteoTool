@@ -44,4 +44,4 @@ class FittedStarPosition:
     saturation_fraction: float = 0.0
     blended: bool = False
     quality_score: float = 0.0
-
+    forced: bool = False

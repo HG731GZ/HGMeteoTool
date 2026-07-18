@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 from PyQt5.QtCore import QPointF
 from PyQt5.QtGui import QColor, QImage
 
+import meteoalign.star_fitting as star_fitting_module
 from meteoalign.application import app_auto_match
 from meteoalign.application.app_auto_match import AutoMatchMixin
+from meteoalign.psf import fitting as psf_fitting
 from meteoalign.psf import measure_star_candidate_fast
 from meteoalign.psf.matching import assign_predicted_sources
-from meteoalign.psf.models import StarSourceCandidate
+from meteoalign.psf.models import FittedStarPosition, StarSourceCandidate
 from meteoalign.star_fitting import (
     StarFitError,
     detect_star_candidates_from_array,
@@ -95,6 +99,131 @@ def test_psf_fit_error_limit_can_be_tightened_for_manual_picking() -> None:
         )
 
     assert error.value.code == "poor_fit"
+
+
+def test_center_shift_tolerance_multiplier_can_accept_displaced_fit(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """提高中心偏移容限后，应能接受仍有稳定星形但中心被背景拉动的结果。"""
+
+    image = _gaussian_scene([(40.0, 40.0, 100.0, 2.0)])
+    detected = psf_fitting._detect_sources(image)
+    shifted_candidate = replace(detected.candidates[0], x=detected.candidates[0].x - 2.3)
+    shifted_detection = replace(detected, candidates=(shifted_candidate,))
+    monkeypatch.setattr(psf_fitting, "_detect_sources", lambda *_args, **_kwargs: shifted_detection)
+
+    with pytest.raises(StarFitError) as error:
+        fit_star_position_from_array(image, 37.7, 40.0, 10)
+    assert error.value.code == "center_unstable"
+
+    fitted = fit_star_position_from_array(
+        image,
+        37.7,
+        40.0,
+        10,
+        center_shift_tolerance_multiplier=1.2,
+    )
+    assert fitted.x == pytest.approx(40.0, abs=0.1)
+
+    forced = fit_star_position_from_array(
+        image,
+        37.7,
+        40.0,
+        10,
+        force_reliable_source=True,
+    )
+    assert forced.forced
+    assert forced.x == pytest.approx(40.0, abs=0.1)
+    assert forced.quality_score <= 0.55
+
+
+def test_size_boundary_tolerance_multiplier_can_accept_broad_psf() -> None:
+    """提高尺寸边界容限后，应能接受接近较小拟合窗口边界的圆星点。"""
+
+    image = _gaussian_scene([(40.0, 40.0, 100.0, 3.5)])
+
+    with pytest.raises(StarFitError) as error:
+        fit_star_position_from_array(image, 40.0, 40.0, 18, max_fit_radius_px=5)
+    assert error.value.code == "size_at_bound"
+
+    fitted = fit_star_position_from_array(
+        image,
+        40.0,
+        40.0,
+        18,
+        max_fit_radius_px=5,
+        size_boundary_tolerance_multiplier=1.2,
+    )
+    assert fitted.fwhm_x > 6.75
+
+    forced = fit_star_position_from_array(
+        image,
+        40.0,
+        40.0,
+        18,
+        max_fit_radius_px=5,
+        force_reliable_source=True,
+    )
+    assert forced.forced
+    assert forced.x == pytest.approx(40.0, abs=0.2)
+
+
+def test_forced_manual_measurement_falls_back_when_strict_quality_rejects() -> None:
+    """严格残差门槛拒绝可靠星点后，可信手动模式仍应返回低质量兜底矩心。"""
+
+    image = _gaussian_scene([(40.25, 39.75, 100.0, 2.0)])
+    fitted = fit_star_position_from_array(
+        image,
+        40.0,
+        40.0,
+        12,
+        fit_error_limit=0.000001,
+        force_reliable_source=True,
+    )
+
+    assert fitted.forced
+    assert fitted.x == pytest.approx(40.25, abs=0.25)
+    assert fitted.y == pytest.approx(39.75, abs=0.25)
+    assert fitted.quality_score == pytest.approx(0.35)
+
+
+def test_qt_adapter_honors_fit_radius_above_old_internal_limit(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Qt 适配层不得再把界面允许的大拟合半径静默截断为 64 px。"""
+
+    captured: dict[str, object] = {}
+
+    def fake_fit(luminance, click_x, click_y, radius_px, **kwargs):  # type: ignore[no-untyped-def]
+        captured["shape"] = luminance.shape
+        captured["max_fit_radius_px"] = kwargs["max_fit_radius_px"]
+        return FittedStarPosition(
+            x=click_x,
+            y=click_y,
+            amplitude=10.0,
+            background=1.0,
+            sigma_x=1.0,
+            sigma_y=1.0,
+        )
+
+    monkeypatch.setattr(star_fitting_module, "fit_star_position_from_array", fake_fit)
+    image = np.zeros((600, 600), dtype=np.float64)
+    fitted = fit_star_position(image, 300.0, 300.0, 12, max_fit_radius_px=120)
+
+    assert captured["max_fit_radius_px"] == 120
+    assert captured["shape"] == (265, 265)
+    assert fitted.x == 300.0
+
+
+@pytest.mark.parametrize(
+    ("code", "option_name"),
+    [
+        ("center_unstable", "中心偏移容限倍率"),
+        ("size_at_bound", "尺寸边界容限倍率"),
+    ],
+)
+def test_tunable_psf_failure_text_names_corresponding_option(code: str, option_name: str) -> None:
+    """两种可放宽的拒绝原因都应在状态栏提示对应参数。"""
+
+    text = app_auto_match._psf_fit_failure_text(StarFitError("拟合失败。", code=code))
+
+    assert option_name in text
 
 
 def test_uint16_array_preserves_native_saturation_level() -> None:

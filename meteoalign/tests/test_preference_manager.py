@@ -120,6 +120,8 @@ def test_psf_interaction_preferences_are_loaded_and_bounded(tmp_path: Path) -> N
           "use_8bit_psf_precision": false,
           "star_pick_psf_fit_error_limit": -1.0,
           "star_pick_saturated_psf_fit_error_limit": 99.0,
+          "star_pick_psf_center_shift_tolerance_multiplier": 99.0,
+          "star_pick_psf_size_boundary_tolerance_multiplier": -1.0,
           "auto_pair_search_rms_multiplier": -1.0,
           "auto_pair_search_base_radius_px": 23,
           "auto_pair_search_max_radius_px": 9999,
@@ -136,6 +138,8 @@ def test_psf_interaction_preferences_are_loaded_and_bounded(tmp_path: Path) -> N
     assert config.use_8bit_psf_precision is False
     assert config.star_pick_psf_fit_error_limit == 0.05
     assert config.star_pick_saturated_psf_fit_error_limit == 2.0
+    assert config.star_pick_psf_center_shift_tolerance_multiplier == 3.0
+    assert config.star_pick_psf_size_boundary_tolerance_multiplier == 0.5
     assert config.auto_pair_search_rms_multiplier == 0.0
     assert config.auto_pair_search_base_radius_px == 23
     assert config.auto_pair_search_max_radius_px == 2000

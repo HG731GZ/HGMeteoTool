@@ -18,7 +18,7 @@ from meteoalign.application.app_star_pair_table_groups import StarPairTableGroup
 from meteoalign.application.star_pair_assistant_dialog import StarPairAssistantDialog
 from meteoalign.config import StarMapUiConfig
 from meteoalign.simulator import ReferenceStar
-from meteoalign.star_fitting import FittedStarPosition
+from meteoalign.star_fitting import FittedStarPosition, StarFitError
 from meteoalign.star_pair_model import star_pair_records_from_payloads
 
 
@@ -212,6 +212,8 @@ def test_auto_pair_failure_keeps_blue_circle_and_uses_statusbar(monkeypatch) -> 
             auto_pair_search_max_radius_px=120,
             star_pick_psf_fit_error_limit=0.73,
             star_pick_saturated_psf_fit_error_limit=0.88,
+            star_pick_psf_center_shift_tolerance_multiplier=1.4,
+            star_pick_psf_size_boundary_tolerance_multiplier=1.3,
         ),
         ui=SimpleNamespace(
             statusbar=SimpleNamespace(showMessage=status_messages.append),
@@ -233,6 +235,9 @@ def test_auto_pair_failure_keeps_blue_circle_and_uses_statusbar(monkeypatch) -> 
     def fail_fit(*_args, **_kwargs):  # type: ignore[no-untyped-def]
         assert _kwargs["fit_error_limit"] == 0.73
         assert _kwargs["saturated_fit_error_limit"] == 0.88
+        assert _kwargs["center_shift_tolerance_multiplier"] == 1.4
+        assert _kwargs["size_boundary_tolerance_multiplier"] == 1.3
+        assert not _kwargs.get("force_reliable_source", False)
         raise ValueError("搜索范围内没有可靠星点")
 
     monkeypatch.setattr("meteoalign.application.app_auto_match.fit_star_position", fail_fit)
@@ -289,6 +294,7 @@ def test_manual_pair_failure_reports_status_without_dialog(monkeypatch) -> None:
     def fail_fit(*_args, **_kwargs):  # type: ignore[no-untyped-def]
         assert _kwargs["fit_error_limit"] == 0.73
         assert _kwargs["saturated_fit_error_limit"] == 0.88
+        assert _kwargs["force_reliable_source"] is True
         raise ValueError("搜索范围内没有可靠星点")
 
     monkeypatch.setattr("meteoalign.application.app_auto_match.fit_star_position", fail_fit)
@@ -298,6 +304,74 @@ def test_manual_pair_failure_reports_status_without_dialog(monkeypatch) -> None:
     host._handle_real_image_pick_click(object())
 
     assert status_messages[-1] == "手动匹配失败：PSF 拟合失败：搜索范围内没有可靠星点"
+
+
+def test_manual_pair_tunable_psf_failure_includes_parameter_hint(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """可调的 PSF 拒绝原因应在状态栏指出对应选项。"""
+
+    _qapp()
+    status_messages: list[str] = []
+    host = AutoMatchMixin()
+    host._active_star_pair_row = 0
+    host.current_image_preview = SimpleNamespace(image=QImage(100, 80, QImage.Format_RGB888))
+    host.ui = SimpleNamespace(
+        realImageView=SimpleNamespace(mapToScene=lambda _position: QPointF(30.0, 20.0)),
+        statusbar=SimpleNamespace(showMessage=status_messages.append),
+    )
+    host._sky_mask_allows_point = lambda _x, _y: True
+    host._star_pick_search_radius_px = lambda _position: 12
+    host._star_pick_psf_radius_px = lambda _position: 18
+    host.ui_config = StarMapUiConfig()
+
+    def fail_fit(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise StarFitError("PSF 中心偏离检测星源。", code="center_unstable")
+
+    monkeypatch.setattr("meteoalign.application.app_auto_match.fit_star_position", fail_fit)
+    host._handle_real_image_pick_click(object())
+
+    assert "中心偏移容限倍率" in status_messages[-1]
+
+
+def test_manual_forced_measurement_is_recorded_and_reported(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """手动兜底成功后应正常写入匹配，并在状态栏标明强制记录。"""
+
+    _qapp()
+    status_messages: list[str] = []
+    recorded: list[FittedStarPosition] = []
+    host = AutoMatchMixin()
+    host._active_star_pair_row = 0
+    host.current_image_preview = SimpleNamespace(image=QImage(100, 80, QImage.Format_RGB888))
+    host.ui = SimpleNamespace(
+        realImageView=SimpleNamespace(mapToScene=lambda _position: QPointF(30.0, 20.0)),
+        statusbar=SimpleNamespace(showMessage=status_messages.append),
+    )
+    host._sky_mask_allows_point = lambda _x, _y: True
+    host._star_pick_search_radius_px = lambda _position: 12
+    host._star_pick_psf_radius_px = lambda _position: 18
+    host.ui_config = StarMapUiConfig()
+    host._star_pair_name = lambda _row: "测试星"
+    host._set_star_pair_position = lambda _row, fitted: recorded.append(fitted)
+    host._add_or_update_star_pair_annotation = lambda _row, _fitted: None
+    host._leave_star_pick_mode = lambda: None
+    forced = FittedStarPosition(
+        x=30.2,
+        y=19.8,
+        amplitude=20.0,
+        background=2.0,
+        sigma_x=1.5,
+        sigma_y=1.3,
+        forced=True,
+    )
+
+    def forced_fit(*_args, **kwargs):  # type: ignore[no-untyped-def]
+        assert kwargs["force_reliable_source"] is True
+        return forced
+
+    monkeypatch.setattr("meteoalign.application.app_auto_match.fit_star_position", forced_fit)
+    host._handle_real_image_pick_click(object())
+
+    assert recorded == [forced]
+    assert status_messages[-1] == "已强制记录 测试星 (30.20,19.80)"
 
 
 def test_auto_match_quality_sort_keeps_missing_values_last_in_both_directions() -> None:

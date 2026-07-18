@@ -84,8 +84,12 @@ def test_page_groups_controls_and_saves_without_touching_excluded_values(tmp_pat
     assert applied and applied[-1].star_name_font_size_pt == 20
     page.ui.doubleSpinBoxStarPickPsfFitErrorLimit.setValue(0.75)
     page.ui.doubleSpinBoxStarPickSaturatedPsfFitErrorLimit.setValue(0.90)
+    page.ui.doubleSpinBoxStarPickPsfCenterShiftToleranceMultiplier.setValue(1.40)
+    page.ui.doubleSpinBoxStarPickPsfSizeBoundaryToleranceMultiplier.setValue(1.30)
     assert applied[-1].star_pick_psf_fit_error_limit == 0.75
     assert applied[-1].star_pick_saturated_psf_fit_error_limit == 0.90
+    assert applied[-1].star_pick_psf_center_shift_tolerance_multiplier == 1.40
+    assert applied[-1].star_pick_psf_size_boundary_tolerance_multiplier == 1.30
     page.ui.checkBoxUse8BitPsfPrecision.setChecked(False)
     assert applied[-1].use_8bit_psf_precision is False
     applied_count_before_default_change = len(applied)
@@ -98,6 +102,8 @@ def test_page_groups_controls_and_saves_without_touching_excluded_values(tmp_pat
     assert written["star_name_font_size_pt"] == 20
     assert written["star_pick_psf_fit_error_limit"] == 0.75
     assert written["star_pick_saturated_psf_fit_error_limit"] == 0.90
+    assert written["star_pick_psf_center_shift_tolerance_multiplier"] == 1.40
+    assert written["star_pick_psf_size_boundary_tolerance_multiplier"] == 1.30
     assert written["use_8bit_psf_precision"] is False
     assert written["default_latitude_deg"] == 35.5
     assert written["controls_font_size_pt"] == 19

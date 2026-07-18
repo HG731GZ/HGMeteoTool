@@ -51,7 +51,25 @@ from ..psf.matching import (
     merge_source_candidates,
 )
 from ..psf.models import StarSourceCandidate
-from ..star_fitting import FittedStarPosition, detect_star_candidates, fit_star_position
+from ..star_fitting import (
+    FittedStarPosition,
+    StarFitError,
+    detect_star_candidates,
+    fit_star_position,
+)
+
+
+_PSF_FIT_TUNING_HINTS = {
+    "center_unstable": "调参提示：可在“选项 → 星点匹配与 PSF 精修”逐步提高“中心偏移容限倍率”。",
+    "size_at_bound": "调参提示：可先提高“自适应拟合半径上限”，仍失败再提高“尺寸边界容限倍率”。",
+}
+
+
+def _psf_fit_failure_text(error: Exception) -> str:
+    """为可调的 PSF 拒绝原因追加简短状态栏提示。"""
+
+    hint = _PSF_FIT_TUNING_HINTS.get(error.code) if isinstance(error, StarFitError) else None
+    return f"{error} {hint}" if hint else str(error)
 
 
 @dataclass(frozen=True)
@@ -251,9 +269,18 @@ class AutoMatchMixin:
                 saturated_fit_error_limit=(
                     self.ui_config.star_pick_saturated_psf_fit_error_limit
                 ),
+                center_shift_tolerance_multiplier=(
+                    self.ui_config.star_pick_psf_center_shift_tolerance_multiplier
+                ),
+                size_boundary_tolerance_multiplier=(
+                    self.ui_config.star_pick_psf_size_boundary_tolerance_multiplier
+                ),
+                force_reliable_source=True,
             )
         except Exception as exc:  # noqa: BLE001 - 交互式点选需要把拟合失败原因直接反馈给用户。
-            self.ui.statusbar.showMessage(f"手动匹配失败：PSF 拟合失败：{exc}")
+            self.ui.statusbar.showMessage(
+                f"手动匹配失败：PSF 拟合失败：{_psf_fit_failure_text(exc)}"
+            )
             return
         if not self._sky_mask_allows_point(fitted_position.x, fitted_position.y):
             self.ui.statusbar.showMessage(
@@ -266,8 +293,10 @@ class AutoMatchMixin:
         self._set_star_pair_position(row, fitted_position)
         self._add_or_update_star_pair_annotation(row, fitted_position)
         self._leave_star_pick_mode()
+        status_prefix = "已强制记录" if fitted_position.forced else "已记录"
         self.ui.statusbar.showMessage(
-            "已记录 {name} ({x:.2f},{y:.2f})".format(
+            "{prefix} {name} ({x:.2f},{y:.2f})".format(
+                prefix=status_prefix,
                 name=star_name,
                 x=fitted_position.x,
                 y=fitted_position.y,
@@ -346,9 +375,15 @@ class AutoMatchMixin:
                 saturated_fit_error_limit=(
                     self.ui_config.star_pick_saturated_psf_fit_error_limit
                 ),
+                center_shift_tolerance_multiplier=(
+                    self.ui_config.star_pick_psf_center_shift_tolerance_multiplier
+                ),
+                size_boundary_tolerance_multiplier=(
+                    self.ui_config.star_pick_psf_size_boundary_tolerance_multiplier
+                ),
             )
         except Exception as exc:  # noqa: BLE001 - 自动匹配要把失败原因反馈给用户。
-            return self._report_auto_pair_failure(str(exc))
+            return self._report_auto_pair_failure(_psf_fit_failure_text(exc))
 
         distance_px = ((fitted_position.x - predicted_x) ** 2 + (fitted_position.y - predicted_y) ** 2) ** 0.5
         self._set_star_pair_position(row, fitted_position)
@@ -896,6 +931,12 @@ class AutoMatchMixin:
                         fit_error_limit=self.ui_config.star_pick_psf_fit_error_limit,
                         saturated_fit_error_limit=(
                             self.ui_config.star_pick_saturated_psf_fit_error_limit
+                        ),
+                        center_shift_tolerance_multiplier=(
+                            self.ui_config.star_pick_psf_center_shift_tolerance_multiplier
+                        ),
+                        size_boundary_tolerance_multiplier=(
+                            self.ui_config.star_pick_psf_size_boundary_tolerance_multiplier
                         ),
                     )
                 except Exception:
