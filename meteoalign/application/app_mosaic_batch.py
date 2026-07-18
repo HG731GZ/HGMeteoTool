@@ -24,6 +24,7 @@ from .app_graphics_items import GraphicsImageItem
 from .app_mosaic import MOSAIC_PREVIEW_MAG_LIMIT
 from ..alignment.constants import SKY_KNOWN_PROJECTION_DISPLAY_NAMES
 from ..catalog import project_root
+from ..image_preview import DEFAULT_PREVIEW_LONG_SIDE_PX, load_image_preview
 from ..mosaic.render_types import MosaicRenderRequest
 from ..mosaic_export import (
     MOSAIC_EXPORT_TIFF_FILTER,
@@ -249,6 +250,8 @@ class MosaicBatchMixin:
         self._mosaic_batch_progress: QProgressDialog | None = None
         self._mosaic_batch_cancel_requested = False
         self._mosaic_batch_terminal_handled = False
+        self._mosaic_batch_base_preview_path: Path | None = None
+        self._mosaic_batch_base_preview_image: QImage | None = None
         self._init_mosaic_batch_preview()
         self.ui.comboBoxMosaicBatchMode.setCurrentIndex(MOSAIC_BATCH_MODE_SKY_INDEX)
         if hasattr(self.ui, "doubleSpinBoxMosaicBatchMapTileSize"):
@@ -543,15 +546,52 @@ class MosaicBatchMixin:
             Qt.KeepAspectRatio,
         )
 
+    def _load_mosaic_batch_base_preview(self) -> QImage:
+        """读取并缓存底图的 8-bit 屏幕预览。"""
+
+        base_model = self._mosaic_batch_base_model
+        if base_model is None:
+            raise ValueError("请先导入底图 JSON。")
+        image_path = base_model.source_image_path
+        if image_path is None:
+            raise ValueError("底图模型 JSON 未记录底图路径。")
+        resolved_path = image_path.expanduser().resolve()
+        if not resolved_path.exists():
+            raise FileNotFoundError(f"底图不存在：{resolved_path}")
+        cached_image = self._mosaic_batch_base_preview_image
+        if self._mosaic_batch_base_preview_path == resolved_path and cached_image is not None and not cached_image.isNull():
+            return cached_image
+
+        preview = load_image_preview(
+            resolved_path,
+            max_long_side_px=DEFAULT_PREVIEW_LONG_SIDE_PX,
+        )
+        image = preview.image.convertToFormat(QImage.Format_RGB888)
+        if image.isNull():
+            raise ValueError("无法生成底图的 8-bit 预览。")
+        self._mosaic_batch_base_preview_path = resolved_path
+        self._mosaic_batch_base_preview_image = image
+        return image
+
     def render_mosaic_batch_preview_now(self) -> None:
-        """复用全景构图渲染链路，只绘制模拟星空与输出裁剪框。"""
+        """按模式显示模拟星空与裁剪框，或底图的 8-bit 预览。"""
 
         if not hasattr(self.ui, "mosaicBatchPreviewView"):
             return
-        framing = self._mosaic_batch_framing if self._mosaic_batch_is_sky_mode() else None
+        if not self._mosaic_batch_is_sky_mode():
+            if self._mosaic_batch_base_model is None:
+                self._set_mosaic_batch_preview_placeholder("请先导入底图 JSON")
+                return
+            try:
+                self._show_mosaic_batch_preview_image(self._load_mosaic_batch_base_preview())
+            except Exception as exc:  # noqa: BLE001 - 底图预览错误不能阻断模型导入和批处理。
+                self._set_mosaic_batch_preview_placeholder("底图 8-bit 预览加载失败")
+                self.ui.statusbar.showMessage(f"底图 8-bit 预览加载失败: {exc}")
+            return
+
+        framing = self._mosaic_batch_framing
         if framing is None:
-            message = "请先导入取景 JSON" if self._mosaic_batch_is_sky_mode() else "底图模式仅显示目标画布信息"
-            self._set_mosaic_batch_preview_placeholder(message)
+            self._set_mosaic_batch_preview_placeholder("请先导入取景 JSON")
             return
         try:
             width, height = self._mosaic_batch_preview_render_size(framing.camera)
@@ -636,6 +676,8 @@ class MosaicBatchMixin:
             return
         self._mosaic_batch_base_model = base_model
         self._mosaic_batch_framing = None
+        self._mosaic_batch_base_preview_path = None
+        self._mosaic_batch_base_preview_image = None
         self._update_mosaic_batch_controls()
         self.ui.statusbar.showMessage(f"已导入批处理底图 JSON: {base_model.json_path.name}")
 
@@ -756,6 +798,8 @@ class MosaicBatchMixin:
     def clear_mosaic_batch_imports(self) -> None:
         self._mosaic_batch_framing = None
         self._mosaic_batch_base_model = None
+        self._mosaic_batch_base_preview_path = None
+        self._mosaic_batch_base_preview_image = None
         self._mosaic_batch_items = []
         self.ui.tableWidgetMosaicBatchImages.setRowCount(0)
         self._update_mosaic_batch_controls()

@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+from PyQt5.QtGui import QImage
+
 import meteoalign.application.app_mosaic_batch as app_mosaic_batch
 from meteoalign.application.app_mosaic_batch import (
     MosaicBatchExportTask,
@@ -262,6 +264,33 @@ def test_mosaic_batch_preview_info_contains_projection_and_pixel_counts() -> Non
     assert "投影：等距鱼眼(ARC)" in window.ui.labelMosaicBatchPreviewInfo.text
     assert "8000 × 4000 px（32.00 MP）" in window.ui.labelMosaicBatchPreviewInfo.text
     assert "6000 × 3000 px（18.00 MP）" in window.ui.labelMosaicBatchPreviewInfo.text
+
+
+def test_mosaic_batch_base_preview_is_8bit_and_cached(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """底图模式应生成 8-bit 预览，并避免窗口刷新时重复解码底图。"""
+
+    image_path = tmp_path / "panorama.tif"
+    image_path.write_bytes(b"preview fixture")
+    source_image = QImage(120, 60, QImage.Format_ARGB32)
+    source_image.fill(0xFF304050)
+    load_calls: list[tuple[Path, int | None]] = []
+
+    def fake_load(path, max_long_side_px=None):  # type: ignore[no-untyped-def]
+        load_calls.append((Path(path), max_long_side_px))
+        return SimpleNamespace(image=source_image)
+
+    monkeypatch.setattr(app_mosaic_batch, "load_image_preview", fake_load)
+    window = _batch_window(1)
+    window._mosaic_batch_base_model = SimpleNamespace(source_image_path=image_path)
+    window._mosaic_batch_base_preview_path = None
+    window._mosaic_batch_base_preview_image = None
+
+    first = window._load_mosaic_batch_base_preview()
+    second = window._load_mosaic_batch_base_preview()
+
+    assert first.format() == QImage.Format_RGB888
+    assert second.cacheKey() == first.cacheKey()
+    assert len(load_calls) == 1
 
 
 def test_mosaic_batch_progress_close_does_not_restore_canceling_status() -> None:
