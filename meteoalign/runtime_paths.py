@@ -81,6 +81,21 @@ def runtime_icon_path() -> Path:
     return frozen_app_sibling_dir() / "icon256.png"
 
 
+def runtime_stylesheet_path() -> Path:
+    """定位 Win/macOS 共用的应用 QSS，兼容源码运行与冻结程序。"""
+
+    relative_path = Path("meteoalign") / "ui" / "application.qss"
+    if not is_frozen_app():
+        return source_project_root() / relative_path
+
+    for root in frozen_resource_roots():
+        stylesheet_path = root / relative_path
+        if stylesheet_path.exists():
+            return stylesheet_path
+
+    return frozen_app_sibling_dir() / relative_path
+
+
 def runtime_qrcode_dir() -> Path:
     """定位二维码目录，兼容源码运行和打包后的应用资源。"""
 

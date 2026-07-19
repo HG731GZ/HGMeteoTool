@@ -9,7 +9,7 @@ from types import SimpleNamespace
 # 让无显示服务器的 CI 也能创建 Qt 窗口；用户桌面运行不受此测试环境变量影响。
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtCore import QEvent, Qt
+from PyQt5.QtCore import QEvent, QFile, Qt
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -22,6 +22,7 @@ from PyQt5.QtWidgets import (
 )
 
 from meteoalign.application.app_alignment import AlignmentMixin
+from meteoalign.application.app_style import apply_application_stylesheet
 from meteoalign.application.app_mosaic import MosaicProjectionMixin, MosaicSourceItem
 from meteoalign.application.app_rendering import RenderingMixin
 from meteoalign.application.app_sequence_table_preview import SequenceTablePreviewMixin
@@ -128,6 +129,28 @@ def test_non_macos_layout_keeps_designer_dimensions() -> None:
     assert ui.horizontalLayoutReferenceImage.contentsMargins().left() == 9
 
     window.close()
+
+
+def test_shared_application_stylesheet_loads_compact_widget_rules() -> None:
+    """Win/macOS 共用 QSS 应成功加载，并包含核心紧凑控件规则。"""
+
+    app = QApplication.instance() or QApplication([])
+    previous_stylesheet = app.styleSheet()
+    try:
+        path = apply_application_stylesheet(app)
+        stylesheet = app.styleSheet()
+
+        assert path.name == "application.qss"
+        assert "QPushButton" in stylesheet
+        assert "QGroupBox::title" in stylesheet
+        assert "QTabBar::tab" in stylesheet
+        assert "min-height: 18px" in stylesheet
+        assert "QSpinBox::up-arrow" in stylesheet
+        assert "QDoubleSpinBox::down-arrow" in stylesheet
+        assert QFile.exists(":/compact-style/spin_up.svg")
+        assert QFile.exists(":/compact-style/spin_down.svg")
+    finally:
+        app.setStyleSheet(previous_stylesheet)
 
 
 def test_status_image_context_is_visible_only_on_star_matching_tab() -> None:

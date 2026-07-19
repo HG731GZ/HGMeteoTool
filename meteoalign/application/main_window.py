@@ -83,6 +83,7 @@ from .about_dialog import AboutDialog
 from .image_group_assistant_dialog import ImageGroupAssistantDialog
 from .image_preview_dialog import ImagePreviewDialog
 from .star_pair_assistant_dialog import StarPairAssistantDialog
+from .app_style import apply_application_stylesheet
 
 
 _MACOS_COMPACT_WINDOW_WIDTH = 1200
@@ -663,6 +664,7 @@ def main(argv: list[str] | None = None) -> int:
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(argv or sys.argv)
+    apply_application_stylesheet(app)
 
     app.setWindowIcon(QIcon(str(runtime_icon_path())))
 
