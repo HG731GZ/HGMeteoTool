@@ -290,13 +290,16 @@ class StarPairAnnotationsMixin:
         outer_ellipse_item.setPen(outer_pen)
         outer_ellipse_item.setBrush(QBrush(Qt.NoBrush))
         outer_ellipse_item.setZValue(-1.0)
-        psf_state = "饱和兼容" if fitted_position.saturated else "未饱和"
+        if fitted_position.forced:
+            psf_state = "强制矩心（仅中心可信）"
+        else:
+            psf_state = "饱和兼容" if fitted_position.saturated else "未饱和"
         tooltip = "FWHM {fwhm_x:.2f} × {fwhm_y:.2f} px；质量 {quality:.2f}；{state}".format(
-                fwhm_x=fitted_position.fwhm_x,
-                fwhm_y=fitted_position.fwhm_y,
-                quality=fitted_position.quality_score,
-                state=psf_state,
-            )
+            fwhm_x=fitted_position.fwhm_x,
+            fwhm_y=fitted_position.fwhm_y,
+            quality=fitted_position.quality_score,
+            state=psf_state,
+        )
         ellipse_item.setToolTip(tooltip)
         outer_ellipse_item.setToolTip(tooltip)
 

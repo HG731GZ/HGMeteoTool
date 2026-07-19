@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 import numpy as np
 import sep
@@ -389,6 +389,14 @@ def _moffat_fwhm(alpha: float, beta: float) -> float:
     return 2.0 * alpha * math.sqrt(max(2.0 ** (1.0 / max(beta, 1e-6)) - 1.0, 1e-9))
 
 
+def _bic_score(residual: np.ndarray, parameter_count: int) -> float:
+    """用 BIC 比较不同自由度的 PSF，避免弱星被噪声拟合成椭圆。"""
+
+    sample_count = max(int(residual.size), 1)
+    mean_square = max(float(np.mean(np.square(residual))), np.finfo(np.float64).tiny)
+    return sample_count * math.log(mean_square) + parameter_count * math.log(sample_count)
+
+
 def _normalized_tolerance_multiplier(value: float) -> float:
     """把直接数值接口收到的非法容限倍率恢复为不改变旧行为的 1。"""
 
@@ -449,7 +457,6 @@ def _fit_selected_candidate(
     saturated_fit_error_limit: float | None = None,
     center_shift_tolerance_multiplier: float = 1.0,
     size_boundary_tolerance_multiplier: float = 1.0,
-    trust_selected_source: bool = False,
 ) -> FittedStarPosition:
     height, width = image.shape
     adaptive_radius = int(
@@ -462,11 +469,7 @@ def _fit_selected_candidate(
         )
     )
     fit_radius_limit = max(int(max_fit_radius_px), 5)
-    fit_radius = (
-        fit_radius_limit
-        if trust_selected_source
-        else min(max(adaptive_radius, 5), fit_radius_limit)
-    )
+    fit_radius = min(max(adaptive_radius, 5), fit_radius_limit)
     center_x = int(round(selected.x))
     center_y = int(round(selected.y))
     x0 = max(0, center_x - fit_radius)
@@ -586,6 +589,84 @@ def _fit_selected_candidate(
         raise StarFitError("PSF 拟合未收敛。", code="not_converged")
 
     amplitude, fit_x, fit_y, alpha_x, alpha_y, beta, theta = (float(value) for value in result.x)
+    fit_residual = residual(result.x)
+
+    circular_initial = np.asarray(
+        [amplitude, fit_x, fit_y, math.sqrt(max(alpha_x * alpha_y, 0.45**2)), beta],
+        dtype=np.float64,
+    )
+    circular_lower = np.asarray(
+        [lower[0], lower[1], lower[2], lower[3], lower[5]],
+        dtype=np.float64,
+    )
+    circular_upper = np.asarray(
+        [upper[0], upper[1], upper[2], max(upper[3], upper[4]), upper[5]],
+        dtype=np.float64,
+    )
+    circular_initial = np.minimum(
+        np.maximum(circular_initial, circular_lower + 1e-6),
+        circular_upper - 1e-6,
+    )
+
+    def circular_residual(params: np.ndarray) -> np.ndarray:
+        circular_amplitude, circular_x, circular_y, alpha, circular_beta = params
+        radius_sq = (valid_x - circular_x) ** 2 + (valid_y - circular_y) ** 2
+        model = circular_amplitude * (1.0 + radius_sq / (alpha * alpha)) ** (-circular_beta)
+        return model - valid_signal
+
+    circular_result = None
+    raw_axis_ratio = max(alpha_x, alpha_y) / max(min(alpha_x, alpha_y), 1e-6)
+    if raw_axis_ratio >= 1.10:
+        try:
+            circular_result = least_squares(
+                circular_residual,
+                circular_initial,
+                bounds=(circular_lower, circular_upper),
+                loss="soft_l1",
+                f_scale=residual_scale,
+                max_nfev=240,
+            )
+        except (TypeError, ValueError):
+            pass
+    if (
+        circular_result is not None
+        and circular_result.success
+        and np.all(np.isfinite(circular_result.x))
+    ):
+        candidate_residual = circular_residual(circular_result.x)
+        candidate_fwhm = _moffat_fwhm(
+            float(circular_result.x[3]),
+            float(circular_result.x[4]),
+        )
+        candidate_center_shift = float(
+            np.hypot(
+                float(circular_result.x[1]) - local_selected.x,
+                float(circular_result.x[2]) - local_selected.y,
+            )
+        )
+        candidate_size_limit = (
+            fit_radius
+            * 1.35
+            * _normalized_tolerance_multiplier(size_boundary_tolerance_multiplier)
+        )
+        candidate_center_limit = max(
+            2.2,
+            selected.major_axis * 0.65,
+        ) * _normalized_tolerance_multiplier(center_shift_tolerance_multiplier)
+        # 椭圆模型多两个形状自由度；只有证据明显时才保留其长短轴与方向。
+        if (
+            candidate_fwhm < candidate_size_limit
+            and candidate_center_shift <= candidate_center_limit
+            and _bic_score(fit_residual, 7) + 6.0
+            >= _bic_score(candidate_residual, 5)
+        ):
+            amplitude, fit_x, fit_y, alpha_x, beta = (
+                float(value) for value in circular_result.x
+            )
+            alpha_y = alpha_x
+            theta = 0.0
+            fit_residual = candidate_residual
+
     fwhm_x = _moffat_fwhm(alpha_x, beta)
     fwhm_y = _moffat_fwhm(alpha_y, beta)
     if fwhm_y > fwhm_x:
@@ -594,7 +675,6 @@ def _fit_selected_candidate(
     theta = (theta + math.pi) % math.pi
     sigma_x = fwhm_x / _GAUSSIAN_FWHM_SCALE
     sigma_y = fwhm_y / _GAUSSIAN_FWHM_SCALE
-    fit_residual = residual(result.x)
     signal_scale = max(float(np.percentile(np.abs(valid_signal), 90.0)), detection.background.noise, 1.0)
     fit_error = float(np.sqrt(np.mean(np.square(fit_residual))) / signal_scale)
     axis_ratio = fwhm_x / max(fwhm_y, 1e-6)
@@ -614,7 +694,7 @@ def _fit_selected_candidate(
     center_shift_limit = max(2.2, selected.major_axis * 0.65) * _normalized_tolerance_multiplier(
         center_shift_tolerance_multiplier
     )
-    if center_shift > center_shift_limit and not trust_selected_source:
+    if center_shift > center_shift_limit:
         raise StarFitError("PSF 中心偏离检测星源，可能受到邻星或地景影响。", code="center_unstable")
     if axis_ratio > (5.0 if selected.saturated else 3.5):
         raise StarFitError("候选目标过于狭长，不符合可用星点形态。", code="elongated")
@@ -697,7 +777,11 @@ def _forced_windowed_centroid(
         source_scale = max(float(selected.major_axis), float(selected.minor_axis), 1.0)
     else:
         search_mask = (xx - click_x) ** 2 + (yy - click_y) ** 2 <= float(search_radius_px) ** 2
-        smoothed = gaussian_filter(np.maximum(signal, 0.0), sigma=1.0, mode="nearest")
+        smoothed = gaussian_filter(
+            np.maximum(signal - detection.background.noise, 0.0),
+            sigma=1.0,
+            mode="nearest",
+        )
         if not np.any(search_mask):
             raise StarFitError("选星圈内没有可用于强制测量的像素。", code="insufficient_pixels")
         peak_values = np.where(search_mask, smoothed, -np.inf)
@@ -712,7 +796,8 @@ def _forced_windowed_centroid(
         max(8, int(math.ceil(source_scale * 5.0))),
     )
     window_sigma = max(window_radius / 3.0, source_scale * 1.5, 2.0)
-    positive_signal = np.maximum(signal, 0.0)
+    # 去掉一倍局部噪声后再算矩心，避免大窗口中半数为正的背景起伏累积成假星翼。
+    positive_signal = np.maximum(signal - detection.background.noise, 0.0)
     valid = np.isfinite(signal)
     for _iteration in range(8):
         distance_sq = (xx - center_x) ** 2 + (yy - center_y) ** 2
@@ -755,14 +840,10 @@ def _forced_windowed_centroid(
         ],
         dtype=np.float64,
     )
-    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+    eigenvalues = np.linalg.eigvalsh(covariance)
     eigenvalues = np.maximum(eigenvalues, 0.35**2)
-    major_index = int(np.argmax(eigenvalues))
-    minor_index = 1 - major_index
-    sigma_x = float(math.sqrt(float(eigenvalues[major_index])))
-    sigma_y = float(math.sqrt(float(eigenvalues[minor_index])))
-    major_vector = eigenvectors[:, major_index]
-    theta = float(math.atan2(float(major_vector[1]), float(major_vector[0])) % math.pi)
+    # 强制路径只保证中心可用，二阶矩很容易被地平线纹理拉长，不把它伪装成可信形状。
+    circular_sigma = float(math.sqrt(float(np.min(eigenvalues))))
     amplitude = max(float(np.max(positive_signal[local])) if np.any(local) else 0.0, 0.0)
     snr = amplitude / max(detection.background.noise, 1e-6)
     background_x = int(np.clip(round(center_x), 0, image.shape[1] - 1))
@@ -772,11 +853,11 @@ def _forced_windowed_centroid(
         y=center_y,
         amplitude=amplitude,
         background=float(detection.background.plane[background_y, background_x]),
-        sigma_x=sigma_x,
-        sigma_y=sigma_y,
-        theta_rad=theta,
-        fwhm_x=sigma_x * _GAUSSIAN_FWHM_SCALE,
-        fwhm_y=sigma_y * _GAUSSIAN_FWHM_SCALE,
+        sigma_x=circular_sigma,
+        sigma_y=circular_sigma,
+        theta_rad=0.0,
+        fwhm_x=circular_sigma * _GAUSSIAN_FWHM_SCALE,
+        fwhm_y=circular_sigma * _GAUSSIAN_FWHM_SCALE,
         snr=max(snr, 0.0),
         fit_error=1.0,
         saturated=bool(selected.saturated) if selected is not None else False,
@@ -805,7 +886,7 @@ def fit_star_position_from_array(
     size_boundary_tolerance_multiplier: float = 1.0,
     force_reliable_source: bool = False,
 ) -> FittedStarPosition:
-    """先严格拟合；手动可信模式失败时扩大窗口并最终退回加权矩心。"""
+    """先严格拟合；手动可信模式失败时退回保守的加权矩心。"""
 
     source_array = np.asarray(luminance)
     resolved_saturation = _resolve_array_saturation_level(source_array, saturation_level)
@@ -850,26 +931,6 @@ def fit_star_position_from_array(
 
     if selected is None:
         selected = _select_forced_candidate(detection, click_x, click_y, radius_px)
-    if selected is not None:
-        try:
-            fitted = _fit_selected_candidate(
-                image,
-                detection,
-                selected,
-                max_fit_radius_px=fit_radius_limit,
-                fit_error_limit=fit_error_limit,
-                saturated_fit_error_limit=saturated_fit_error_limit,
-                center_shift_tolerance_multiplier=center_shift_tolerance_multiplier,
-                size_boundary_tolerance_multiplier=size_boundary_tolerance_multiplier,
-                trust_selected_source=True,
-            )
-            return replace(
-                fitted,
-                quality_score=min(float(fitted.quality_score), 0.55),
-                forced=True,
-            )
-        except StarFitError:
-            pass
 
     return _forced_windowed_centroid(
         image,

@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 from PyQt5.QtCore import QPointF
 from PyQt5.QtGui import QColor, QImage
+from scipy.ndimage import gaussian_filter
 
 import meteoalign.star_fitting as star_fitting_module
 from meteoalign.application import app_auto_match
@@ -183,6 +184,47 @@ def test_forced_manual_measurement_falls_back_when_strict_quality_rejects() -> N
     assert fitted.x == pytest.approx(40.25, abs=0.25)
     assert fitted.y == pytest.approx(39.75, abs=0.25)
     assert fitted.quality_score == pytest.approx(0.35)
+    assert fitted.fwhm_x == pytest.approx(fitted.fwhm_y)
+    assert fitted.theta_rad == 0.0
+
+
+def test_weak_round_star_on_textured_background_prefers_circular_psf() -> None:
+    """地平线附近的相关背景噪声不能靠额外形状自由度把圆星拟合成椭圆。"""
+
+    yy, xx = np.indices((81, 81), dtype=np.float64)
+    random = np.random.default_rng(37)
+    background = 100.0 + random.normal(0.0, 3.0, (81, 81))
+    background += gaussian_filter(random.normal(0.0, 1.0, (81, 81)), 1.5) * 8.0
+    image = background + 30.0 * np.exp(
+        -0.5 * ((xx - 40.2) ** 2 + (yy - 39.8) ** 2) / 1.2**2
+    )
+
+    fitted = fit_star_position_from_array(
+        image,
+        40.0,
+        40.0,
+        12,
+        max_fit_radius_px=32,
+        force_reliable_source=True,
+    )
+
+    assert not fitted.forced
+    assert fitted.x == pytest.approx(40.2, abs=0.35)
+    assert fitted.y == pytest.approx(39.8, abs=0.35)
+    assert fitted.fwhm_x == pytest.approx(fitted.fwhm_y)
+
+
+def test_well_resolved_elongated_star_keeps_elliptical_psf() -> None:
+    """圆形模型选择不能抹掉有充分像素证据的真实长轴。"""
+
+    yy, xx = np.indices((81, 81), dtype=np.float64)
+    image = 10.0 + 80.0 * np.exp(
+        -0.5 * (((xx - 40.2) / 3.0) ** 2 + ((yy - 39.8) / 1.5) ** 2)
+    )
+
+    fitted = fit_star_position_from_array(image, 40.0, 40.0, 15)
+
+    assert fitted.fwhm_x / fitted.fwhm_y == pytest.approx(2.0, abs=0.2)
 
 
 def test_qt_adapter_honors_fit_radius_above_old_internal_limit(monkeypatch) -> None:  # type: ignore[no-untyped-def]
