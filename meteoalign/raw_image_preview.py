@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 from PyQt5.QtCore import QSize, Qt
 from PyQt5.QtGui import QImage
 
@@ -40,11 +41,42 @@ def _raw_array_to_qimage(rgb) -> QImage:  # type: ignore[no-untyped-def]
     return image.copy()
 
 
+def _crop_to_camera_recommended_area(rgb: np.ndarray, sizes: object) -> np.ndarray:
+    """按 RAW 元数据中的标准裁切区对齐 Adobe/Photoshop 输出坐标。"""
+
+    source_height, source_width = rgb.shape[:2]
+    try:
+        visible_width = int(getattr(sizes, "width"))
+        visible_height = int(getattr(sizes, "height"))
+        crop_left = int(getattr(sizes, "crop_left_margin"))
+        crop_top = int(getattr(sizes, "crop_top_margin"))
+        crop_width = int(getattr(sizes, "crop_width"))
+        crop_height = int(getattr(sizes, "crop_height"))
+    except (AttributeError, TypeError, ValueError):
+        return np.ascontiguousarray(rgb)
+
+    # raw_inset_crops 属于旋转前的可见区；尺寸关系不明确时保留 LibRaw 原输出，
+    # 避免在特殊传感器或未来格式上猜测裁切坐标。
+    if (source_width, source_height) != (visible_width, visible_height):
+        return np.ascontiguousarray(rgb)
+    if crop_width <= 0 or crop_height <= 0:
+        return np.ascontiguousarray(rgb)
+    if crop_left < 0 or crop_top < 0:
+        return np.ascontiguousarray(rgb)
+    if crop_left + crop_width > source_width or crop_top + crop_height > source_height:
+        return np.ascontiguousarray(rgb)
+    if (crop_left, crop_top, crop_width, crop_height) == (0, 0, source_width, source_height):
+        return np.ascontiguousarray(rgb)
+    return np.ascontiguousarray(
+        rgb[crop_top : crop_top + crop_height, crop_left : crop_left + crop_width]
+    )
+
+
 def load_raw_image_preview(
     path: str | Path,
     max_long_side_px: int | None = DEFAULT_PREVIEW_LONG_SIDE_PX,
 ) -> ImagePreview:
-    """通过 rawpy/LibRaw 解码 RAW，并生成与原始坐标等比例的 8 位预览。"""
+    """通过 rawpy/LibRaw 解码 RAW，并按相机推荐裁切生成 8 位预览。"""
 
     image_path = Path(path).expanduser()
     if not is_raw_image_path(image_path):
@@ -60,7 +92,10 @@ def load_raw_image_preview(
 
     try:
         with rawpy.imread(str(image_path)) as raw:
-            rgb = raw.postprocess(use_camera_wb=True, output_bps=8)
+            sizes = raw.sizes
+            # 所有 RAW 都保留传感器原始方向，不应用相机的横竖拍旋转标记。
+            rgb = raw.postprocess(use_camera_wb=True, output_bps=8, user_flip=0)
+            rgb = _crop_to_camera_recommended_area(rgb, sizes)
     except Exception as exc:  # noqa: BLE001 - LibRaw 的多种解码错误统一转为界面可读信息。
         raise ValueError(f"LibRaw 无法读取 RAW 图像：{exc}") from exc
 
