@@ -13,6 +13,8 @@ build/
 dist/
 *.egg-info/
 *.spec
+.pyinstaller-cache/
+.matplotlib-cache/
 
 # Local environments
 .venv/
