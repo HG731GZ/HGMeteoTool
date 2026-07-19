@@ -84,6 +84,49 @@ from .image_group_assistant_dialog import ImageGroupAssistantDialog
 from .image_preview_dialog import ImagePreviewDialog
 from .star_pair_assistant_dialog import StarPairAssistantDialog
 
+
+_MACOS_COMPACT_WINDOW_WIDTH = 1200
+_MACOS_SIDE_PANEL_MIN_WIDTH = 320
+_MACOS_SIDE_PANEL_MAX_WIDTH = 360
+
+
+def apply_platform_layout(
+    ui: Ui_MainWindow,
+    window: QMainWindow,
+    platform_name: str | None = None,
+) -> None:
+    """在 macOS 上压缩主界面留白，同时保持其他平台的 Designer 布局。"""
+
+    if (platform_name or sys.platform) != "darwin":
+        return
+
+    side_panels = (
+        ui.scrollAreaMeteorSelectionControls,
+        ui.scrollAreaControls,
+        ui.scrollAreaImageSequenceControls,
+        ui.scrollAreaReferencePickControls,
+        ui.scrollAreaMosaicControls,
+        ui.scrollAreaMosaicBatchControls,
+    )
+    for panel in side_panels:
+        panel.setMinimumWidth(_MACOS_SIDE_PANEL_MIN_WIDTH)
+        panel.setMaximumWidth(_MACOS_SIDE_PANEL_MAX_WIDTH)
+
+    page_layouts = (
+        ui.horizontalLayoutMeteorSelection,
+        ui.horizontalLayoutSimulator,
+        ui.horizontalLayoutImageSequence,
+        ui.horizontalLayoutReferenceImage,
+        ui.horizontalLayoutMosaic,
+        ui.horizontalLayoutMosaicBatch,
+    )
+    for layout in page_layouts:
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(6)
+
+    window.resize(min(window.width(), _MACOS_COMPACT_WINDOW_WIDTH), window.height())
+
+
 # ---------------------------------------------------------------------------
 # 重新导出辅助函数（供 app_workers 等模块使用）
 # ---------------------------------------------------------------------------
@@ -223,6 +266,7 @@ class MainWindow(
             self.ui_config.star_pair_assistant_always_on_top
         )
         self._apply_ui_font_config(self.ui_config)
+        apply_platform_layout(self.ui, self)
 
         self.catalog = load_default_catalog(mag_limit=None)
         self.constellation_catalog = load_constellation_catalog()

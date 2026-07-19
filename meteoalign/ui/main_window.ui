@@ -57,6 +57,12 @@
              <height>760</height>
             </rect>
            </property>
+           <property name="sizePolicy">
+            <sizepolicy hsizetype="Ignored" vsizetype="Preferred">
+             <horstretch>0</horstretch>
+             <verstretch>0</verstretch>
+            </sizepolicy>
+           </property>
            <layout class="QVBoxLayout" name="verticalLayoutMeteorSelectionSidePanel">
             <item>
              <widget class="QGroupBox" name="groupBoxMeteorSelectionControls">
@@ -419,6 +425,12 @@
          <width>368</width>
          <height>900</height>
         </rect>
+       </property>
+       <property name="sizePolicy">
+        <sizepolicy hsizetype="Ignored" vsizetype="Preferred">
+         <horstretch>0</horstretch>
+         <verstretch>0</verstretch>
+        </sizepolicy>
        </property>
        <layout class="QVBoxLayout" name="verticalLayoutControls">
         <item>
@@ -1013,6 +1025,12 @@
              <width>360</width>
              <height>760</height>
             </rect>
+           </property>
+           <property name="sizePolicy">
+            <sizepolicy hsizetype="Ignored" vsizetype="Preferred">
+             <horstretch>0</horstretch>
+             <verstretch>0</verstretch>
+            </sizepolicy>
            </property>
            <layout class="QVBoxLayout" name="verticalLayoutImageSequenceSidePanel">
             <item>
@@ -2336,6 +2354,12 @@
              <height>980</height>
             </rect>
            </property>
+           <property name="sizePolicy">
+            <sizepolicy hsizetype="Ignored" vsizetype="Preferred">
+             <horstretch>0</horstretch>
+             <verstretch>0</verstretch>
+            </sizepolicy>
+           </property>
            <layout class="QVBoxLayout" name="verticalLayoutMosaicSidePanel">
             <item>
              <widget class="QGroupBox" name="groupBoxMosaicSourceModel">
@@ -3167,7 +3191,10 @@
           </property>
           <layout class="QVBoxLayout" name="verticalLayoutMosaicPreview">
            <item>
-            <layout class="QHBoxLayout" name="horizontalLayoutMosaicPreviewHeader">
+            <layout class="QHBoxLayout" name="horizontalLayoutMosaicPreviewHeaderPrimary">
+             <property name="spacing">
+              <number>6</number>
+             </property>
              <item>
               <widget class="QLabel" name="labelMosaicPreviewTitle">
                <property name="font">
@@ -3185,23 +3212,20 @@
                <property name="text">
                 <string>自由投影预览</string>
                </property>
-             </widget>
-            </item>
-             <item>
-              <widget class="QLabel" name="labelMosaicDisplayModel">
-               <property name="text">
-                <string>选择显示单张图像</string>
-               </property>
               </widget>
              </item>
              <item>
-              <widget class="QComboBox" name="comboBoxMosaicDisplayModel">
-               <item>
-                <property name="text">
-                 <string>显示全部</string>
-                </property>
-               </item>
-              </widget>
+              <spacer name="horizontalSpacerMosaicPreviewHeaderPrimary">
+               <property name="orientation">
+                <enum>Qt::Horizontal</enum>
+               </property>
+               <property name="sizeHint" stdset="0">
+                <size>
+                 <width>40</width>
+                 <height>20</height>
+                </size>
+               </property>
+              </spacer>
              </item>
              <item>
               <widget class="QCheckBox" name="checkBoxMosaicSkyOnly">
@@ -3226,8 +3250,31 @@
                </property>
               </widget>
              </item>
+            </layout>
+           </item>
+           <item>
+            <layout class="QHBoxLayout" name="horizontalLayoutMosaicPreviewHeaderControls">
+             <property name="spacing">
+              <number>6</number>
+             </property>
              <item>
-              <spacer name="horizontalSpacerMosaicPreviewHeader">
+              <widget class="QLabel" name="labelMosaicDisplayModel">
+               <property name="text">
+                <string>选择显示单张图像</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QComboBox" name="comboBoxMosaicDisplayModel">
+               <item>
+                <property name="text">
+                 <string>显示全部</string>
+                </property>
+               </item>
+              </widget>
+             </item>
+             <item>
+              <spacer name="horizontalSpacerMosaicPreviewHeaderControls">
                <property name="orientation">
                 <enum>Qt::Horizontal</enum>
                </property>
@@ -3342,6 +3389,12 @@
              <width>360</width>
              <height>640</height>
             </rect>
+           </property>
+           <property name="sizePolicy">
+            <sizepolicy hsizetype="Ignored" vsizetype="Preferred">
+             <horstretch>0</horstretch>
+             <verstretch>0</verstretch>
+            </sizepolicy>
            </property>
            <layout class="QVBoxLayout" name="verticalLayoutMosaicBatchSidePanel">
             <item>

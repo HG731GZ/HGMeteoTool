@@ -26,7 +26,7 @@ from meteoalign.application.app_mosaic import MosaicProjectionMixin, MosaicSourc
 from meteoalign.application.app_rendering import RenderingMixin
 from meteoalign.application.app_sequence_table_preview import SequenceTablePreviewMixin
 from meteoalign.application.app_star_pair_table_groups import StarPairTableGroupsMixin
-from meteoalign.application.main_window import MainWindow
+from meteoalign.application.main_window import MainWindow, apply_platform_layout
 from meteoalign.application.star_pair_assistant_dialog import StarPairAssistantDialog
 from meteoalign.ui.ui_main_window import Ui_MainWindow
 
@@ -65,6 +65,69 @@ FORM_LAYOUTS = (
     "formLayoutMosaicCrop",
     "formLayoutMosaicBatchSettings",
 )
+
+
+def test_macos_layout_is_compact_and_preserves_mosaic_preview_width() -> None:
+    """macOS 应收窄控制栏和主窗口，同时让全景预览仍占据主要宽度。"""
+
+    app = QApplication.instance() or QApplication([])
+    window = QMainWindow()
+    ui = Ui_MainWindow()
+    ui.setupUi(window)
+    enlarged_font = QFont(window.font())
+    enlarged_font.setPointSize(15)
+    window.setFont(enlarged_font)
+
+    apply_platform_layout(ui, window, "darwin")
+    ui.tabWidgetMain.setCurrentWidget(ui.tabFreeSkyMosaic)
+    window.show()
+    app.processEvents()
+
+    side_panels = (
+        ui.scrollAreaMeteorSelectionControls,
+        ui.scrollAreaControls,
+        ui.scrollAreaImageSequenceControls,
+        ui.scrollAreaReferencePickControls,
+        ui.scrollAreaMosaicControls,
+        ui.scrollAreaMosaicBatchControls,
+    )
+    assert window.width() == 1200
+    assert window.minimumSizeHint().width() <= 1200
+    assert all(panel.minimumWidth() == 320 for panel in side_panels)
+    assert all(panel.maximumWidth() == 360 for panel in side_panels)
+    assert ui.horizontalLayoutMosaic.contentsMargins().left() == 6
+    assert ui.groupBoxMosaicPreview.width() >= 2 * ui.scrollAreaMosaicControls.width()
+
+    primary_header = ui.horizontalLayoutMosaicPreviewHeaderPrimary
+    controls_header = ui.horizontalLayoutMosaicPreviewHeaderControls
+    assert ui.verticalLayoutMosaicPreview.itemAt(0).layout() is primary_header
+    assert ui.verticalLayoutMosaicPreview.itemAt(1).layout() is controls_header
+    assert primary_header.itemAt(0).widget() is ui.labelMosaicPreviewTitle
+    assert primary_header.itemAt(2).widget() is ui.checkBoxMosaicSkyOnly
+    assert primary_header.itemAt(3).widget() is ui.checkBoxMosaicMeteorOnly
+    assert controls_header.itemAt(0).widget() is ui.labelMosaicDisplayModel
+    assert controls_header.itemAt(1).widget() is ui.comboBoxMosaicDisplayModel
+    assert controls_header.itemAt(3).widget() is ui.labelMosaicOverlayOpacity
+
+    window.close()
+
+
+def test_non_macos_layout_keeps_designer_dimensions() -> None:
+    """Windows/Linux 路径不得应用 macOS 专用的尺寸覆盖。"""
+
+    app = QApplication.instance() or QApplication([])
+    window = QMainWindow()
+    ui = Ui_MainWindow()
+    ui.setupUi(window)
+
+    apply_platform_layout(ui, window, "win32")
+
+    assert window.width() == 1280
+    assert ui.scrollAreaReferencePickControls.minimumWidth() == 350
+    assert ui.scrollAreaReferencePickControls.maximumWidth() == 390
+    assert ui.horizontalLayoutReferenceImage.contentsMargins().left() == 9
+
+    window.close()
 
 
 def test_status_image_context_is_visible_only_on_star_matching_tab() -> None:
