@@ -131,15 +131,17 @@ def test_non_macos_layout_keeps_designer_dimensions() -> None:
     window.close()
 
 
-def test_shared_application_stylesheet_loads_compact_widget_rules() -> None:
-    """Win/macOS 共用 QSS 应成功加载，并包含核心紧凑控件规则。"""
+def test_macos_application_stylesheet_loads_compact_widget_rules(monkeypatch) -> None:
+    """macOS loads the QSS and its compact widget rules."""
 
     app = QApplication.instance() or QApplication([])
     previous_stylesheet = app.styleSheet()
     try:
+        monkeypatch.setattr("meteoalign.application.app_style.sys.platform", "darwin")
         path = apply_application_stylesheet(app)
         stylesheet = app.styleSheet()
 
+        assert path is not None
         assert path.name == "application.qss"
         assert "QPushButton" in stylesheet
         assert "QGroupBox::title" in stylesheet
@@ -149,6 +151,30 @@ def test_shared_application_stylesheet_loads_compact_widget_rules() -> None:
         assert "QDoubleSpinBox::down-arrow" in stylesheet
         assert QFile.exists(":/compact-style/spin_up.svg")
         assert QFile.exists(":/compact-style/spin_down.svg")
+    finally:
+        app.setStyleSheet(previous_stylesheet)
+
+
+def test_non_macos_application_stylesheet_keeps_native_style(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    """Windows and Linux skip the QSS so Qt can retain its native style."""
+
+    app = QApplication.instance() or QApplication([])
+    previous_stylesheet = app.styleSheet()
+    marker_stylesheet = "QWidget { color: rgb(1, 2, 3); }"
+    stylesheet_path = tmp_path / "should-not-load.qss"
+    stylesheet_path.write_text("QWidget { color: red; }", encoding="utf-8")
+    try:
+        app.setStyleSheet(marker_stylesheet)
+        for platform_name in ("win32", "linux"):
+            monkeypatch.setattr(
+                "meteoalign.application.app_style.sys.platform",
+                platform_name,
+            )
+            assert apply_application_stylesheet(app, stylesheet_path) is None
+            assert app.styleSheet() == marker_stylesheet
     finally:
         app.setStyleSheet(previous_stylesheet)
 
