@@ -152,6 +152,36 @@ def test_detection_result_focuses_completed_image_and_loads_boxes(tmp_path) -> N
     host.close()
 
 
+def test_raw_detection_result_queues_preview_without_sync_decode(tmp_path, monkeypatch) -> None:
+    """RAW 结果回调只能更新列表并排队后台预览，不能在 GUI 线程调用 rawpy。"""
+
+    _application()
+    host = _MeteorDetectionHost()
+    raw_path = tmp_path / "second.ARW"
+    raw_path.write_bytes(b"raw")
+    host._meteor_selection_paths = [raw_path]
+    host._meteor_selection_boxes_by_path = {raw_path: []}
+    host._meteor_selection_current_index = 0
+    host._meteor_detection_active = True
+    host._meteor_detection_job_paths = [raw_path]
+    queued_paths: list[Path] = []
+    monkeypatch.setattr(host, "_queue_meteor_selection_preview_load", queued_paths.append)
+
+    def fail_on_synchronous_decode(_image_path):  # type: ignore[no-untyped-def]
+        raise AssertionError("检测结果回调不应同步解码 RAW")
+
+    monkeypatch.setattr(host, "_meteor_selection_preview_for_path", fail_on_synchronous_decode)
+
+    host._apply_meteor_detection_result({"index": 1, "error": None, "meteor_boxes": []})
+
+    assert queued_paths == [raw_path]
+    assert host._meteor_selection_current_index == 0
+    assert host.ui.tableWidgetMeteorSelectionImages.currentRow() == 0
+    assert "正在后台读取 RAW 预览" in host.ui.labelMeteorSelectionCaptureTime.text()
+    host._shutdown_meteor_detection_worker()
+    host.close()
+
+
 def test_detection_disables_manual_controls_until_finished() -> None:
     """自动检测期间应禁用框选、切图及其他会改变列表的操作。"""
 

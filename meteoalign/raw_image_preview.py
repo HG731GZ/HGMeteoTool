@@ -41,8 +41,11 @@ def _raw_array_to_qimage(rgb) -> QImage:  # type: ignore[no-untyped-def]
     return image.copy()
 
 
-def _crop_to_camera_recommended_area(rgb: np.ndarray, sizes: object) -> np.ndarray:
-    """按 RAW 元数据中的标准裁切区对齐 Adobe/Photoshop 输出坐标。"""
+def _crop_to_camera_recommended_area(
+    rgb: np.ndarray,
+    sizes: object,
+) -> tuple[np.ndarray, int, int]:
+    """按 RAW 标准裁切区裁预览，并返回对应的全分辨率宽高。"""
 
     source_height, source_width = rgb.shape[:2]
     try:
@@ -53,22 +56,44 @@ def _crop_to_camera_recommended_area(rgb: np.ndarray, sizes: object) -> np.ndarr
         crop_width = int(getattr(sizes, "crop_width"))
         crop_height = int(getattr(sizes, "crop_height"))
     except (AttributeError, TypeError, ValueError):
-        return np.ascontiguousarray(rgb)
+        return np.ascontiguousarray(rgb), source_width, source_height
 
-    # raw_inset_crops 属于旋转前的可见区；尺寸关系不明确时保留 LibRaw 原输出，
-    # 避免在特殊传感器或未来格式上猜测裁切坐标。
-    if (source_width, source_height) != (visible_width, visible_height):
-        return np.ascontiguousarray(rgb)
+    fallback_width = visible_width if visible_width > 0 else source_width
+    fallback_height = visible_height if visible_height > 0 else source_height
+    if visible_width <= 0 or visible_height <= 0:
+        return np.ascontiguousarray(rgb), fallback_width, fallback_height
     if crop_width <= 0 or crop_height <= 0:
-        return np.ascontiguousarray(rgb)
+        return np.ascontiguousarray(rgb), fallback_width, fallback_height
     if crop_left < 0 or crop_top < 0:
-        return np.ascontiguousarray(rgb)
+        return np.ascontiguousarray(rgb), fallback_width, fallback_height
     if crop_left + crop_width > source_width or crop_top + crop_height > source_height:
-        return np.ascontiguousarray(rgb)
+        # 半尺寸预览的像素坐标需要按 LibRaw 输出比例换算，原始坐标仍使用全分辨率。
+        scale_x = source_width / float(visible_width)
+        scale_y = source_height / float(visible_height)
+        if scale_x <= 0.0 or scale_y <= 0.0 or abs(scale_x - scale_y) > 0.02:
+            return np.ascontiguousarray(rgb), fallback_width, fallback_height
+        scaled_left = int(round(crop_left * scale_x))
+        scaled_top = int(round(crop_top * scale_y))
+        scaled_right = int(round((crop_left + crop_width) * scale_x))
+        scaled_bottom = int(round((crop_top + crop_height) * scale_y))
+        if not (
+            0 <= scaled_left < scaled_right <= source_width
+            and 0 <= scaled_top < scaled_bottom <= source_height
+        ):
+            return np.ascontiguousarray(rgb), fallback_width, fallback_height
+        return (
+            np.ascontiguousarray(rgb[scaled_top:scaled_bottom, scaled_left:scaled_right]),
+            crop_width,
+            crop_height,
+        )
     if (crop_left, crop_top, crop_width, crop_height) == (0, 0, source_width, source_height):
-        return np.ascontiguousarray(rgb)
-    return np.ascontiguousarray(
-        rgb[crop_top : crop_top + crop_height, crop_left : crop_left + crop_width]
+        return np.ascontiguousarray(rgb), crop_width, crop_height
+    return (
+        np.ascontiguousarray(
+            rgb[crop_top : crop_top + crop_height, crop_left : crop_left + crop_width]
+        ),
+        crop_width,
+        crop_height,
     )
 
 
@@ -94,19 +119,25 @@ def load_raw_image_preview(
         with rawpy.imread(str(image_path)) as raw:
             sizes = raw.sizes
             # 所有 RAW 都保留传感器原始方向，不应用相机的横竖拍旋转标记。
-            rgb = raw.postprocess(use_camera_wb=True, output_bps=8, user_flip=0)
-            rgb = _crop_to_camera_recommended_area(rgb, sizes)
+            rgb = raw.postprocess(
+                use_camera_wb=True,
+                output_bps=8,
+                user_flip=0,
+                half_size=max_long_side_px is not None,
+            )
+            rgb, original_width, original_height = _crop_to_camera_recommended_area(rgb, sizes)
     except Exception as exc:  # noqa: BLE001 - LibRaw 的多种解码错误统一转为界面可读信息。
         raise ValueError(f"LibRaw 无法读取 RAW 图像：{exc}") from exc
 
-    original_height, original_width = (int(rgb.shape[0]), int(rgb.shape[1]))
     image = _raw_array_to_qimage(rgb)
     del rgb
 
-    if max_long_side_px is not None and max(original_width, original_height) > max_long_side_px:
+    preview_width = image.width()
+    preview_height = image.height()
+    if max_long_side_px is not None and max(preview_width, preview_height) > max_long_side_px:
         scaled_width, scaled_height = _scaled_preview_size(
-            original_width,
-            original_height,
+            preview_width,
+            preview_height,
             max_long_side_px,
         )
         image = image.scaled(QSize(scaled_width, scaled_height), Qt.KeepAspectRatio, Qt.SmoothTransformation)

@@ -20,9 +20,10 @@ from ..meteor_detection import (
     save_meteor_detection_options,
 )
 from ..meteor_selection import MeteorBox, load_meteor_selection, meteor_json_path, save_meteor_selection
-from ..raw_image_preview import METEOR_IMAGE_FILE_FILTER, load_meteor_image_preview
+from ..raw_image_preview import METEOR_IMAGE_FILE_FILTER, is_raw_image_path, load_meteor_image_preview
 from ..qt_tasks import create_progress_dialog, start_qt_worker_task
 from ..meteor_mask import MeteorMaskLoadWorker
+from .app_workers import MeteorImagePreviewLoadWorker
 from .metdet_worker_client import MetDetWorkerClient
 from .meteor_detection_options_dialog import MeteorDetectionOptionsDialog
 
@@ -68,6 +69,10 @@ class MeteorSelectionMixin:
         self._meteor_selection_current_index = -1
         self._meteor_selection_preview_cache: OrderedDict[str, ImagePreview] = OrderedDict()
         self._meteor_selection_masked_preview_cache: OrderedDict[tuple[object, ...], QImage] = OrderedDict()
+        self._meteor_selection_preview_load_thread: object | None = None
+        self._meteor_selection_preview_load_worker: object | None = None
+        self._meteor_selection_preview_loading_path: Path | None = None
+        self._meteor_selection_pending_preview_path: Path | None = None
         self._meteor_selection_mask_path: Path | None = None
         self._meteor_selection_mask: np.ndarray | None = None
         self._meteor_mask_import_thread: object | None = None
@@ -143,6 +148,7 @@ class MeteorSelectionMixin:
         self._meteor_selection_image_sizes = {}
         self._meteor_selection_dirty_paths = set()
         self._meteor_selection_current_index = -1
+        self._meteor_selection_pending_preview_path = None
         self._clear_meteor_selection_preview_cache()
         self.ui.meteorSelectionView.clear_image()
         self.ui.labelMeteorSelectionPreviewTitle.setText("未导入流星图片")
@@ -262,6 +268,99 @@ class MeteorSelectionMixin:
             METEOR_SELECTION_PREVIEW_CACHE_LIMIT,
         )
         return preview
+
+    def _cached_meteor_selection_preview(self, image_path: Path) -> ImagePreview | None:
+        """只查询预览缓存，不在 GUI 线程读取磁盘或解码 RAW。"""
+
+        cache_key = self._meteor_selection_preview_cache_key(image_path)
+        cached = self._meteor_selection_preview_cache.get(cache_key)
+        if cached is not None:
+            self._meteor_selection_preview_cache.move_to_end(cache_key)
+        return cached
+
+    def _queue_meteor_selection_preview_load(self, image_path: Path) -> None:
+        """只保留最新的待显示图片，并用单个后台线程依次生成 RAW 预览。"""
+
+        if self._cached_meteor_selection_preview(image_path) is not None:
+            return
+        if self._meteor_selection_preview_loading_path == image_path:
+            return
+        self._meteor_selection_pending_preview_path = image_path
+        if self._meteor_selection_preview_load_thread is None:
+            self._start_pending_meteor_selection_preview_load()
+
+    def _start_pending_meteor_selection_preview_load(self) -> None:
+        """启动最近一次请求的预览；检测更快时自动跳过已经过时的中间图片。"""
+
+        image_path = self._meteor_selection_pending_preview_path
+        self._meteor_selection_pending_preview_path = None
+        if image_path is None or image_path not in self._meteor_selection_paths:
+            return
+        if self._cached_meteor_selection_preview(image_path) is not None:
+            if self._has_current_meteor_selection_image():
+                current_path = self._meteor_selection_paths[self._meteor_selection_current_index]
+                if current_path == image_path:
+                    self._show_meteor_selection_current_image()
+            return
+
+        worker = MeteorImagePreviewLoadWorker(image_path)
+        task = start_qt_worker_task(
+            parent=self,
+            worker=worker,
+            finished_signal=worker.finished,
+            failed_signal=worker.failed,
+            on_finished=self._handle_meteor_selection_preview_loaded,
+            on_failed=self._handle_meteor_selection_preview_load_failed,
+            on_cleanup=self._cleanup_meteor_selection_preview_load,
+        )
+        self._meteor_selection_preview_load_thread = task.thread
+        self._meteor_selection_preview_load_worker = task.worker
+        self._meteor_selection_preview_loading_path = image_path
+
+    def _handle_meteor_selection_preview_loaded(self, result: object) -> None:
+        """缓存后台结果；只有仍为当前行时才更新右侧画面。"""
+
+        image_path, preview = result  # type: ignore[misc]
+        image_path = Path(image_path)
+        if not isinstance(preview, ImagePreview) or image_path not in self._meteor_selection_paths:
+            return
+        self._bounded_meteor_preview_cache_set(
+            self._meteor_selection_preview_cache,
+            self._meteor_selection_preview_cache_key(image_path),
+            preview,
+            METEOR_SELECTION_PREVIEW_CACHE_LIMIT,
+        )
+        if self._has_current_meteor_selection_image():
+            current_path = self._meteor_selection_paths[self._meteor_selection_current_index]
+            if current_path == image_path:
+                self._show_meteor_selection_current_image()
+
+    def _handle_meteor_selection_preview_load_failed(self, error_message: str) -> None:
+        """后台预览失败时只影响当前图片，不中断仍在运行的自动检测。"""
+
+        image_path = self._meteor_selection_preview_loading_path
+        if image_path is None or not self._has_current_meteor_selection_image():
+            return
+        current_path = self._meteor_selection_paths[self._meteor_selection_current_index]
+        if current_path != image_path:
+            return
+        self._meteor_selection_image_sizes.pop(image_path, None)
+        self.ui.meteorSelectionView.clear_image()
+        self.ui.labelMeteorSelectionCaptureTime.setText("拍摄时间：无法读取")
+        self.ui.labelMeteorSelectionCaptureTime.setToolTip(error_message)
+        self.ui.statusbar.showMessage(
+            f"流星图片预览读取失败：{image_path.name}：{error_message}",
+            10000,
+        )
+
+    def _cleanup_meteor_selection_preview_load(self) -> None:
+        """释放已完成的预览线程，并继续处理检测期间最新的切图请求。"""
+
+        self._meteor_selection_preview_load_thread = None
+        self._meteor_selection_preview_load_worker = None
+        self._meteor_selection_preview_loading_path = None
+        if self._meteor_selection_pending_preview_path is not None:
+            QTimer.singleShot(0, self._start_pending_meteor_selection_preview_load)
 
     def _meteor_selection_mask_matches_preview(self, preview: ImagePreview) -> bool:
         """判断当前蒙版是否与预览所代表的原始图像尺寸一致。"""
@@ -499,7 +598,7 @@ class MeteorSelectionMixin:
         self._meteor_selection_current_index = max(0, min(int(index), len(paths) - 1))
         self._show_meteor_selection_current_image()
 
-    def _show_meteor_selection_current_image(self) -> None:
+    def _show_meteor_selection_current_image(self, *, background_raw: bool = False) -> None:
         paths = self._meteor_selection_paths
         if not paths or self._meteor_selection_current_index < 0:
             self._update_meteor_selection_controls()
@@ -509,6 +608,21 @@ class MeteorSelectionMixin:
         image_path = paths[current_index]
         self.ui.labelMeteorSelectionPreviewTitle.setText(f"{current_index + 1}/{len(paths)}  {image_path.name}")
         self.ui.labelMeteorSelectionPreviewTitle.setToolTip(str(image_path))
+
+        if (
+            background_raw
+            and is_raw_image_path(image_path)
+            and self._cached_meteor_selection_preview(image_path) is None
+        ):
+            # Windows 上 rawpy 全流程明显慢于普通图片解码；检测结果回调不能阻塞 GUI 线程。
+            self.ui.meteorSelectionView.clear_image()
+            self.ui.labelMeteorSelectionCaptureTime.setText("拍摄时间：正在后台读取 RAW 预览…")
+            self.ui.labelMeteorSelectionCaptureTime.setToolTip(str(image_path))
+            self._queue_meteor_selection_preview_load(image_path)
+            self._refresh_meteor_selection_table()
+            self._select_current_meteor_selection_table_row()
+            self._update_meteor_selection_controls()
+            return
 
         try:
             preview = self._meteor_selection_preview_for_path(image_path)
@@ -936,7 +1050,7 @@ class MeteorSelectionMixin:
             if boxes:
                 self._meteor_detection_detected_count += 1
         self._meteor_selection_current_index = selection_index
-        self._show_meteor_selection_current_image()
+        self._show_meteor_selection_current_image(background_raw=True)
 
     def _finish_automatic_meteor_detection(self, payload: dict[str, object]) -> None:
         """恢复手动交互，并汇总检测结果。"""

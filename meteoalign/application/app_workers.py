@@ -14,6 +14,7 @@ from .app_utils import (
 )
 from ..image_preview import ImagePreview, load_image_preview
 from ..image_sequence import collect_image_sequence
+from ..raw_image_preview import load_meteor_image_preview
 
 
 class ImagePreviewLoadWorker(QObject):
@@ -36,6 +37,24 @@ class ImagePreviewLoadWorker(QObject):
             )
             self.finished.emit(preview)
         except Exception as exc:  # noqa: BLE001 - 后台线程需要把所有读取错误传回界面层。
+            self.failed.emit(str(exc))
+
+
+class MeteorImagePreviewLoadWorker(QObject):
+    """在后台读取流星页面的普通图片或 RAW 缩略预览。"""
+
+    finished = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, file_path: str | Path) -> None:
+        super().__init__()
+        self.file_path = Path(file_path)
+
+    def run(self) -> None:
+        try:
+            preview = load_meteor_image_preview(self.file_path)
+            self.finished.emit((preview.path, preview))
+        except Exception as exc:  # noqa: BLE001 - 后台预览失败需要回到主线程显示。
             self.failed.emit(str(exc))
 
 

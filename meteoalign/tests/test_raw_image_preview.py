@@ -19,6 +19,8 @@ from meteoalign.raw_image_preview import (
 class _FakeRaw:
     """提供 rawpy 上下文管理器和后处理接口的最小替身。"""
 
+    last_postprocess_kwargs: dict[str, object] = {}
+
     sizes = SimpleNamespace(
         width=240,
         height=120,
@@ -35,7 +37,10 @@ class _FakeRaw:
     def __exit__(self, *_unused: object) -> None:
         return None
 
-    def postprocess(self, **_unused: object) -> np.ndarray:
+    def postprocess(self, **kwargs: object) -> np.ndarray:
+        type(self).last_postprocess_kwargs = dict(kwargs)
+        if kwargs.get("half_size"):
+            return np.zeros((60, 120, 3), dtype=np.uint8)
         return np.zeros((120, 240, 3), dtype=np.uint8)
 
 
@@ -51,6 +56,8 @@ def test_meteor_raw_preview_uses_libraw_and_preserves_original_geometry(tmp_path
     assert preview.path == raw_path.resolve()
     assert (preview.original_width, preview.original_height) == (240, 120)
     assert (preview.image.width(), preview.image.height()) == (100, 50)
+    assert _FakeRaw.last_postprocess_kwargs["half_size"] is True
+    assert _FakeRaw.last_postprocess_kwargs["user_flip"] == 0
     assert is_raw_image_path(raw_path)
     assert "*.cr3" in METEOR_IMAGE_FILE_FILTER
 
