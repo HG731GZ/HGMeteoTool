@@ -12,6 +12,7 @@ STATUS_MESSAGE_ERROR = "error"
 STATUS_MESSAGE_HINT = "hint"
 
 _ERROR_MARKERS = (
+    "已强制记录",
     "错误",
     "异常",
     "不可用",

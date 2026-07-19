@@ -7,13 +7,15 @@ from dataclasses import dataclass
 
 import numpy as np
 import sep
-from scipy.ndimage import gaussian_filter
+from scipy.ndimage import gaussian_filter, label as label_connected
 from scipy.optimize import least_squares
 
 from .models import FittedStarPosition, StarSourceCandidate
 
 
 _GAUSSIAN_FWHM_SCALE = 2.354820045
+_STRONG_DETECTED_AXIS_RATIO = 1.45
+_MAX_MOMENT_TO_CORE_FWHM_RATIO = 2.0
 
 
 class StarFitError(ValueError):
@@ -39,6 +41,16 @@ class _DetectionResult:
     segmentation: np.ndarray
     background: _BackgroundModel
     saturation_level: float
+
+
+@dataclass(frozen=True)
+class _HalfMaximumCore:
+    x: float
+    y: float
+    major_fwhm: float
+    minor_fwhm: float
+    theta_rad: float
+    npix: int
 
 
 def _robust_noise_from_differences(image: np.ndarray) -> float:
@@ -389,11 +401,27 @@ def _moffat_fwhm(alpha: float, beta: float) -> float:
     return 2.0 * alpha * math.sqrt(max(2.0 ** (1.0 / max(beta, 1e-6)) - 1.0, 1e-9))
 
 
-def _bic_score(residual: np.ndarray, parameter_count: int) -> float:
-    """用 BIC 比较不同自由度的 PSF，避免弱星被噪声拟合成椭圆。"""
+def _bic_score(
+    residual: np.ndarray,
+    parameter_count: int,
+    *,
+    residual_clip: float | None = None,
+) -> float:
+    """用稳健 BIC 比较 PSF，避免局部次峰或背景纹理制造长轴。"""
 
     sample_count = max(int(residual.size), 1)
-    mean_square = max(float(np.mean(np.square(residual))), np.finfo(np.float64).tiny)
+    compared_residual = np.asarray(residual, dtype=np.float64)
+    if (
+        residual_clip is not None
+        and math.isfinite(float(residual_clip))
+        and float(residual_clip) > 0.0
+    ):
+        clip = float(residual_clip)
+        compared_residual = np.clip(compared_residual, -clip, clip)
+    mean_square = max(
+        float(np.mean(np.square(compared_residual))),
+        np.finfo(np.float64).tiny,
+    )
     return sample_count * math.log(mean_square) + parameter_count * math.log(sample_count)
 
 
@@ -447,12 +475,116 @@ def _radial_quality(
     return monotonicity, sector_positive / float(sector_total)
 
 
+def _half_maximum_core(
+    image: np.ndarray,
+    detection: _DetectionResult,
+    selected: StarSourceCandidate,
+) -> _HalfMaximumCore | None:
+    """测量选中源的半峰值连通核心，用来识别被地景边缘撑大的分割源。"""
+
+    source_mask = (detection.segmentation == selected.label) & np.isfinite(image)
+    if not np.any(source_mask):
+        return None
+    peak_index = int(np.argmax(np.where(source_mask, image, -np.inf)))
+    peak_y, peak_x = np.unravel_index(peak_index, image.shape)
+    peak = float(image[peak_y, peak_x])
+    background = float(detection.background.plane[peak_y, peak_x])
+    contrast = peak - background
+    if not math.isfinite(contrast) or contrast < detection.background.noise * 4.0:
+        return None
+
+    half_maximum = source_mask & (image >= background + contrast * 0.5)
+    labels, _label_count = label_connected(
+        half_maximum,
+        structure=np.ones((3, 3), dtype=np.uint8),
+    )
+    peak_label = int(labels[peak_y, peak_x])
+    if peak_label <= 0:
+        return None
+    component = labels == peak_label
+    yy, xx = np.nonzero(component)
+    if xx.size < 4:
+        return None
+
+    component_signal = np.maximum(
+        image[component] - detection.background.plane[component],
+        0.0,
+    )
+    weight_sum = float(np.sum(component_signal))
+    if weight_sum > 0.0 and math.isfinite(weight_sum):
+        center_x = float(np.sum(xx * component_signal) / weight_sum)
+        center_y = float(np.sum(yy * component_signal) / weight_sum)
+    else:
+        center_x = float(np.mean(xx))
+        center_y = float(np.mean(yy))
+
+    shape_center_x = float(np.mean(xx))
+    shape_center_y = float(np.mean(yy))
+    dx = xx.astype(np.float64) - shape_center_x
+    dy = yy.astype(np.float64) - shape_center_y
+    covariance = np.asarray(
+        [
+            [float(np.mean(dx * dx)), float(np.mean(dx * dy))],
+            [float(np.mean(dx * dy)), float(np.mean(dy * dy))],
+        ],
+        dtype=np.float64,
+    )
+    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+    eigenvalues = np.maximum(eigenvalues, 0.25**2)
+    major_index = int(np.argmax(eigenvalues))
+    minor_index = 1 - major_index
+    major_fwhm = max(4.0 * math.sqrt(float(eigenvalues[major_index])), 1.0)
+    minor_fwhm = max(4.0 * math.sqrt(float(eigenvalues[minor_index])), 1.0)
+    major_vector = eigenvectors[:, major_index]
+    theta = float(math.atan2(float(major_vector[1]), float(major_vector[0])) % math.pi)
+    return _HalfMaximumCore(
+        x=center_x,
+        y=center_y,
+        major_fwhm=major_fwhm,
+        minor_fwhm=minor_fwhm,
+        theta_rad=theta,
+        npix=int(xx.size),
+    )
+
+
+def _stabilize_contaminated_candidate(
+    image: np.ndarray,
+    detection: _DetectionResult,
+    selected: StarSourceCandidate,
+) -> StarSourceCandidate:
+    """当检测矩远大于半峰值核心时，用核心恢复星点中心和自适应窗口初值。"""
+
+    core = _half_maximum_core(image, detection, selected)
+    if core is None:
+        return selected
+    moment_fwhm = selected.major_axis * _GAUSSIAN_FWHM_SCALE
+    if moment_fwhm <= core.major_fwhm * _MAX_MOMENT_TO_CORE_FWHM_RATIO:
+        return selected
+    return StarSourceCandidate(
+        x=core.x,
+        y=core.y,
+        major_axis=max(core.major_fwhm / _GAUSSIAN_FWHM_SCALE, 0.35),
+        minor_axis=max(core.minor_fwhm / _GAUSSIAN_FWHM_SCALE, 0.35),
+        theta_rad=core.theta_rad,
+        flux=selected.flux,
+        peak=selected.peak,
+        snr=selected.snr,
+        npix=core.npix,
+        label=selected.label,
+        saturated=selected.saturated,
+        saturation_fraction=selected.saturation_fraction,
+        blended=selected.blended,
+        quality_score=selected.quality_score,
+    )
+
+
 def _fit_selected_candidate(
     image: np.ndarray,
     detection: _DetectionResult,
     selected: StarSourceCandidate,
     *,
     max_fit_radius_px: int,
+    use_local_background: bool = False,
     fit_error_limit: float | None = None,
     saturated_fit_error_limit: float | None = None,
     center_shift_tolerance_multiplier: float = 1.0,
@@ -477,7 +609,13 @@ def _fit_selected_candidate(
     y0 = max(0, center_y - fit_radius)
     y1 = min(height, center_y + fit_radius + 1)
     patch = np.asarray(image[y0:y1, x0:x1], dtype=np.float64)
-    background_plane = detection.background.plane[y0:y1, x0:x1]
+    if use_local_background:
+        local_background = _fit_background_plane(patch)
+        background_plane = local_background.plane
+        fit_noise = local_background.noise
+    else:
+        background_plane = detection.background.plane[y0:y1, x0:x1]
+        fit_noise = detection.background.noise
     signal = patch - background_plane
     yy, xx = np.indices(patch.shape, dtype=np.float64)
     local_selected = StarSourceCandidate(
@@ -531,7 +669,7 @@ def _fit_selected_candidate(
     if int(np.count_nonzero(valid)) < 24:
         raise StarFitError("星点周围可用于测量的有效像素不足。", code="insufficient_pixels")
 
-    amplitude0 = max(selected.peak, detection.background.noise * 4.0, 1.0)
+    amplitude0 = max(selected.peak, fit_noise * 4.0, 1.0)
     alpha_x0 = max(selected.major_axis * 1.35, 0.8)
     alpha_y0 = max(selected.minor_axis * 1.35, 0.8)
     beta0 = 2.5
@@ -561,7 +699,7 @@ def _fit_selected_candidate(
     valid_x = xx[valid]
     valid_y = yy[valid]
     valid_signal = signal[valid]
-    residual_scale = max(detection.background.noise * 2.0, 1.0)
+    residual_scale = max(fit_noise * 2.0, 1.0)
 
     def residual(params: np.ndarray) -> np.ndarray:
         amplitude, fit_x, fit_y, alpha_x, alpha_y, beta, theta = params
@@ -653,12 +791,28 @@ def _fit_selected_candidate(
             2.2,
             selected.major_axis * 0.65,
         ) * _normalized_tolerance_multiplier(center_shift_tolerance_multiplier)
+        detected_axis_ratio = selected.major_axis / max(selected.minor_axis, 1e-6)
+        # 检测矩本身已有明显长轴时保留完整残差信息；近圆源则截掉局部次峰的支配作用。
+        comparison_clip = (
+            None
+            if detected_axis_ratio >= _STRONG_DETECTED_AXIS_RATIO
+            else fit_noise
+        )
         # 椭圆模型多两个形状自由度；只有证据明显时才保留其长短轴与方向。
         if (
             candidate_fwhm < candidate_size_limit
             and candidate_center_shift <= candidate_center_limit
-            and _bic_score(fit_residual, 7) + 6.0
-            >= _bic_score(candidate_residual, 5)
+            and _bic_score(
+                fit_residual,
+                7,
+                residual_clip=comparison_clip,
+            )
+            + 6.0
+            >= _bic_score(
+                candidate_residual,
+                5,
+                residual_clip=comparison_clip,
+            )
         ):
             amplitude, fit_x, fit_y, alpha_x, beta = (
                 float(value) for value in circular_result.x
@@ -675,7 +829,7 @@ def _fit_selected_candidate(
     theta = (theta + math.pi) % math.pi
     sigma_x = fwhm_x / _GAUSSIAN_FWHM_SCALE
     sigma_y = fwhm_y / _GAUSSIAN_FWHM_SCALE
-    signal_scale = max(float(np.percentile(np.abs(valid_signal), 90.0)), detection.background.noise, 1.0)
+    signal_scale = max(float(np.percentile(np.abs(valid_signal), 90.0)), fit_noise, 1.0)
     fit_error = float(np.sqrt(np.mean(np.square(fit_residual))) / signal_scale)
     axis_ratio = fwhm_x / max(fwhm_y, 1e-6)
     center_shift = float(np.hypot(fit_x - local_selected.x, fit_y - local_selected.y))
@@ -683,11 +837,11 @@ def _fit_selected_candidate(
         signal,
         fit_x,
         fit_y,
-        detection.background.noise,
+        fit_noise,
         min(max(fwhm_x * 1.5, 3.0), fit_radius),
         circular & neighbor_keep,
     )
-    snr = amplitude / max(detection.background.noise, 1e-6)
+    snr = amplitude / max(fit_noise, 1e-6)
 
     if snr < 4.0:
         raise StarFitError("候选目标相对于局部背景过弱。", code="low_snr")
@@ -737,13 +891,13 @@ def _fit_selected_candidate(
         raise StarFitError("候选目标的综合 PSF 质量不足。", code="poor_quality")
     image_x = float(x0 + fit_x)
     image_y = float(y0 + fit_y)
-    background_x = int(np.clip(round(image_x), 0, width - 1))
-    background_y = int(np.clip(round(image_y), 0, height - 1))
+    background_x = int(np.clip(round(fit_x), 0, patch.shape[1] - 1))
+    background_y = int(np.clip(round(fit_y), 0, patch.shape[0] - 1))
     return FittedStarPosition(
         x=image_x,
         y=image_y,
         amplitude=amplitude,
-        background=float(detection.background.plane[background_y, background_x]),
+        background=float(background_plane[background_y, background_x]),
         sigma_x=sigma_x,
         sigma_y=sigma_y,
         theta_rad=theta,
@@ -766,6 +920,8 @@ def _forced_windowed_centroid(
     search_radius_px: int,
     max_fit_radius_px: int,
     selected: StarSourceCandidate | None,
+    *,
+    selected_was_stabilized: bool = False,
 ) -> FittedStarPosition:
     """以用户选星圈为先验，用高斯窗口矩心提供不依赖完整 PSF 的最终兜底。"""
 
@@ -791,11 +947,20 @@ def _forced_windowed_centroid(
         center_y, center_x = (float(value) for value in np.unravel_index(peak_index, image.shape))
         source_scale = 2.0
 
-    window_radius = min(
-        max(int(max_fit_radius_px), 5),
-        max(8, int(math.ceil(source_scale * 5.0))),
-    )
-    window_sigma = max(window_radius / 3.0, source_scale * 1.5, 2.0)
+    if selected_was_stabilized:
+        # 半峰值核心说明原检测矩已被邻星或地景撑大；兜底时也必须限制窗口，
+        # 否则会重新把刚排除的污染源累积进矩心。
+        window_radius = min(
+            max(int(max_fit_radius_px), 5),
+            max(6, int(math.ceil(source_scale * 2.5))),
+        )
+        window_sigma = max(window_radius / 3.0, source_scale, 2.0)
+    else:
+        window_radius = min(
+            max(int(max_fit_radius_px), 5),
+            max(8, int(math.ceil(source_scale * 5.0))),
+        )
+        window_sigma = max(window_radius / 3.0, source_scale * 1.5, 2.0)
     # 去掉一倍局部噪声后再算矩心，避免大窗口中半数为正的背景起伏累积成假星翼。
     positive_signal = np.maximum(signal - detection.background.noise, 0.0)
     valid = np.isfinite(signal)
@@ -906,6 +1071,7 @@ def fit_star_position_from_array(
     if fit_radius_limit is None:
         fit_radius_limit = 48
     selected: StarSourceCandidate | None = None
+    selected_was_stabilized = False
     try:
         selected = _select_candidate(
             detection,
@@ -915,11 +1081,15 @@ def fit_star_position_from_array(
             reject_ambiguous=reject_ambiguous,
             selection_mode="predicted" if selection_mode == "predicted" else "manual",
         )
+        stabilized_selected = _stabilize_contaminated_candidate(image, detection, selected)
+        selected_was_stabilized = stabilized_selected is not selected
+        selected = stabilized_selected
         return _fit_selected_candidate(
             image,
             detection,
             selected,
             max_fit_radius_px=fit_radius_limit,
+            use_local_background=selected_was_stabilized,
             fit_error_limit=fit_error_limit,
             saturated_fit_error_limit=saturated_fit_error_limit,
             center_shift_tolerance_multiplier=center_shift_tolerance_multiplier,
@@ -931,6 +1101,10 @@ def fit_star_position_from_array(
 
     if selected is None:
         selected = _select_forced_candidate(detection, click_x, click_y, radius_px)
+        if selected is not None:
+            stabilized_selected = _stabilize_contaminated_candidate(image, detection, selected)
+            selected_was_stabilized = stabilized_selected is not selected
+            selected = stabilized_selected
 
     return _forced_windowed_centroid(
         image,
@@ -940,4 +1114,5 @@ def fit_star_position_from_array(
         radius_px,
         fit_radius_limit,
         selected,
+        selected_was_stabilized=selected_was_stabilized,
     )

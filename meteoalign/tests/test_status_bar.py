@@ -32,6 +32,10 @@ def test_status_bar_applies_semantic_message_colors() -> None:
     assert statusbar.property("messageKind") == STATUS_MESSAGE_ERROR
     assert statusbar.palette().color(QPalette.Window).name() == "#f8d7da"
 
+    statusbar.showMessage("已强制记录 昴宿一 (3486.94,2091.72)")
+    assert statusbar.property("messageKind") == STATUS_MESSAGE_ERROR
+    assert statusbar.palette().color(QPalette.Window).name() == "#f8d7da"
+
     statusbar.showMessage("请按 Ctrl+左键确认星点。")
     assert statusbar.property("messageKind") == STATUS_MESSAGE_HINT
     assert statusbar.palette().color(QPalette.Window).name() == "#fff3cd"
@@ -41,6 +45,9 @@ def test_status_bar_applies_semantic_message_colors() -> None:
 
     statusbar.showMessage("无法聚焦理论位置：当前配准模型无效。")
     assert statusbar.property("messageKind") == STATUS_MESSAGE_HINT
+
+    statusbar.showMessage("已记录 昴宿一 (3487.23,2091.27)")
+    assert statusbar.property("messageKind") == STATUS_MESSAGE_NORMAL
 
 
 def test_status_bar_hides_quoted_import_paths() -> None:

@@ -214,6 +214,36 @@ def test_weak_round_star_on_textured_background_prefers_circular_psf() -> None:
     assert fitted.fwhm_x == pytest.approx(fitted.fwhm_y)
 
 
+def test_nearby_horizon_edge_does_not_inflate_isolated_star_size() -> None:
+    """地景明暗边界不能把孤立小星的检测矩和拟合窗口撑大。"""
+
+    yy, xx = np.indices((101, 101), dtype=np.float64)
+    random = np.random.default_rng(12)
+    sky = 95.0 + 0.08 * xx + 0.12 * yy
+    sky += random.normal(0.0, 2.0, (101, 101))
+    sky += gaussian_filter(random.normal(0.0, 1.0, (101, 101)), 1.5) * 4.0
+    landscape = 25.0 + random.normal(0.0, 2.0, (101, 101))
+    image = np.where(yy >= 76.0, landscape, sky)
+    image += 220.0 * np.exp(
+        -0.5 * ((xx - 50.2) ** 2 + (yy - 49.8) ** 2) / 2.0**2
+    )
+    image = np.minimum(image, 255.0)
+
+    fitted = fit_star_position_from_array(
+        image,
+        50.0,
+        50.0,
+        10,
+        max_fit_radius_px=40,
+        saturation_level=255.0,
+    )
+
+    assert fitted.x == pytest.approx(50.2, abs=0.25)
+    assert fitted.y == pytest.approx(49.8, abs=0.25)
+    assert 3.5 < fitted.fwhm_x < 6.0
+    assert fitted.fwhm_x / fitted.fwhm_y < 1.1
+
+
 def test_well_resolved_elongated_star_keeps_elliptical_psf() -> None:
     """圆形模型选择不能抹掉有充分像素证据的真实长轴。"""
 
