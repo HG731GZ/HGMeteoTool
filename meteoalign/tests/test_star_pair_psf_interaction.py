@@ -9,7 +9,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import QPointF
 from PyQt5.QtGui import QColor, QImage
-from PyQt5.QtWidgets import QApplication, QGraphicsEllipseItem, QGraphicsScene, QTableWidgetItem, QWidget
+from PyQt5.QtWidgets import (
+    QApplication,
+    QGraphicsEllipseItem,
+    QGraphicsPathItem,
+    QGraphicsScene,
+    QTableWidgetItem,
+    QWidget,
+)
 
 from meteoalign.application.app_auto_match import AutoMatchMixin
 from meteoalign.application.app_constants import STAR_PAIR_QUALITY_COLUMN, STAR_PAIR_SORT_KEY_QUALITY
@@ -111,8 +118,8 @@ class _AnnotationHarness(QWidget, StarPairAnnotationsMixin):
         return True
 
 
-def test_psf_annotation_adds_green_outer_ellipse_at_configured_diameter() -> None:
-    """绿色外圈应与黄色 FWHM 圈同心同角度，并按配置放大直径。"""
+def test_psf_annotation_adds_outer_ellipse_and_black_center_cross() -> None:
+    """绿色外圈按配置放大，黑色小十字准确标出黄色 FWHM 圈中心。"""
 
     _qapp()
     host = _AnnotationHarness()
@@ -139,15 +146,23 @@ def test_psf_annotation_adds_green_outer_ellipse_at_configured_diameter() -> Non
     )
 
     yellow_ellipse, _label = host._star_pair_annotations["HR1"]
-    outer_items = yellow_ellipse.childItems()
-    assert len(outer_items) == 1
-    green_ellipse = outer_items[0]
+    child_items = yellow_ellipse.childItems()
+    assert len(child_items) == 2
+    green_ellipse = next(item for item in child_items if isinstance(item, QGraphicsEllipseItem))
+    center_cross = next(item for item in child_items if isinstance(item, QGraphicsPathItem))
     assert yellow_ellipse.rect().width() == 20.0
     assert yellow_ellipse.rect().height() == 12.0
     assert green_ellipse.rect().width() == 30.0
     assert green_ellipse.rect().height() == 18.0
     assert green_ellipse.pen().color() == QColor(80, 230, 120)
     assert "质量 0.86" in green_ellipse.toolTip()
+    assert center_cross.pen().color() == QColor(0, 0, 0)
+    assert center_cross.pen().isCosmetic()
+    assert center_cross.path().boundingRect().width() == 6.0
+    assert center_cross.path().boundingRect().height() == 6.0
+    assert center_cross.rotation() == -yellow_ellipse.rotation()
+    assert center_cross.mapToScene(QPointF(0.0, 0.0)) == QPointF(fitted.x, fitted.y)
+    assert "质量 0.86" in center_cross.toolTip()
     assert blue_ellipse.scene() is host.real_image_scene
     assert host._focused_star_annotations == [blue_ellipse]
     host.close()

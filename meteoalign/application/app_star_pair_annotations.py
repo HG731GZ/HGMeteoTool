@@ -3,10 +3,11 @@ from __future__ import annotations
 import math
 
 from PyQt5.QtCore import QPoint, QPointF, Qt
-from PyQt5.QtGui import QBrush, QColor, QCursor, QFont, QPainter, QPen, QPixmap
+from PyQt5.QtGui import QBrush, QColor, QCursor, QFont, QPainter, QPainterPath, QPen, QPixmap
 from PyQt5.QtWidgets import (
     QGraphicsEllipseItem,
     QGraphicsItem,
+    QGraphicsPathItem,
     QGraphicsScene,
     QGraphicsSimpleTextItem,
     QGraphicsView,
@@ -290,6 +291,18 @@ class StarPairAnnotationsMixin:
         outer_ellipse_item.setPen(outer_pen)
         outer_ellipse_item.setBrush(QBrush(Qt.NoBrush))
         outer_ellipse_item.setZValue(-1.0)
+        cross_half_size = min(3.0, max(1.5, min(radius_x, radius_y) * 0.5))
+        cross_path = QPainterPath()
+        cross_path.moveTo(-cross_half_size, 0.0)
+        cross_path.lineTo(cross_half_size, 0.0)
+        cross_path.moveTo(0.0, -cross_half_size)
+        cross_path.lineTo(0.0, cross_half_size)
+        center_cross_item = QGraphicsPathItem(cross_path, ellipse_item)
+        cross_pen = QPen(QColor(0, 0, 0), 1.5)
+        cross_pen.setCosmetic(True)
+        center_cross_item.setPen(cross_pen)
+        center_cross_item.setRotation(-theta_deg)
+        center_cross_item.setZValue(1.0)
         if fitted_position.forced:
             psf_state = "强制矩心（仅中心可信）"
         else:
@@ -302,6 +315,7 @@ class StarPairAnnotationsMixin:
         )
         ellipse_item.setToolTip(tooltip)
         outer_ellipse_item.setToolTip(tooltip)
+        center_cross_item.setToolTip(tooltip)
 
         label_item = QGraphicsSimpleTextItem(self._star_pair_label(row))
         label_font = QFont(self.font())
