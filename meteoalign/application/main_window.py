@@ -71,13 +71,6 @@ from .app_rendering import RenderingMixin
 from .app_view_controls import ViewControlsMixin
 from .app_mosaic import MosaicProjectionMixin
 from .app_mosaic_batch import MosaicBatchMixin
-from .app_utils import (
-    _session_image_candidate,
-    _resolve_star_pair_session_real_image_path,
-    _relative_image_path_for_session,
-    _qimage_to_binary_mask,
-    _image_with_binary_mask,
-)
 from .preferences_dialog import PreferencesDialog, PreferencesLauncher
 from .about_dialog import AboutDialog
 from .image_group_assistant_dialog import ImageGroupAssistantDialog
@@ -144,14 +137,6 @@ def configure_preview_navigation_shortcuts(ui: Ui_MainWindow) -> tuple[QShortcut
         shortcut.activated.connect(button.click)
         shortcuts.append(shortcut)
     return tuple(shortcuts)
-
-
-# ---------------------------------------------------------------------------
-# 重新导出辅助函数（供 app_workers 等模块使用）
-# ---------------------------------------------------------------------------
-# _session_image_candidate, _resolve_star_pair_session_real_image_path,
-# _relative_image_path_for_session, _qimage_to_binary_mask, _image_with_binary_mask
-# 均已在上面从 app_utils 导入，此处仅保留名称以便兼容旧引用。
 
 
 # ===================================================================

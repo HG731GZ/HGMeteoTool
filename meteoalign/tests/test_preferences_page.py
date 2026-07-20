@@ -151,6 +151,7 @@ def test_non_default_changes_apply_immediately_without_writing_file(tmp_path) ->
     applied_count_before_defaults = len(applied)
     page.ui.doubleSpinBoxDefaultLatitude.setValue(35.5)
     page.ui.spinBoxAutoMatchDefaultSearchRadius.setValue(80)
+    page.ui.spinBoxMosaicMapTileSize.setValue(32)
 
     assert preference_path.read_bytes() == before_apply
     assert len(applied) == applied_count_before_defaults
@@ -386,7 +387,33 @@ def test_default_only_preference_keys_cover_all_default_groups() -> None:
         "auto_match_default_search_radius_px",
         "sequence_psf_search_radius_px",
         "mosaic_grid_precision_default",
+        "mosaic_map_tile_size_px",
     }
+
+
+def test_every_default_only_option_is_explicitly_labeled_as_default(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """只影响后续任务的选项必须在自身文案中明确标注“默认”。"""
+
+    app = QApplication.instance() or QApplication([])
+    page = PreferencesPage(preference_path=tmp_path / "preference.json")
+    default_option_labels = (
+        page.ui.labelStarPickDefaultDiameter,
+        page.ui.checkBoxStarPairAssistantAlwaysOnTopDefault,
+        page.ui.labelDefaultLatitude,
+        page.ui.labelDefaultLongitude,
+        page.ui.labelDefaultElevation,
+        page.ui.labelAutoMatchCount,
+        page.ui.labelAutoMatchMode,
+        page.ui.labelAutoMatchSoftWeight,
+        page.ui.labelAutoMatchDefaultSearchRadius,
+        page.ui.labelSequencePsfSearchRadiusDefault,
+        page.ui.labelMosaicGridPrecision,
+        page.ui.labelMosaicMapTileSize,
+    )
+
+    assert all("默认" in widget.text() for widget in default_option_labels)
+    page.close()
+    app.processEvents()
 
 
 def test_star_marker_multiplier_changes_only_computed_star_radius() -> None:

@@ -94,6 +94,7 @@ DEFAULT_ONLY_PREFERENCE_KEYS = frozenset(
         "auto_match_default_search_radius_px",
         "sequence_psf_search_radius_px",
         "mosaic_grid_precision_default",
+        "mosaic_map_tile_size_px",
     }
 )
 
@@ -268,7 +269,6 @@ class PreferencesPage(QWidget, AppWidgetMixin):
             ui.doubleSpinBoxMosaicFontSizeMultiplier,
             ui.doubleSpinBoxMosaicStarMarkerSizeMultiplier,
             ui.spinBoxMosaicExportBlockRows,
-            ui.spinBoxMosaicMapTileSize,
             ui.spinBoxMeteorRadiantLabelFontSize,
             ui.doubleSpinBoxMeteorCountMultiplier,
             ui.doubleSpinBoxMeteorMaxLength,
