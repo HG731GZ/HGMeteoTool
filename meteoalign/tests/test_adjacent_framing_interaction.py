@@ -13,6 +13,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QImage
 from PyQt5.QtWidgets import QApplication, QCheckBox, QMainWindow, QMessageBox
 
+from meteoalign.adjacent_alignment import AdjacentFramingResult
 from meteoalign.application import app_adjacent_framing
 from meteoalign.application.app_adjacent_framing import AdjacentFramingMixin
 from meteoalign.application.image_preview_dialog import ImagePreviewDialog
@@ -90,6 +91,7 @@ def test_adjacent_image_controls_have_required_text_and_order() -> None:
     )
     assert ui.pushButtonImportAdjacentImage.text() == "导入参考图像"
     assert ui.pushButtonCalculateAdjacentFraming.text() == "计算粗略取景"
+    assert "解除模拟星空视角同步" in ui.pushButtonCalculateAdjacentFraming.toolTip()
     assert ui.toolButtonAdjacentAlignmentSettings.text() == "设定"
     assert not hasattr(ui, "pushButtonSelectAdjacentImageFromGroup")
     window.close()
@@ -236,7 +238,7 @@ def test_landscape_time_warning_can_cancel_rough_framing(monkeypatch) -> None:  
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("不应创建后台任务")),
     )
 
-    host.calculate_adjacent_rough_framing()
+    host.toggle_adjacent_rough_framing()
 
     assert questions == [
         (
@@ -246,6 +248,53 @@ def test_landscape_time_warning_can_cancel_rough_framing(monkeypatch) -> None:  
     ]
     assert host._adjacent_framing_thread is None
     assert host.ui.statusbar.currentMessage() == "已取消粗略取景计算。"
+    host.close()
+
+
+def test_calculated_framing_keeps_sync_and_reset_releases_current_view() -> None:
+    """计算成功后保持视角同步，重置时解除接管但保留当前视角。"""
+
+    app = QApplication.instance() or QApplication([])
+    host = _AdjacentFramingHost()
+    current_path = Path("current.jpg").resolve()
+    host.current_image_preview = SimpleNamespace(path=current_path)
+
+    def sync_to_rough_framing() -> None:
+        host.ui.doubleSpinBoxAz.setValue(240.0)
+        host.ui.doubleSpinBoxAlt.setValue(50.0)
+        host.ui.doubleSpinBoxRoll.setValue(25.0)
+
+    host._update_reference_alignment_transform = sync_to_rough_framing  # type: ignore[method-assign]
+    transform = SimpleNamespace(rms_px=2.5)
+    result = AdjacentFramingResult(
+        model_json_path=Path("reference_model.json").resolve(),
+        image_a_path=Path("reference.jpg").resolve(),
+        image_b_path=current_path,
+        mode="stars",
+        correspondence_count=18,
+        correspondence_rms_px=1.5,
+        source_model=object(),  # type: ignore[arg-type]
+        transform=transform,  # type: ignore[arg-type]
+    )
+
+    host._handle_adjacent_framing_finished(result)
+
+    assert host.ui.pushButtonCalculateAdjacentFraming.text() == "重置粗略取景"
+    assert host.ui.pushButtonCalculateAdjacentFraming.isEnabled()
+    assert host.ui.doubleSpinBoxAz.value() == 240.0
+    assert host.ui.doubleSpinBoxAlt.value() == 50.0
+    assert host.ui.doubleSpinBoxRoll.value() == 25.0
+
+    host.toggle_adjacent_rough_framing()
+
+    assert host._adjacent_framing_result is None
+    assert host._rough_alignment_transform is None
+    assert host._rough_source_astrometric_model is None
+    assert host.ui.pushButtonCalculateAdjacentFraming.text() == "计算粗略取景"
+    assert host.ui.doubleSpinBoxAz.value() == 240.0
+    assert host.ui.doubleSpinBoxAlt.value() == 50.0
+    assert host.ui.doubleSpinBoxRoll.value() == 25.0
+    assert host.ui.statusbar.currentMessage() == "已重置粗略取景，可手动调整模拟星空视角。"
     host.close()
 
 

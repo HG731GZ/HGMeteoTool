@@ -520,7 +520,7 @@ class MainWindow(
         if hasattr(self.ui, "pushButtonPreviewAdjacentImage"):
             self.ui.pushButtonPreviewAdjacentImage.clicked.connect(self.show_adjacent_image_preview)
         if hasattr(self.ui, "pushButtonCalculateAdjacentFraming"):
-            self.ui.pushButtonCalculateAdjacentFraming.clicked.connect(self.calculate_adjacent_rough_framing)
+            self.ui.pushButtonCalculateAdjacentFraming.clicked.connect(self.toggle_adjacent_rough_framing)
         if hasattr(self.ui, "toolButtonAdjacentAlignmentSettings"):
             self.ui.toolButtonAdjacentAlignmentSettings.clicked.connect(self.open_adjacent_alignment_settings)
         if hasattr(self.ui, "comboBoxAdjacentAlignmentMode"):

@@ -1895,6 +1895,12 @@
                      <property name="enabled">
                       <bool>false</bool>
                      </property>
+                     <property name="toolTip">
+                      <string>计算后可再次点击，清除粗略取景并解除模拟星空视角同步</string>
+                     </property>
+                     <property name="accessibleName">
+                      <string>计算或重置粗略取景</string>
+                     </property>
                      <property name="text">
                       <string>计算粗略取景</string>
                      </property>

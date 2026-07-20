@@ -1716,6 +1716,8 @@ class Ui_MainWindow(object):
         self.labelAdjacentFramingStatusTitle.setText(_translate("MainWindow", "粗略取景"))
         self.labelAdjacentFramingStatus.setText(_translate("MainWindow", "未计算粗略取景"))
         self.pushButtonImportAdjacentImage.setText(_translate("MainWindow", "导入参考图像"))
+        self.pushButtonCalculateAdjacentFraming.setToolTip(_translate("MainWindow", "计算后可再次点击，清除粗略取景并解除模拟星空视角同步"))
+        self.pushButtonCalculateAdjacentFraming.setAccessibleName(_translate("MainWindow", "计算或重置粗略取景"))
         self.pushButtonCalculateAdjacentFraming.setText(_translate("MainWindow", "计算粗略取景"))
         self.toolButtonAdjacentAlignmentSettings.setToolTip(_translate("MainWindow", "调整当前工作模式的粗略取景参数"))
         self.toolButtonAdjacentAlignmentSettings.setAccessibleName(_translate("MainWindow", "粗略取景参数设置"))

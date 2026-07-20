@@ -75,17 +75,26 @@ class AdjacentFramingMixin:
         adjacent_is_current = self._adjacent_image_is_current()
         self._update_adjacent_image_label(adjacent_is_current)
         idle = getattr(self, "_adjacent_framing_thread", None) is None
+        has_result = getattr(self, "_adjacent_framing_result", None) is not None
         self.ui.pushButtonImportAdjacentImage.setEnabled(idle)
         if hasattr(self.ui, "pushButtonPreviewAdjacentImage"):
             self.ui.pushButtonPreviewAdjacentImage.setEnabled(
                 getattr(self, "_adjacent_image_path", None) is not None
             )
         self.ui.comboBoxAdjacentAlignmentMode.setEnabled(idle)
+        self.ui.pushButtonCalculateAdjacentFraming.setText(
+            "重置粗略取景" if has_result else "计算粗略取景"
+        )
         self.ui.pushButtonCalculateAdjacentFraming.setEnabled(
             idle
-            and getattr(self, "_adjacent_model_json_path", None) is not None
-            and self.current_image_preview is not None
-            and not adjacent_is_current
+            and (
+                has_result
+                or (
+                    getattr(self, "_adjacent_model_json_path", None) is not None
+                    and self.current_image_preview is not None
+                    and not adjacent_is_current
+                )
+            )
         )
         if hasattr(self.ui, "toolButtonAdjacentAlignmentSettings"):
             self.ui.toolButtonAdjacentAlignmentSettings.setEnabled(idle)
@@ -231,11 +240,20 @@ class AdjacentFramingMixin:
 
         self.image_preview_dialog.show_preview(preview)
 
-    def calculate_adjacent_rough_framing(self) -> None:
-        """后台寻找参考图像 A↔当前图像 B 对应点，并用 A 的 Pixel↔ICRS 模型生成 B 的粗略取景。"""
+    def reset_adjacent_rough_framing(self) -> None:
+        """清除粗略取景，使模拟星空视角不再受粗略模型接管。"""
+
+        self._clear_adjacent_rough_framing(refresh_alignment=True)
+        self.ui.statusbar.showMessage("已重置粗略取景，可手动调整模拟星空视角。")
+
+    def toggle_adjacent_rough_framing(self) -> None:
+        """根据当前状态计算或重置参考图像粗略取景。"""
 
         if getattr(self, "_adjacent_framing_thread", None) is not None:
             QMessageBox.information(self, "正在计算粗略取景", "当前已有粗略取景计算任务，请稍候。")
+            return
+        if getattr(self, "_adjacent_framing_result", None) is not None:
+            self.reset_adjacent_rough_framing()
             return
         if self.current_image_preview is None:
             QMessageBox.information(self, "尚未导入图像", "请先导入图像。")
