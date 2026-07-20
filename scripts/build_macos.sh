@@ -3,7 +3,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="${0:A:h:h}"
-PYTHON_BIN="${HGASTRO_PYTHON:-/Volumes/SSDAPFS/conda-envs/hgastro/bin/python}"
+PYTHON_BIN="${HGASTRO_PYTHON:-/Volumes/SSDAPFS/conda/envs/hgastro/bin/python}"
 APP_NAME="HoshinoPanoAssistant"
 APP_BUNDLE="$PROJECT_ROOT/dist/$APP_NAME.app"
 RELEASE_DIR="$PROJECT_ROOT/dist/$APP_NAME-macOS-arm64"
