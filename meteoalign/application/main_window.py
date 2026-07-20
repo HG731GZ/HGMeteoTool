@@ -128,6 +128,24 @@ def apply_platform_layout(
     window.resize(min(window.width(), _MACOS_COMPACT_WINDOW_WIDTH), window.height())
 
 
+def configure_preview_navigation_shortcuts(ui: Ui_MainWindow) -> tuple[QShortcut, ...]:
+    """为框选流星和图像序列的右侧预览配置左右方向键切换。"""
+
+    shortcut_specs = (
+        (Qt.Key_Left, ui.groupBoxMeteorSelectionPreview, ui.toolButtonMeteorSelectionPrevious),
+        (Qt.Key_Right, ui.groupBoxMeteorSelectionPreview, ui.toolButtonMeteorSelectionNext),
+        (Qt.Key_Left, ui.groupBoxImageSequencePreview, ui.toolButtonImageSequencePrevious),
+        (Qt.Key_Right, ui.groupBoxImageSequencePreview, ui.toolButtonImageSequenceNext),
+    )
+    shortcuts: list[QShortcut] = []
+    for key, preview, button in shortcut_specs:
+        shortcut = QShortcut(QKeySequence(key), preview)
+        shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+        shortcut.activated.connect(button.click)
+        shortcuts.append(shortcut)
+    return tuple(shortcuts)
+
+
 # ---------------------------------------------------------------------------
 # 重新导出辅助函数（供 app_workers 等模块使用）
 # ---------------------------------------------------------------------------
@@ -257,6 +275,7 @@ class MainWindow(
         super().__init__()
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
+        self.preview_navigation_shortcuts = configure_preview_navigation_shortcuts(self.ui)
         # 匹配控件实际位于独立窗口；同名接口仍挂在主 UI 上，供各业务模块共享。
         self.star_pair_assistant = StarPairAssistantDialog()
         self.star_pair_assistant.bind_controls_to(self.ui)

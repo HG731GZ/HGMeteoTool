@@ -10,7 +10,8 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import QEvent, QFile, Qt
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QFont, QKeySequence
+from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -27,7 +28,11 @@ from meteoalign.application.app_mosaic import MosaicProjectionMixin, MosaicSourc
 from meteoalign.application.app_rendering import RenderingMixin
 from meteoalign.application.app_sequence_table_preview import SequenceTablePreviewMixin
 from meteoalign.application.app_star_pair_table_groups import StarPairTableGroupsMixin
-from meteoalign.application.main_window import MainWindow, apply_platform_layout
+from meteoalign.application.main_window import (
+    MainWindow,
+    apply_platform_layout,
+    configure_preview_navigation_shortcuts,
+)
 from meteoalign.application.star_pair_assistant_dialog import StarPairAssistantDialog
 from meteoalign.ui.ui_main_window import Ui_MainWindow
 
@@ -48,6 +53,73 @@ DYNAMIC_INFORMATION_LABELS = (
     "labelMosaicViewInfo",
     "labelMosaicBatchFramingPath",
 )
+
+
+def test_preview_navigation_buttons_use_arrow_key_shortcuts() -> None:
+    """右侧预览获得焦点时应使用左右方向键触发对应按钮。"""
+
+    app = QApplication.instance() or QApplication([])
+    window = QMainWindow()
+    ui = Ui_MainWindow()
+    ui.setupUi(window)
+    shortcuts = configure_preview_navigation_shortcuts(ui)
+    buttons = (
+        ui.toolButtonMeteorSelectionPrevious,
+        ui.toolButtonMeteorSelectionNext,
+        ui.toolButtonImageSequencePrevious,
+        ui.toolButtonImageSequenceNext,
+    )
+    for button in buttons:
+        button.setEnabled(True)
+
+    assert tuple(shortcut.key() for shortcut in shortcuts) == (
+        QKeySequence(Qt.Key_Left),
+        QKeySequence(Qt.Key_Right),
+        QKeySequence(Qt.Key_Left),
+        QKeySequence(Qt.Key_Right),
+    )
+    assert all(shortcut.context() == Qt.WidgetWithChildrenShortcut for shortcut in shortcuts)
+
+    clicks = {"meteor_previous": 0, "meteor_next": 0, "sequence_previous": 0, "sequence_next": 0}
+    ui.toolButtonMeteorSelectionPrevious.clicked.connect(
+        lambda: clicks.__setitem__("meteor_previous", clicks["meteor_previous"] + 1)
+    )
+    ui.toolButtonMeteorSelectionNext.clicked.connect(
+        lambda: clicks.__setitem__("meteor_next", clicks["meteor_next"] + 1)
+    )
+    ui.toolButtonImageSequencePrevious.clicked.connect(
+        lambda: clicks.__setitem__("sequence_previous", clicks["sequence_previous"] + 1)
+    )
+    ui.toolButtonImageSequenceNext.clicked.connect(
+        lambda: clicks.__setitem__("sequence_next", clicks["sequence_next"] + 1)
+    )
+
+    window.show()
+    ui.tabWidgetMain.setCurrentWidget(ui.tabMeteorSelection)
+    ui.meteorSelectionView.setFocus()
+    app.processEvents()
+    QTest.keyClick(ui.meteorSelectionView, Qt.Key_Left)
+    QTest.keyClick(ui.meteorSelectionView, Qt.Key_Right)
+    assert clicks == {"meteor_previous": 1, "meteor_next": 1, "sequence_previous": 0, "sequence_next": 0}
+    ui.toolButtonMeteorSelectionPrevious.setFocus()
+    QTest.keyClick(ui.toolButtonMeteorSelectionPrevious, Qt.Key_Right)
+    assert clicks["meteor_next"] == 2
+    ui.pushButtonImportMeteorImages.setFocus()
+    QTest.keyClick(ui.pushButtonImportMeteorImages, Qt.Key_Right)
+    assert clicks["meteor_next"] == 2
+
+    ui.tabWidgetMain.setCurrentWidget(ui.tabImageSequence)
+    ui.imageSequenceView.setFocus()
+    app.processEvents()
+    QTest.keyClick(ui.imageSequenceView, Qt.Key_Left)
+    QTest.keyClick(ui.imageSequenceView, Qt.Key_Right)
+    assert clicks == {"meteor_previous": 1, "meteor_next": 2, "sequence_previous": 1, "sequence_next": 1}
+
+    ui.toolButtonImageSequenceNext.setEnabled(False)
+    QTest.keyClick(ui.imageSequenceView, Qt.Key_Right)
+    assert clicks["sequence_next"] == 1
+    window.close()
+
 
 FORM_LAYOUTS = (
     "formLayoutObserver",

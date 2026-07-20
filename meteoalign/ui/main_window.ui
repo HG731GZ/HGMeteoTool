@@ -281,7 +281,7 @@
                 <bool>false</bool>
                </property>
                <property name="toolTip">
-                <string>上一张</string>
+                <string>上一张（←）</string>
                </property>
                <property name="text">
                 <string>◀</string>
@@ -329,7 +329,7 @@
                 <bool>false</bool>
                </property>
                <property name="toolTip">
-                <string>下一张</string>
+                <string>下一张（→）</string>
                </property>
                <property name="text">
                 <string>▶</string>
@@ -1317,7 +1317,7 @@
                 <bool>false</bool>
                </property>
                <property name="toolTip">
-                <string>上一张</string>
+                <string>上一张（←）</string>
                </property>
                <property name="text">
                 <string>◀</string>
@@ -1362,7 +1362,7 @@
                 <bool>false</bool>
                </property>
                <property name="toolTip">
-                <string>下一张</string>
+                <string>下一张（→）</string>
                </property>
                <property name="text">
                 <string>▶</string>
