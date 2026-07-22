@@ -12,6 +12,7 @@ from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QFileDialog, QTreeView
 
 from meteoalign.application.file_dialogs import (
+    get_open_file_name,
     get_multiple_open_file_names,
     multiple_file_dialog_options,
     supported_suffixes_from_name_filter,
@@ -112,3 +113,34 @@ def test_macos_command_a_selects_every_visible_file(monkeypatch) -> None:
     )
 
     assert selected_row_counts == [3]
+
+
+def test_macos_single_file_import_uses_filtered_qt_dialog(monkeypatch) -> None:
+    """单文件入口也应使用 Qt ExistingFile，并隐藏不匹配项。"""
+
+    _application()
+    dialog_states: list[tuple[int, bool, bool]] = []
+
+    def fake_exec(dialog: QFileDialog) -> int:
+        view = dialog.findChild(QTreeView, "treeView")
+        source_model = view.model()
+        dialog_states.append(
+            (
+                dialog.fileMode(),
+                bool(dialog.testOption(QFileDialog.DontUseNativeDialog)),
+                bool(source_model.nameFilterDisables()),  # type: ignore[attr-defined]
+            )
+        )
+        return QFileDialog.Rejected
+
+    monkeypatch.setattr(QFileDialog, "exec_", fake_exec)
+
+    get_open_file_name(
+        None,
+        "导入参考图像",
+        "",
+        "图像文件 (*.tif *.jpg)",
+        platform_name="darwin",
+    )
+
+    assert dialog_states == [(QFileDialog.ExistingFile, True, False)]

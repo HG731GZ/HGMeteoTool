@@ -1,4 +1,4 @@
-"""跨平台多文件对话框与快捷键兼容。"""
+"""跨平台文件对话框、类型过滤与快捷键兼容。"""
 
 from __future__ import annotations
 
@@ -17,7 +17,10 @@ _SUFFIX_PATTERN = re.compile(r"\*\.([A-Za-z0-9]+)")
 def supported_suffixes_from_name_filter(file_filter: str) -> frozenset[str]:
     """从 Qt 名称过滤器提取业务允许的文件后缀。"""
 
-    return frozenset(f".{match.group(1).casefold()}" for match in _SUFFIX_PATTERN.finditer(file_filter))
+    return frozenset(
+        f".{match.group(1).casefold()}"
+        for match in _SUFFIX_PATTERN.finditer(file_filter)
+    )
 
 
 def _supported_selected_paths(paths: list[str], file_filter: str) -> list[str]:
@@ -58,6 +61,50 @@ def _select_all_file_dialog_items(dialog: QFileDialog) -> None:
         view.selectAll()
 
 
+def _hide_unsupported_file_dialog_items(dialog: QFileDialog) -> None:
+    """让名称过滤器真正隐藏不匹配文件，而不是只将其禁用。"""
+
+    file_system_model = dialog.findChild(QFileSystemModel)
+    if file_system_model is not None:
+        file_system_model.setNameFilterDisables(False)
+
+
+def get_open_file_name(
+    parent,
+    caption: str,
+    directory: str,
+    file_filter: str,
+    *,
+    hide_name_filter_details: bool = False,
+    platform_name: str | None = None,
+) -> tuple[str, str]:
+    """显示单文件对话框；macOS 与多文件入口统一使用 Qt 对话框。"""
+
+    resolved_platform = platform_name or sys.platform
+    options = multiple_file_dialog_options(
+        hide_name_filter_details=hide_name_filter_details,
+        platform_name=resolved_platform,
+    )
+    if resolved_platform != "darwin":
+        return QFileDialog.getOpenFileName(
+            parent,
+            caption,
+            directory,
+            file_filter,
+            options=options,
+        )
+
+    dialog = QFileDialog(parent, caption, directory, file_filter)
+    dialog.setOptions(options)
+    dialog.setAcceptMode(QFileDialog.AcceptOpen)
+    dialog.setFileMode(QFileDialog.ExistingFile)
+    _hide_unsupported_file_dialog_items(dialog)
+    if dialog.exec_() != QFileDialog.Accepted:
+        return "", dialog.selectedNameFilter()
+    selected_paths = dialog.selectedFiles()
+    return (selected_paths[0] if selected_paths else ""), dialog.selectedNameFilter()
+
+
 def get_multiple_open_file_names(
     parent,
     caption: str,
@@ -88,10 +135,7 @@ def get_multiple_open_file_names(
     dialog.setOptions(options)
     dialog.setAcceptMode(QFileDialog.AcceptOpen)
     dialog.setFileMode(QFileDialog.ExistingFiles)
-    file_system_model = dialog.findChild(QFileSystemModel)
-    if file_system_model is not None:
-        # QFileSystemModel 默认只把不匹配项禁用；这里改为直接隐藏，目录仍保持可导航。
-        file_system_model.setNameFilterDisables(False)
+    _hide_unsupported_file_dialog_items(dialog)
     select_all_shortcut = QShortcut(QKeySequence("Meta+A"), dialog)
     select_all_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
     select_all_shortcut.activated.connect(lambda: _select_all_file_dialog_items(dialog))
@@ -105,6 +149,7 @@ def get_multiple_open_file_names(
 
 
 __all__ = [
+    "get_open_file_name",
     "get_multiple_open_file_names",
     "multiple_file_dialog_options",
     "supported_suffixes_from_name_filter",

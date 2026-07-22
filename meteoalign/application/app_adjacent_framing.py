@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt5.QtWidgets import QApplication, QFileDialog, QMessageBox, QProgressDialog
+from PyQt5.QtWidgets import QApplication, QMessageBox, QProgressDialog
 
 from ..adjacent_alignment import (
     ADJACENT_ALIGNMENT_MODE_LANDSCAPE,
@@ -18,6 +18,7 @@ from ..adjacent_framing_worker import AdjacentFramingWorker
 from ..image_preview import IMAGE_FILE_FILTER, load_image_preview
 from ..image_sequence import read_image_capture_time, sequence_item_time_delta_seconds
 from .adjacent_alignment_settings_dialog import AdjacentAlignmentSettingsDialog
+from .file_dialogs import get_open_file_name
 from .image_preview_dialog import ImagePreviewDialog
 
 
@@ -164,7 +165,7 @@ class AdjacentFramingMixin:
         elif self.current_image_preview is not None:
             default_dir = Path(self.current_image_preview.path).expanduser().resolve().parent
         default_dir = self._import_dialog_directory(default_dir)
-        file_path, _selected_filter = QFileDialog.getOpenFileName(
+        file_path, _selected_filter = get_open_file_name(
             self,
             "导入参考图像",
             str(default_dir),

@@ -8,6 +8,7 @@ from PyQt5.QtWidgets import QDialog, QDialogButtonBox, QFileDialog
 
 from ..meteor_detection import METEOR_DETECTION_PROVIDERS, MeteorDetectionOptions
 from ..ui.ui_meteor_detection_options_dialog import Ui_MeteorDetectionOptionsDialog
+from .file_dialogs import get_open_file_name
 
 
 class MeteorDetectionOptionsDialog(QDialog):
@@ -61,7 +62,7 @@ class MeteorDetectionOptionsDialog(QDialog):
 
     def _browse_engine_file(self) -> None:
         fallback = self._existing_parent(self.ui.lineEditEnginePath.text())
-        selected, _selected_filter = QFileDialog.getOpenFileName(
+        selected, _selected_filter = get_open_file_name(
             self,
             "选择 MetDet worker",
             str(fallback),
@@ -78,7 +79,7 @@ class MeteorDetectionOptionsDialog(QDialog):
 
     def _browse_model(self) -> None:
         fallback = self._existing_parent(self.ui.lineEditModelPath.text())
-        selected, _selected_filter = QFileDialog.getOpenFileName(
+        selected, _selected_filter = get_open_file_name(
             self,
             "选择流星检测模型",
             str(fallback),

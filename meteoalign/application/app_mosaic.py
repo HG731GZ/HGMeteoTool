@@ -28,7 +28,7 @@ from ..alignment.constants import (
     SKY_MATCHING_MODEL_RECTILINEAR,
 )
 from .app_constants import SOURCE_MODEL_JSON_FILTER
-from .file_dialogs import get_multiple_open_file_names
+from .file_dialogs import get_multiple_open_file_names, get_open_file_name
 from .app_graphics_items import GraphicsImageItem
 from ..catalog import project_root
 from ..mosaic_common import (
@@ -1299,7 +1299,7 @@ class MosaicProjectionMixin:
         if not default_dir.exists():
             default_dir = project_root()
         default_dir = self._import_dialog_directory(default_dir)
-        file_path, _selected_filter = QFileDialog.getOpenFileName(
+        file_path, _selected_filter = get_open_file_name(
             self,
             "导入自由投影取景 JSON",
             str(default_dir),

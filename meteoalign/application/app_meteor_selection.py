@@ -24,7 +24,7 @@ from ..raw_image_preview import METEOR_IMAGE_FILE_FILTER, is_raw_image_path, loa
 from ..qt_tasks import create_progress_dialog, start_qt_worker_task
 from ..meteor_mask import MeteorMaskLoadWorker
 from .app_workers import MeteorImagePreviewLoadWorker
-from .file_dialogs import get_multiple_open_file_names
+from .file_dialogs import get_multiple_open_file_names, get_open_file_name
 from .metdet_worker_client import MetDetWorkerClient
 from .meteor_detection_options_dialog import MeteorDetectionOptionsDialog
 
@@ -438,7 +438,7 @@ class MeteorSelectionMixin:
             return
         image_path = self._meteor_selection_paths[self._meteor_selection_current_index]
         default_dir = self._import_dialog_directory(image_path.parent)
-        file_path, _selected_filter = QFileDialog.getOpenFileName(
+        file_path, _selected_filter = get_open_file_name(
             self,
             "导入流星检测蒙版",
             str(default_dir),

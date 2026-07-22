@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
-from PyQt5.QtWidgets import QFileDialog, QMessageBox
+from PyQt5.QtWidgets import QMessageBox
 
 from ..auto_match_quality import AUTO_MATCH_QUALITY_SCORE_KEY
 from ..alignment.constants import MIN_ALIGNMENT_PAIRS
@@ -15,6 +15,7 @@ from .app_constants import (
 )
 from .app_constants import AUTO_MATCH_SEARCH_MAG_LIMIT
 from .app_utils import _relative_image_path_for_session
+from .file_dialogs import get_open_file_name
 from ..fixed_camera_model import FixedCameraModel, FixedCameraTimeFitResult
 from ..image_preview import IMAGE_FILE_FILTER, ImagePreview, load_image_preview
 from ..image_sequence import ImageSequenceItem, sequence_item_time_delta_seconds
@@ -384,7 +385,7 @@ class SequenceExportMixin:
             return
 
         default_dir = self._import_dialog_directory(first_item.path.parent)
-        file_path, _selected_filter = QFileDialog.getOpenFileName(
+        file_path, _selected_filter = get_open_file_name(
             self,
             "导入序列蒙版",
             str(default_dir),

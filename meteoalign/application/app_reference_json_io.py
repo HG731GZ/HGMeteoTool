@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from PyQt5.QtCore import QDateTime
-from PyQt5.QtWidgets import QFileDialog, QMessageBox
+from PyQt5.QtWidgets import QMessageBox
 
 from .app_constants import (
     LENS_MODELS,
@@ -13,6 +13,7 @@ from .app_constants import (
     REFERENCE_LABEL_MODES,
 )
 from .app_workers import ReferenceJsonImportWorker
+from .file_dialogs import get_open_file_name
 from ..catalog import project_root
 from ..qt_tasks import start_qt_worker_task
 
@@ -24,7 +25,7 @@ class ReferenceJsonIOMixin:
         if not default_dir.exists():
             default_dir = project_root()
         default_dir = self._import_dialog_directory(default_dir)
-        file_path, _selected_filter = QFileDialog.getOpenFileName(
+        file_path, _selected_filter = get_open_file_name(
             self,
             "导入预览 JSON",
             str(default_dir),

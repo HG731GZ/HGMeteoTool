@@ -7,9 +7,7 @@ from pathlib import Path
 
 import numpy as np
 from PyQt5.QtCore import QTimer
-from PyQt5.QtWidgets import (
-    QFileDialog, QMessageBox, QTableWidgetItem,
-)
+from PyQt5.QtWidgets import QMessageBox, QTableWidgetItem
 
 from ..alignment.constants import MIN_ALIGNMENT_PAIRS
 from .app_constants import (
@@ -27,6 +25,7 @@ from .app_utils import (
     _validate_star_pair_session_current_image,
 )
 from .app_workers import StarPairSessionImportWorker
+from .file_dialogs import get_open_file_name
 from ..catalog import project_root
 from ..frame_astrometry import FrameAstrometricModel, FramePose
 from ..image_preview import load_image_preview, ImagePreview
@@ -323,7 +322,7 @@ class StarPairSessionMixin:
         if not default_dir.exists():
             default_dir = project_root()
         default_dir = self._import_dialog_directory(default_dir)
-        file_path, _selected_filter = QFileDialog.getOpenFileName(
+        file_path, _selected_filter = get_open_file_name(
             self,
             "导入星点匹配 JSON",
             str(default_dir),

@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 from PyQt5.QtCore import QDateTime
 from PyQt5.QtGui import QImage
-from PyQt5.QtWidgets import QApplication, QFileDialog, QMenu, QMessageBox, QProgressDialog
+from PyQt5.QtWidgets import QApplication, QMenu, QMessageBox, QProgressDialog
 
 from ..catalog import project_root
 from ..image_path_resolution import companion_sky_mask_path, is_reserved_mask_path
@@ -17,7 +17,7 @@ from ..qt_tasks import create_progress_dialog, start_qt_worker_task
 from ..reference import build_reference_payload, save_reference_outputs
 from .app_utils import _image_with_binary_mask
 from .app_workers import ImagePreviewLoadWorker, SkyMaskLoadWorker
-from .file_dialogs import get_multiple_open_file_names
+from .file_dialogs import get_multiple_open_file_names, get_open_file_name
 
 
 class ImageMixin:
@@ -481,7 +481,7 @@ class ImageMixin:
 
         default_dir = Path(self.current_image_preview.path).expanduser().resolve().parent
         default_dir = self._import_dialog_directory(default_dir)
-        file_path, _selected_filter = QFileDialog.getOpenFileName(
+        file_path, _selected_filter = get_open_file_name(
             self,
             "导入星空区域蒙版",
             str(default_dir),

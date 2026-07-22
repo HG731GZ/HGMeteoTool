@@ -5,7 +5,7 @@ import math
 from pathlib import Path
 import numpy as np
 from PyQt5.QtCore import QRectF, Qt
-from PyQt5.QtWidgets import QFileDialog, QTableWidgetItem, QGraphicsView, QMessageBox
+from PyQt5.QtWidgets import QTableWidgetItem, QGraphicsView, QMessageBox
 
 from ..alignment.constants import (
     MIN_ALIGNMENT_PAIRS,
@@ -42,6 +42,7 @@ from .app_constants import (
     AUTO_MATCH_CONSTRAINT_SOFT, AUTO_MATCH_CONSTRAINT_MODES,
     SOURCE_MODEL_JSON_FILTER,
 )
+from .file_dialogs import get_open_file_name
 from ..source_model import (
     FixedProfilePoseSourceModel,
     SourceAstrometricModel,
@@ -217,7 +218,7 @@ class AlignmentMixin:
         elif self.current_image_preview is not None:
             default_dir = Path(self.current_image_preview.path).expanduser().resolve().parent
         default_dir = self._import_dialog_directory(default_dir)
-        file_path, _selected_filter = QFileDialog.getOpenFileName(
+        file_path, _selected_filter = get_open_file_name(
             self,
             "从模型 JSON 导入 Camera Profile",
             str(default_dir),

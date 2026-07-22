@@ -186,8 +186,8 @@ def test_import_sky_mask_accepts_any_file_name(tmp_path: Path, monkeypatch) -> N
     freely_named_mask = tmp_path / "sky-region.png"
     harness = _ImageImportSelectionHarness(image_path)
     monkeypatch.setattr(
-        app_image.QFileDialog,
-        "getOpenFileName",
+        app_image,
+        "get_open_file_name",
         lambda *_args, **_kwargs: (str(freely_named_mask), ""),
     )
 
