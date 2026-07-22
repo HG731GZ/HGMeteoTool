@@ -65,7 +65,7 @@ class MeteorDetectionOptionsDialog(QDialog):
             self,
             "选择 MetDet worker",
             str(fallback),
-            "MetDet worker (metdet_worker metdet_worker.exe metdet_worker.py);;所有文件 (*)",
+            "MetDet worker (metdet_worker metdet_worker.exe metdet_worker.py)",
         )
         if selected:
             self.ui.lineEditEnginePath.setText(selected)
@@ -82,7 +82,7 @@ class MeteorDetectionOptionsDialog(QDialog):
             self,
             "选择流星检测模型",
             str(fallback),
-            "ONNX 模型 (*.onnx);;所有文件 (*)",
+            "ONNX 模型 (*.onnx)",
         )
         if selected:
             self.ui.lineEditModelPath.setText(selected)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt5.QtWidgets import QApplication, QFileDialog, QMessageBox
+from PyQt5.QtWidgets import QApplication, QMessageBox
 
 from ..alignment.constants import MIN_ALIGNMENT_PAIRS
 from .app_workers import ImageSequenceCollectWorker
@@ -10,6 +10,7 @@ from ..image_preview import IMAGE_FILE_FILTER
 from ..image_sequence import ImageSequenceItem, RejectedSequenceImage, sequence_item_time_delta_seconds
 from ..qt_tasks import create_progress_dialog, start_qt_worker_task
 from ..sequence_constants import IMAGE_SEQUENCE_IMPORT_PROGRESS_MIN_VISIBLE_MS
+from .file_dialogs import get_multiple_open_file_names
 
 class SequenceImportMixin:
     """图像序列导入、首帧准备和导入状态管理。"""
@@ -27,7 +28,7 @@ class SequenceImportMixin:
 
         default_dir = Path(self.current_image_preview.path).parent if self.current_image_preview is not None else Path.cwd()
         default_dir = self._import_dialog_directory(default_dir)
-        file_paths, _selected_filter = QFileDialog.getOpenFileNames(
+        file_paths, _selected_filter = get_multiple_open_file_names(
             self,
             "导入序列图像",
             str(default_dir),

@@ -41,6 +41,85 @@ def _raw_array_to_qimage(rgb) -> QImage:  # type: ignore[no-untyped-def]
     return image.copy()
 
 
+def _crop_qimage_to_camera_recommended_area(
+    image: QImage,
+    sizes: object,
+) -> tuple[QImage, int, int] | None:
+    """把内嵌预览映射到 RAW 标准裁切区；无法可靠映射时要求回退解码。"""
+
+    source_width = image.width()
+    source_height = image.height()
+    try:
+        visible_width = int(getattr(sizes, "width"))
+        visible_height = int(getattr(sizes, "height"))
+        crop_left = int(getattr(sizes, "crop_left_margin"))
+        crop_top = int(getattr(sizes, "crop_top_margin"))
+        crop_width = int(getattr(sizes, "crop_width"))
+        crop_height = int(getattr(sizes, "crop_height"))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+    if min(visible_width, visible_height, crop_width, crop_height) <= 0:
+        return None
+    if crop_left < 0 or crop_top < 0:
+        return None
+    if crop_left + crop_width > visible_width or crop_top + crop_height > visible_height:
+        return None
+
+    scale_x = source_width / float(visible_width)
+    scale_y = source_height / float(visible_height)
+    # 内嵌 JPEG 有时已经按横竖拍标记旋转；这种情况不能用于传感器原始坐标预览。
+    if scale_x <= 0.0 or scale_y <= 0.0:
+        return None
+    if abs(scale_x - scale_y) / max(scale_x, scale_y) > 0.02:
+        return None
+    scaled_left = int(round(crop_left * scale_x))
+    scaled_top = int(round(crop_top * scale_y))
+    scaled_right = int(round((crop_left + crop_width) * scale_x))
+    scaled_bottom = int(round((crop_top + crop_height) * scale_y))
+    if not (
+        0 <= scaled_left < scaled_right <= source_width
+        and 0 <= scaled_top < scaled_bottom <= source_height
+    ):
+        return None
+    return (
+        image.copy(
+            scaled_left,
+            scaled_top,
+            scaled_right - scaled_left,
+            scaled_bottom - scaled_top,
+        ),
+        crop_width,
+        crop_height,
+    )
+
+
+def _load_embedded_raw_preview(  # type: ignore[no-untyped-def]
+    raw,
+    sizes: object,
+    rawpy_module,
+    max_long_side_px: int,
+) -> tuple[QImage, int, int] | None:
+    """优先读取相机内嵌预览，避免检测期间再次执行昂贵的 RAW 去马赛克。"""
+
+    try:
+        thumbnail = raw.extract_thumb()
+        if thumbnail.format == rawpy_module.ThumbFormat.JPEG:
+            image = QImage.fromData(bytes(thumbnail.data))
+        elif thumbnail.format == rawpy_module.ThumbFormat.BITMAP:
+            image = _raw_array_to_qimage(np.ascontiguousarray(thumbnail.data))
+        else:
+            return None
+    except Exception:  # noqa: BLE001 - 没有内嵌预览是常见情况，随后回退 LibRaw 后处理。
+        return None
+    if image.isNull():
+        return None
+    # 部分相机只内嵌极小的图标缩略图；这种图仍应回退半尺寸去马赛克，保证框选清晰度。
+    if max(image.width(), image.height()) < min(800, max_long_side_px):
+        return None
+    return _crop_qimage_to_camera_recommended_area(image, sizes)
+
+
 def _crop_to_camera_recommended_area(
     rgb: np.ndarray,
     sizes: object,
@@ -118,19 +197,26 @@ def load_raw_image_preview(
     try:
         with rawpy.imread(str(image_path)) as raw:
             sizes = raw.sizes
-            # 所有 RAW 都保留传感器原始方向，不应用相机的横竖拍旋转标记。
-            rgb = raw.postprocess(
-                use_camera_wb=True,
-                output_bps=8,
-                user_flip=0,
-                half_size=max_long_side_px is not None,
+            embedded_preview = (
+                _load_embedded_raw_preview(raw, sizes, rawpy, max_long_side_px)
+                if max_long_side_px is not None
+                else None
             )
-            rgb, original_width, original_height = _crop_to_camera_recommended_area(rgb, sizes)
+            if embedded_preview is None:
+                # 所有 RAW 都保留传感器原始方向，不应用相机的横竖拍旋转标记。
+                rgb = raw.postprocess(
+                    use_camera_wb=True,
+                    output_bps=8,
+                    user_flip=0,
+                    half_size=max_long_side_px is not None,
+                )
+                rgb, original_width, original_height = _crop_to_camera_recommended_area(rgb, sizes)
+                image = _raw_array_to_qimage(rgb)
+                del rgb
+            else:
+                image, original_width, original_height = embedded_preview
     except Exception as exc:  # noqa: BLE001 - LibRaw 的多种解码错误统一转为界面可读信息。
         raise ValueError(f"LibRaw 无法读取 RAW 图像：{exc}") from exc
-
-    image = _raw_array_to_qimage(rgb)
-    del rgb
 
     preview_width = image.width()
     preview_height = image.height()

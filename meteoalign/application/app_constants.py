@@ -107,8 +107,8 @@ STAR_PAIR_MANUAL_GROUP_LABEL = "手动匹配"
 
 STAR_PAIR_SESSION_FORMAT = "meteoalign_star_pair_session"
 STAR_PAIR_SESSION_VERSION = 2
-STAR_PAIR_SESSION_JSON_FILTER = "HoshinoPanoAssistant 星点匹配 JSON (*.json);;JSON 文件 (*.json);;所有文件 (*)"
-SOURCE_MODEL_JSON_FILTER = "HoshinoPanoAssistant 源图映射 JSON (*.json);;JSON 文件 (*.json);;所有文件 (*)"
+STAR_PAIR_SESSION_JSON_FILTER = "HoshinoPanoAssistant 星点匹配 JSON (*.json);;JSON 文件 (*.json)"
+SOURCE_MODEL_JSON_FILTER = "HoshinoPanoAssistant 源图映射 JSON (*.json);;JSON 文件 (*.json)"
 
 # ---------------------------------------------------------------------------
 # 配准状态与残差

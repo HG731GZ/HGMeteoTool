@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import shutil
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from pathlib import Path
 
 import numpy as np
@@ -24,6 +24,7 @@ from ..raw_image_preview import METEOR_IMAGE_FILE_FILTER, is_raw_image_path, loa
 from ..qt_tasks import create_progress_dialog, start_qt_worker_task
 from ..meteor_mask import MeteorMaskLoadWorker
 from .app_workers import MeteorImagePreviewLoadWorker
+from .file_dialogs import get_multiple_open_file_names
 from .metdet_worker_client import MetDetWorkerClient
 from .meteor_detection_options_dialog import MeteorDetectionOptionsDialog
 
@@ -72,7 +73,8 @@ class MeteorSelectionMixin:
         self._meteor_selection_preview_load_thread: object | None = None
         self._meteor_selection_preview_load_worker: object | None = None
         self._meteor_selection_preview_loading_path: Path | None = None
-        self._meteor_selection_pending_preview_path: Path | None = None
+        self._meteor_selection_preview_queue: deque[Path] = deque()
+        self._meteor_selection_preview_queued_paths: set[Path] = set()
         self._meteor_selection_mask_path: Path | None = None
         self._meteor_selection_mask: np.ndarray | None = None
         self._meteor_mask_import_thread: object | None = None
@@ -148,7 +150,8 @@ class MeteorSelectionMixin:
         self._meteor_selection_image_sizes = {}
         self._meteor_selection_dirty_paths = set()
         self._meteor_selection_current_index = -1
-        self._meteor_selection_pending_preview_path = None
+        self._meteor_selection_preview_queue.clear()
+        self._meteor_selection_preview_queued_paths.clear()
         self._clear_meteor_selection_preview_cache()
         self.ui.meteorSelectionView.clear_image()
         self.ui.labelMeteorSelectionPreviewTitle.setText("未导入流星图片")
@@ -164,11 +167,12 @@ class MeteorSelectionMixin:
         if self._meteor_detection_active:
             return
         fallback = self._meteor_selection_paths[0].parent if self._meteor_selection_paths else Path.cwd()
-        selected_paths, _selected_filter = QFileDialog.getOpenFileNames(
+        selected_paths, _selected_filter = get_multiple_open_file_names(
             self,
             "导入流星图片",
             str(self._import_dialog_directory(fallback)),
             METEOR_IMAGE_FILE_FILTER,
+            hide_name_filter_details=True,
         )
         if not selected_paths:
             return
@@ -190,6 +194,8 @@ class MeteorSelectionMixin:
         self._meteor_selection_boxes_by_path = {}
         self._meteor_selection_image_sizes = {}
         self._meteor_selection_dirty_paths = set()
+        self._meteor_selection_preview_queue.clear()
+        self._meteor_selection_preview_queued_paths.clear()
         self._clear_meteor_selection_preview_cache()
         read_errors: list[str] = []
         for image_path in paths:
@@ -279,28 +285,37 @@ class MeteorSelectionMixin:
         return cached
 
     def _queue_meteor_selection_preview_load(self, image_path: Path) -> None:
-        """只保留最新的待显示图片，并用单个后台线程依次生成 RAW 预览。"""
+        """按检测结果顺序排队，用单个后台线程生成 RAW 预览。"""
 
         if self._cached_meteor_selection_preview(image_path) is not None:
             return
         if self._meteor_selection_preview_loading_path == image_path:
             return
-        self._meteor_selection_pending_preview_path = image_path
+        if image_path in self._meteor_selection_preview_queued_paths:
+            return
+        self._meteor_selection_preview_queue.append(image_path)
+        self._meteor_selection_preview_queued_paths.add(image_path)
         if self._meteor_selection_preview_load_thread is None:
             self._start_pending_meteor_selection_preview_load()
 
     def _start_pending_meteor_selection_preview_load(self) -> None:
-        """启动最近一次请求的预览；检测更快时自动跳过已经过时的中间图片。"""
+        """启动队列中的下一张预览，并跳过已失效或已缓存的请求。"""
 
-        image_path = self._meteor_selection_pending_preview_path
-        self._meteor_selection_pending_preview_path = None
-        if image_path is None or image_path not in self._meteor_selection_paths:
-            return
-        if self._cached_meteor_selection_preview(image_path) is not None:
-            if self._has_current_meteor_selection_image():
-                current_path = self._meteor_selection_paths[self._meteor_selection_current_index]
-                if current_path == image_path:
-                    self._show_meteor_selection_current_image()
+        image_path: Path | None = None
+        while self._meteor_selection_preview_queue:
+            candidate = self._meteor_selection_preview_queue.popleft()
+            self._meteor_selection_preview_queued_paths.discard(candidate)
+            if candidate not in self._meteor_selection_paths:
+                continue
+            if self._cached_meteor_selection_preview(candidate) is not None:
+                if self._has_current_meteor_selection_image():
+                    current_path = self._meteor_selection_paths[self._meteor_selection_current_index]
+                    if current_path == candidate:
+                        self._show_meteor_selection_current_image()
+                continue
+            image_path = candidate
+            break
+        if image_path is None:
             return
 
         worker = MeteorImagePreviewLoadWorker(image_path)
@@ -354,12 +369,12 @@ class MeteorSelectionMixin:
         )
 
     def _cleanup_meteor_selection_preview_load(self) -> None:
-        """释放已完成的预览线程，并继续处理检测期间最新的切图请求。"""
+        """释放已完成的预览线程，并继续处理检测期间排队的切图请求。"""
 
         self._meteor_selection_preview_load_thread = None
         self._meteor_selection_preview_load_worker = None
         self._meteor_selection_preview_loading_path = None
-        if self._meteor_selection_pending_preview_path is not None:
+        if self._meteor_selection_preview_queue:
             QTimer.singleShot(0, self._start_pending_meteor_selection_preview_load)
 
     def _meteor_selection_mask_matches_preview(self, preview: ImagePreview) -> bool:
@@ -619,7 +634,6 @@ class MeteorSelectionMixin:
             self.ui.labelMeteorSelectionCaptureTime.setText("拍摄时间：正在后台读取 RAW 预览…")
             self.ui.labelMeteorSelectionCaptureTime.setToolTip(str(image_path))
             self._queue_meteor_selection_preview_load(image_path)
-            self._refresh_meteor_selection_table()
             self._select_current_meteor_selection_table_row()
             self._update_meteor_selection_controls()
             return
@@ -649,7 +663,6 @@ class MeteorSelectionMixin:
                     8000,
                 )
 
-        self._refresh_meteor_selection_table()
         self._select_current_meteor_selection_table_row()
         self._update_meteor_selection_controls()
 
@@ -694,7 +707,7 @@ class MeteorSelectionMixin:
         image_path = self._meteor_selection_paths[index]
         self._meteor_selection_boxes_by_path[image_path] = list(boxes)
         self._meteor_selection_dirty_paths.add(image_path)
-        self._refresh_meteor_selection_table()
+        self._refresh_meteor_selection_table_row(index)
         self._select_current_meteor_selection_table_row()
         self._update_meteor_selection_controls()
         self.ui.statusbar.showMessage("流星框选已修改，请点击“保存所有框选”写入文件。", 8000)
@@ -801,6 +814,33 @@ class MeteorSelectionMixin:
                 table.setItem(row, METEOR_SELECTION_INDEX_COLUMN, index_item)
                 table.setItem(row, METEOR_SELECTION_NAME_COLUMN, name_item)
                 table.setItem(row, METEOR_SELECTION_COUNT_COLUMN, count_item)
+        finally:
+            table.blockSignals(old_state)
+
+    def _refresh_meteor_selection_table_row(self, row: int) -> None:
+        """只更新一张图片的计数和颜色，避免逐图检测时反复重建大表格。"""
+
+        table = self.ui.tableWidgetMeteorSelectionImages
+        if not 0 <= row < len(self._meteor_selection_paths) or table.rowCount() != len(
+            self._meteor_selection_paths
+        ):
+            self._refresh_meteor_selection_table()
+            return
+        image_path = self._meteor_selection_paths[row]
+        count = len(self._meteor_selection_boxes_by_path.get(image_path, []))
+        values = (str(row + 1), image_path.name, str(count))
+        old_state = table.blockSignals(True)
+        try:
+            for column, value in enumerate(values):
+                item = table.item(row, column)
+                if item is None:
+                    item = self._new_read_only_meteor_table_item(value)
+                    table.setItem(row, column, item)
+                else:
+                    item.setText(value)
+                item.setData(METEOR_SELECTION_INDEX_ROLE, row)
+                item.setToolTip(str(image_path))
+                item.setBackground(QBrush(METEOR_SELECTION_ROW_GREEN) if count else QBrush())
         finally:
             table.blockSignals(old_state)
 
@@ -978,6 +1018,8 @@ class MeteorSelectionMixin:
         self._meteor_detection_active = False
         self._meteor_detection_request_id = None
         self._meteor_detection_job_paths = []
+        self._meteor_selection_preview_queue.clear()
+        self._meteor_selection_preview_queued_paths.clear()
         self._meteor_detection_engine_status = "检测已取消，正在重启引擎…"
         self._meteor_detection_client.cancel_active_job()
         self.ui.statusbar.showMessage(self._meteor_detection_engine_status)
@@ -1050,6 +1092,7 @@ class MeteorSelectionMixin:
             if boxes:
                 self._meteor_detection_detected_count += 1
         self._meteor_selection_current_index = selection_index
+        self._refresh_meteor_selection_table_row(selection_index)
         self._show_meteor_selection_current_image(background_raw=True)
 
     def _finish_automatic_meteor_detection(self, payload: dict[str, object]) -> None:

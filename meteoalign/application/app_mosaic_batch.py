@@ -20,6 +20,7 @@ from PyQt5.QtWidgets import (
 )
 
 from .app_constants import SOURCE_MODEL_JSON_FILTER
+from .file_dialogs import get_multiple_open_file_names
 from .app_graphics_items import GraphicsImageItem
 from .app_mosaic import MOSAIC_PREVIEW_MAG_LIMIT
 from ..alignment.constants import SKY_KNOWN_PROJECTION_DISPLAY_NAMES
@@ -42,7 +43,7 @@ from ..simulator import CameraSettings, ObserverSettings, RECTILINEAR_LENS_MODEL
 from ..sky_scene_service import SkySceneData
 
 
-MOSAIC_BATCH_FRAMING_JSON_FILTER = "自由投影取景 JSON (*.json);;JSON 文件 (*.json);;所有文件 (*)"
+MOSAIC_BATCH_FRAMING_JSON_FILTER = "自由投影取景 JSON (*.json);;JSON 文件 (*.json)"
 MOSAIC_BATCH_MODE_SKY_INDEX = 0
 MOSAIC_BATCH_IMAGE_NAME_COLUMN = 0
 MOSAIC_BATCH_METEOR_COLUMN = 1
@@ -728,7 +729,7 @@ class MosaicBatchMixin:
 
     def import_mosaic_batch_image_json(self) -> None:
         default_dir = self._import_dialog_directory(self._mosaic_batch_default_dir())
-        file_paths, _selected_filter = QFileDialog.getOpenFileNames(
+        file_paths, _selected_filter = get_multiple_open_file_names(
             self,
             "导入批处理图像模型 JSON",
             str(default_dir),

@@ -62,6 +62,39 @@ def test_meteor_raw_preview_uses_libraw_and_preserves_original_geometry(tmp_path
     assert "*.cr3" in METEOR_IMAGE_FILE_FILTER
 
 
+def test_meteor_raw_preview_prefers_embedded_bitmap(tmp_path: Path, monkeypatch) -> None:
+    """有限尺寸预览应优先读内嵌图，避免检测期间再次执行 RAW 去马赛克。"""
+
+    class EmbeddedPreviewFakeRaw(_FakeRaw):
+        sizes = SimpleNamespace(
+            width=240,
+            height=120,
+            crop_left_margin=4,
+            crop_top_margin=3,
+            crop_width=230,
+            crop_height=110,
+            flip=0,
+        )
+
+        def extract_thumb(self):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(
+                format=rawpy.ThumbFormat.BITMAP,
+                data=np.zeros((60, 120, 3), dtype=np.uint8),
+            )
+
+        def postprocess(self, **_kwargs: object) -> np.ndarray:
+            raise AssertionError("存在可用内嵌预览时不应执行 postprocess")
+
+    raw_path = tmp_path / "embedded.ARW"
+    raw_path.write_bytes(b"raw")
+    monkeypatch.setattr(rawpy, "imread", lambda _path: EmbeddedPreviewFakeRaw())
+
+    preview = load_meteor_image_preview(raw_path, max_long_side_px=100)
+
+    assert (preview.original_width, preview.original_height) == (230, 110)
+    assert max(preview.image.width(), preview.image.height()) == 100
+
+
 def test_meteor_raw_preview_uses_camera_recommended_crop(tmp_path: Path, monkeypatch) -> None:
     """RAW 内嵌标准裁切区应成为预览、框选和 Photoshop 蒙版的统一尺寸。"""
 

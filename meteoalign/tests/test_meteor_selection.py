@@ -13,6 +13,7 @@ from PyQt5.QtCore import QEvent, QPointF, Qt
 from PyQt5.QtGui import QContextMenuEvent, QImage, QMouseEvent, QPalette
 from PyQt5.QtWidgets import QApplication, QMainWindow, QMenu, QMessageBox
 
+from meteoalign.application import app_meteor_selection
 from meteoalign.application.app_meteor_selection import MeteorSelectionMixin
 from meteoalign.application.meteor_selection_view import MeteorSelectionView
 from meteoalign.meteor_selection import MeteorBox, load_meteor_selection, meteor_json_path, save_meteor_selection
@@ -31,6 +32,31 @@ class _MeteorSelectionHost(QMainWindow, MeteorSelectionMixin):
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
         self._init_meteor_selection_page()
+
+
+def test_meteor_import_uses_macos_qt_dialog_and_hides_long_filter_details(monkeypatch) -> None:
+    """完整 RAW 后缀仍参与过滤，但不应显示成拉宽对话框的长字符串。"""
+
+    app = _application()
+    host = _MeteorSelectionHost()
+    host._import_dialog_directory = lambda fallback: fallback  # type: ignore[attr-defined]
+    captured_hide_details: list[bool] = []
+
+    def fake_get_open_file_names(*_args, **kwargs):  # type: ignore[no-untyped-def]
+        captured_hide_details.append(bool(kwargs.get("hide_name_filter_details")))
+        return [], ""
+
+    monkeypatch.setattr(
+        app_meteor_selection,
+        "get_multiple_open_file_names",
+        fake_get_open_file_names,
+    )
+
+    host.import_meteor_images()
+
+    assert captured_hide_details == [True]
+    host.close()
+    app.processEvents()
 
 
 def test_meteor_selection_json_uses_image_sibling_name_and_original_pixels(tmp_path) -> None:

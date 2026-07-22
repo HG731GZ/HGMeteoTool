@@ -132,8 +132,8 @@ def test_import_images_rejects_a_reserved_mask_file(tmp_path: Path, monkeypatch)
     harness = _ImageImportSelectionHarness(tmp_path / "frame.tif")
     messages: list[tuple[str, str]] = []
     monkeypatch.setattr(
-        app_image.QFileDialog,
-        "getOpenFileNames",
+        app_image,
+        "get_multiple_open_file_names",
         lambda *_args, **_kwargs: ([str(mask_path)], ""),
     )
     monkeypatch.setattr(
@@ -158,8 +158,8 @@ def test_import_image_group_excludes_masks_and_keeps_originals(tmp_path: Path, m
     second_image = tmp_path / "second.tif"
     harness = _ImageImportSelectionHarness(first_image)
     monkeypatch.setattr(
-        app_image.QFileDialog,
-        "getOpenFileNames",
+        app_image,
+        "get_multiple_open_file_names",
         lambda *_args, **_kwargs: (
             [str(first_image), str(first_mask), str(second_image)],
             "",

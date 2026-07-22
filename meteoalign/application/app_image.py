@@ -17,6 +17,7 @@ from ..qt_tasks import create_progress_dialog, start_qt_worker_task
 from ..reference import build_reference_payload, save_reference_outputs
 from .app_utils import _image_with_binary_mask
 from .app_workers import ImagePreviewLoadWorker, SkyMaskLoadWorker
+from .file_dialogs import get_multiple_open_file_names
 
 
 class ImageMixin:
@@ -268,7 +269,7 @@ class ImageMixin:
         if not default_dir.exists():
             default_dir = project_root()
         default_dir = self._import_dialog_directory(default_dir)
-        file_paths, _selected_filter = QFileDialog.getOpenFileNames(
+        file_paths, _selected_filter = get_multiple_open_file_names(
             self,
             "导入图像",
             str(default_dir),

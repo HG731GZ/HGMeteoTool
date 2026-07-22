@@ -28,7 +28,7 @@ class ReferenceJsonIOMixin:
             self,
             "导入预览 JSON",
             str(default_dir),
-            "HoshinoPanoAssistant 参考图 JSON (*.json);;JSON 文件 (*.json);;所有文件 (*)",
+            "HoshinoPanoAssistant 参考图 JSON (*.json);;JSON 文件 (*.json)",
         )
         if not file_path:
             return

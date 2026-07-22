@@ -182,6 +182,56 @@ def test_raw_detection_result_queues_preview_without_sync_decode(tmp_path, monke
     host.close()
 
 
+def test_raw_preview_queue_preserves_detection_order(tmp_path) -> None:
+    """检测快于预览时也应保留中间 RAW，而不是只留下最后一张。"""
+
+    _application()
+    host = _MeteorDetectionHost()
+    paths = [tmp_path / f"image-{index}.ARW" for index in range(3)]
+    host._meteor_selection_paths = paths
+    host._meteor_selection_preview_load_thread = object()
+
+    for path in paths:
+        host._queue_meteor_selection_preview_load(path)
+    host._queue_meteor_selection_preview_load(paths[1])
+
+    assert list(host._meteor_selection_preview_queue) == paths
+    assert host._meteor_selection_preview_queued_paths == set(paths)
+    host._meteor_selection_preview_load_thread = None
+    host._meteor_selection_preview_queue.clear()
+    host._meteor_selection_preview_queued_paths.clear()
+    host._shutdown_meteor_detection_worker()
+    host.close()
+
+
+def test_detection_result_updates_only_completed_table_row(tmp_path, monkeypatch) -> None:
+    """大批量检测的单张结果不能重新创建整张图片表格。"""
+
+    _application()
+    host = _MeteorDetectionHost()
+    paths = [tmp_path / f"image-{index}.ARW" for index in range(3)]
+    host._meteor_selection_paths = paths
+    host._meteor_selection_boxes_by_path = {path: [] for path in paths}
+    host._meteor_selection_current_index = 0
+    host._meteor_detection_active = True
+    host._meteor_detection_job_paths = paths
+    host._refresh_meteor_selection_table()
+    updated_rows: list[int] = []
+    monkeypatch.setattr(host, "_refresh_meteor_selection_table_row", updated_rows.append)
+    monkeypatch.setattr(host, "_show_meteor_selection_current_image", lambda **_kwargs: None)
+
+    def fail_full_refresh() -> None:
+        raise AssertionError("逐图结果不应重建整张表格")
+
+    monkeypatch.setattr(host, "_refresh_meteor_selection_table", fail_full_refresh)
+
+    host._apply_meteor_detection_result({"index": 2, "error": "decode failed"})
+
+    assert updated_rows == [1]
+    host._shutdown_meteor_detection_worker()
+    host.close()
+
+
 def test_detection_disables_manual_controls_until_finished() -> None:
     """自动检测期间应禁用框选、切图及其他会改变列表的操作。"""
 
