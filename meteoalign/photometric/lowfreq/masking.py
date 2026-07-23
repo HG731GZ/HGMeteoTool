@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 import tifffile
 
+from ...native_image import load_native_image_array
 from .types import SolverConfig
 
 
@@ -17,6 +18,17 @@ class MeasurementMap:
     scale_x: float
     scale_y: float
     rejected_fraction: float
+
+
+def read_binary_mask(mask_path: str | Path) -> np.ndarray:
+    """Read a TIFF/JPEG/PNG mask; any non-zero channel means valid sky."""
+
+    values = np.asarray(load_native_image_array(Path(mask_path).expanduser()))
+    if values.ndim == 2:
+        return values != 0
+    if values.ndim == 3 and values.shape[2] >= 1:
+        return np.any(values != 0, axis=2)
+    raise ValueError(f"蒙版图像形状不受支持：{values.shape}")
 
 
 def _as_rgb(image: np.ndarray) -> np.ndarray:
@@ -55,16 +67,14 @@ def build_measurement_map(
 
     valid = np.ones((target_height, target_width), dtype=bool)
     if mask_path is not None:
-        user_mask = tifffile.imread(mask_path)
-        if user_mask.ndim == 3:
-            user_mask = np.max(user_mask, axis=2)
+        user_mask = read_binary_mask(mask_path)
         if user_mask.shape != (source_height, source_width):
             raise ValueError(
                 f"蒙版尺寸 {user_mask.shape[::-1]} 与源图 "
                 f"{source_width}×{source_height} 不一致：{mask_path}"
             )
         reduced_mask = cv2.resize(
-            (user_mask != 0).astype(np.uint8),
+            user_mask.astype(np.uint8),
             (target_width, target_height),
             interpolation=cv2.INTER_NEAREST,
         )

@@ -1,59 +1,78 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from pathlib import Path
 from threading import Event
 
 from PyQt5.QtCore import QObject, QThread, Qt, pyqtSignal
 from PyQt5.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
-    QFileDialog,
     QFormLayout,
     QGroupBox,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QScrollArea,
     QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
     QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
 
+from ..catalog import project_root
+from ..image_path_resolution import is_reserved_mask_path
+from ..image_preview import IMAGE_FILE_FILTER
+from ..photometric.lowfreq.masking import read_binary_mask
 from ..photometric.lowfreq.pipeline import (
+    photometric_frame_from_image,
     run_low_frequency_correction,
     validate_low_frequency_inputs,
+    validate_photometric_frame,
 )
-from ..photometric.lowfreq.types import LowFrequencyRunResult, SolverConfig
+from ..photometric.lowfreq.types import (
+    LowFrequencyRunResult,
+    PhotometricFrame,
+    SolverConfig,
+)
+from .file_dialogs import get_multiple_open_file_names, get_open_file_name
+
+
+_LOW_FREQUENCY_TIFF_FILTER = "16-bit RGB TIFF (*.tif *.tiff)"
 
 
 _LOW_FREQUENCY_TUNING_GUIDE_HTML = """
 <h2>周边梯度优化调参指南</h2>
-<p><b>先检查、再求解、最后输出。</b>本功能不会修改 model.json，也不会覆盖原始 TIFF。
-V6 会直接分析各 model.json 的 ICRS 覆盖，不再需要取景 JSON。</p>
+<p><b>先检查、再求解、最后决定是否导出校正图像。</b>本功能不会修改 model.json，
+也不会覆盖原始 TIFF。采样直接来自各 model.json 的 ICRS 覆盖，不需要取景 JSON。</p>
 
 <h3>推荐起点</h3>
 <ul>
-  <li>模型：<b>对数增益（V3）</b></li>
+  <li>模型：<b>对数增益（推荐）</b></li>
   <li>网格 8×6；采样长边 360；缩小倍率 8；Patch 11</li>
   <li>空间平滑 λ=30；单帧偏移 λ=0.05；floor=64</li>
-  <li>V4 关闭；V5 开启（6 节点、平滑 λ=300）；Huber 开启</li>
-  <li>首次勾选“仅求解和诊断”，确认结果自然后再写校正 TIFF</li>
+  <li>帧内弱平面关闭；自适应亮度分段开启（6 节点、平滑 λ=300）；Huber 开启</li>
+  <li>默认只保存方案和诊断；确认结果自然后，再勾选“导出校正图像”</li>
 </ul>
 
 <h3>按这个顺序调</h3>
 <ol>
+  <li>导入多张 16-bit RGB TIFF；缺少同名 model.json 或格式不符的图像会被过滤。</li>
   <li>点击“检查输入与蒙版绑定”，确认 TIFF、model.json 和天空蒙版对应正确。</li>
-  <li>先跑推荐起点；若 V5 亮度分段样本不足，关闭 V5，回退到单层 V3。</li>
-  <li>只有少数帧仍有明确的方向性渐变时才开 V4；帧内平面 λ 建议 5000～10000。</li>
+  <li>先跑推荐起点；若亮度分段样本不足，关闭自适应亮度分段，回退到单层对数增益。</li>
+  <li>只有少数帧仍有明确的方向性渐变时才开帧内弱平面；λ 建议 5000～10000。</li>
   <li>每次只改一类参数，并保留一份基线 diagnostics 便于比较。</li>
 </ol>
 
@@ -73,12 +92,19 @@ V6 会直接分析各 model.json 的 ICRS 覆盖，不再需要取景 JSON。</p
   <li>correction field 应非常平滑，不应出现星点、银河纹理或局部云结构。</li>
   <li>observability 大面积偏暗：降低网格、增加采样或检查蒙版。</li>
   <li>frame offsets / gradients 个别值异常大：先检查云、蒙版、曝光参数和几何模型。</li>
-  <li>V5 仅在多数亮度区间都有样本、各层场连续且分区 RMS 普遍改善时采用。</li>
+  <li>自适应亮度分段仅在多数亮度区间都有样本、各层场连续且分区 RMS 普遍改善时采用。</li>
 </ul>
 
-<p><b>常用回退：</b>8×6、关闭 V4/V5、提高空间平滑 λ、重新检查蒙版和 model.json。
+<p><b>常用回退：</b>8×6、关闭帧内弱平面和亮度分段、提高空间平滑 λ、
+重新检查蒙版和 model.json。
 最终请用完全相同的 PTGui 参数比较原图与校正图，重点看接缝、银河结构、星点 halo、
 星色、地景边缘和 360° 闭环。</p>
+
+<h3>输出位置</h3>
+<p>方案保存为原图同路径下的 photometric_solution.json，诊断保存在
+gradient_diagnostics。再次求解会覆盖这些结果。勾选“导出校正图像”后，
+原文件名图像会写入 gradient_corrected。全景图批处理也可直接导入方案，
+在内存中完成梯度校正后立即重投影。</p>
 """
 
 
@@ -109,13 +135,11 @@ class LowFrequencyCorrectionWorker(QObject):
     def __init__(
         self,
         *,
-        input_directory: Path,
-        output_directory: Path,
+        frames: tuple[PhotometricFrame, ...],
         config: SolverConfig,
     ) -> None:
         super().__init__()
-        self.input_directory = input_directory
-        self.output_directory = output_directory
+        self.frames = frames
         self.config = config
         self._cancel_requested = Event()
 
@@ -125,8 +149,7 @@ class LowFrequencyCorrectionWorker(QObject):
     def run(self) -> None:
         try:
             result = run_low_frequency_correction(
-                input_directory=self.input_directory,
-                output_directory=self.output_directory,
+                frames=self.frames,
                 config=self.config,
                 progress_callback=lambda message, value, total: self.progress.emit(
                     message,
@@ -163,43 +186,39 @@ class LowFrequencyGradientMixin:
         controls = QWidget()
         controls_layout = QVBoxLayout(controls)
 
-        input_group = QGroupBox("输入与输出", controls)
+        input_group = QGroupBox("图像", controls)
         input_layout = QVBoxLayout(input_group)
-        input_form = QFormLayout()
-        self.ui.lineEditLowFrequencyInputDirectory = QLineEdit(input_group)
-        self.ui.lineEditLowFrequencyOutputDirectory = QLineEdit(input_group)
-        input_form.addRow("源图目录", self.ui.lineEditLowFrequencyInputDirectory)
-        input_form.addRow("输出目录", self.ui.lineEditLowFrequencyOutputDirectory)
-        input_layout.addLayout(input_form)
-        v6_note = QLabel(
-            "V6：直接使用各帧 model.json 的 ICRS 覆盖生成重叠采样，"
-            "无需选择取景 JSON。",
+        sampling_note = QLabel(
+            "导入多张 16-bit RGB TIFF；缺少同名 model.json 的图像会被过滤。"
+            "同路径的“原图名_Mask.*”会自动关联为蒙版。",
             input_group,
         )
-        v6_note.setWordWrap(True)
-        v6_note.setObjectName("labelLowFrequencyV6Sampling")
-        input_layout.addWidget(v6_note)
+        sampling_note.setWordWrap(True)
+        sampling_note.setObjectName("labelLowFrequencySampling")
+        input_layout.addWidget(sampling_note)
         browse_row = QHBoxLayout()
-        self.ui.pushButtonBrowseLowFrequencyInput = QPushButton("源图…", input_group)
-        self.ui.pushButtonBrowseLowFrequencyOutput = QPushButton("输出…", input_group)
-        browse_row.addWidget(self.ui.pushButtonBrowseLowFrequencyInput)
-        browse_row.addWidget(self.ui.pushButtonBrowseLowFrequencyOutput)
+        self.ui.pushButtonImportLowFrequencyImages = QPushButton("导入图像…", input_group)
+        self.ui.pushButtonRemoveLowFrequencyImages = QPushButton("移除所选", input_group)
+        self.ui.pushButtonClearLowFrequencyImages = QPushButton("清空", input_group)
+        browse_row.addWidget(self.ui.pushButtonImportLowFrequencyImages)
+        browse_row.addWidget(self.ui.pushButtonRemoveLowFrequencyImages)
+        browse_row.addWidget(self.ui.pushButtonClearLowFrequencyImages)
         input_layout.addLayout(browse_row)
         controls_layout.addWidget(input_group)
 
-        solver_group = QGroupBox("共享场与 V3–V6 参数", controls)
+        solver_group = QGroupBox("共享场与校正参数", controls)
         solver_form = QFormLayout(solver_group)
         self.ui.comboBoxLowFrequencyCorrectionModel = QComboBox(solver_group)
         self.ui.comboBoxLowFrequencyCorrectionModel.addItem(
-            "加性码值（V1/V2）",
+            "加性码值",
             "additive",
         )
         self.ui.comboBoxLowFrequencyCorrectionModel.addItem(
-            "乘法增益（V3）",
+            "乘法增益",
             "multiplicative",
         )
         self.ui.comboBoxLowFrequencyCorrectionModel.addItem(
-            "对数增益（V3，推荐）",
+            "对数增益（推荐）",
             "log_gain",
         )
         self.ui.spinBoxLowFrequencyGridColumns = self._integer_control(4, 20, 8)
@@ -217,7 +236,7 @@ class LowFrequencyGradientMixin:
             1,
         )
         self.ui.checkBoxLowFrequencyFramePlane = QCheckBox(
-            "允许每帧弱 a·x+b·y（V4）",
+            "允许每帧弱 a·x+b·y",
             solver_group,
         )
         self.ui.doubleSpinBoxLowFrequencyFramePlaneLambda = self._decimal_control(
@@ -228,7 +247,7 @@ class LowFrequencyGradientMixin:
             1,
         )
         self.ui.checkBoxLowFrequencyBrightnessNonlinear = QCheckBox(
-            "按有效亮度自适应分段（V5）",
+            "按有效亮度自适应分段",
             solver_group,
         )
         self.ui.spinBoxLowFrequencyBrightnessKnots = self._integer_control(3, 12, 6)
@@ -241,8 +260,11 @@ class LowFrequencyGradientMixin:
         )
         self.ui.checkBoxLowFrequencyHuber = QCheckBox("IRLS + Huber（4 次）", solver_group)
         self.ui.checkBoxLowFrequencyHuber.setChecked(True)
-        self.ui.checkBoxLowFrequencySolveOnly = QCheckBox("仅求解和诊断，不写校正 TIFF", solver_group)
-        self.ui.checkBoxLowFrequencySolveOnly.setChecked(False)
+        self.ui.checkBoxLowFrequencyExportCorrected = QCheckBox(
+            "导出校正图像",
+            solver_group,
+        )
+        self.ui.checkBoxLowFrequencyExportCorrected.setChecked(False)
         solver_form.addRow("校正模型", self.ui.comboBoxLowFrequencyCorrectionModel)
         solver_form.addRow("控制网格列", self.ui.spinBoxLowFrequencyGridColumns)
         solver_form.addRow("控制网格行", self.ui.spinBoxLowFrequencyGridRows)
@@ -259,15 +281,15 @@ class LowFrequencyGradientMixin:
         )
         solver_form.addRow(self.ui.checkBoxLowFrequencyBrightnessNonlinear)
         solver_form.addRow(
-            "V5 亮度节点",
+            "亮度节点",
             self.ui.spinBoxLowFrequencyBrightnessKnots,
         )
         solver_form.addRow(
-            "V5 节点平滑 λ",
+            "节点平滑 λ",
             self.ui.doubleSpinBoxLowFrequencyBrightnessSmooth,
         )
         solver_form.addRow(self.ui.checkBoxLowFrequencyHuber)
-        solver_form.addRow(self.ui.checkBoxLowFrequencySolveOnly)
+        solver_form.addRow(self.ui.checkBoxLowFrequencyExportCorrected)
         controls_layout.addWidget(solver_group)
 
         action_group = QGroupBox("运行", controls)
@@ -298,13 +320,44 @@ class LowFrequencyGradientMixin:
         controls_scroll.setWidget(controls)
         page_layout.addWidget(controls_scroll)
 
-        log_group = QGroupBox("运行日志（Debug）", page)
+        results_panel = QWidget(page)
+        results_layout = QVBoxLayout(results_panel)
+        results_layout.setContentsMargins(0, 0, 0, 0)
+        image_list_group = QGroupBox("图像列表", results_panel)
+        image_list_layout = QVBoxLayout(image_list_group)
+        self.ui.tableWidgetLowFrequencyImages = QTableWidget(image_list_group)
+        self.ui.tableWidgetLowFrequencyImages.setColumnCount(3)
+        self.ui.tableWidgetLowFrequencyImages.setHorizontalHeaderLabels(
+            ("序号", "文件名", "蒙版")
+        )
+        self.ui.tableWidgetLowFrequencyImages.setSelectionBehavior(
+            QAbstractItemView.SelectRows
+        )
+        self.ui.tableWidgetLowFrequencyImages.setSelectionMode(
+            QAbstractItemView.ExtendedSelection
+        )
+        self.ui.tableWidgetLowFrequencyImages.setEditTriggers(
+            QAbstractItemView.NoEditTriggers
+        )
+        self.ui.tableWidgetLowFrequencyImages.setContextMenuPolicy(
+            Qt.CustomContextMenu
+        )
+        self.ui.tableWidgetLowFrequencyImages.verticalHeader().setVisible(False)
+        image_header = self.ui.tableWidgetLowFrequencyImages.horizontalHeader()
+        image_header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        image_header.setSectionResizeMode(1, QHeaderView.Stretch)
+        image_header.setSectionResizeMode(2, QHeaderView.Stretch)
+        image_list_layout.addWidget(self.ui.tableWidgetLowFrequencyImages)
+        results_layout.addWidget(image_list_group, 1)
+
+        log_group = QGroupBox("运行日志（Debug）", results_panel)
         log_layout = QVBoxLayout(log_group)
         self.ui.plainTextEditLowFrequencyLog = QPlainTextEdit(log_group)
         self.ui.plainTextEditLowFrequencyLog.setReadOnly(True)
         self.ui.plainTextEditLowFrequencyLog.setLineWrapMode(QPlainTextEdit.NoWrap)
         log_layout.addWidget(self.ui.plainTextEditLowFrequencyLog)
-        page_layout.addWidget(log_group, 1)
+        results_layout.addWidget(log_group, 1)
+        page_layout.addWidget(results_panel, 1)
         self.ui.tabLowFrequencyGradient = page
         self.ui.scrollAreaLowFrequencyControls = controls_scroll
         self.ui.horizontalLayoutLowFrequencyGradient = page_layout
@@ -313,8 +366,19 @@ class LowFrequencyGradientMixin:
         self._low_frequency_thread: QThread | None = None
         self._low_frequency_worker: LowFrequencyCorrectionWorker | None = None
         self._low_frequency_guide_dialog: LowFrequencyTuningGuideDialog | None = None
-        self.ui.pushButtonBrowseLowFrequencyInput.clicked.connect(self._browse_low_frequency_input)
-        self.ui.pushButtonBrowseLowFrequencyOutput.clicked.connect(self._browse_low_frequency_output)
+        self._low_frequency_frames: list[PhotometricFrame] = []
+        self.ui.pushButtonImportLowFrequencyImages.clicked.connect(
+            self._import_low_frequency_images
+        )
+        self.ui.pushButtonRemoveLowFrequencyImages.clicked.connect(
+            self._remove_selected_low_frequency_images
+        )
+        self.ui.pushButtonClearLowFrequencyImages.clicked.connect(
+            self._clear_low_frequency_images
+        )
+        self.ui.tableWidgetLowFrequencyImages.customContextMenuRequested.connect(
+            self._show_low_frequency_image_context_menu
+        )
         self.ui.pushButtonLowFrequencyTuningGuide.clicked.connect(
             self._show_low_frequency_tuning_guide
         )
@@ -328,6 +392,15 @@ class LowFrequencyGradientMixin:
             self._update_low_frequency_advanced_controls
         )
         self._update_low_frequency_advanced_controls()
+        self._update_low_frequency_image_controls()
+
+        batch_tab = getattr(self.ui, "tabMosaicBatch", None)
+        if batch_tab is not None:
+            batch_index = self.ui.tabWidgetMain.indexOf(batch_tab)
+            if batch_index >= 0 and batch_index != self.ui.tabWidgetMain.count() - 1:
+                batch_text = self.ui.tabWidgetMain.tabText(batch_index)
+                self.ui.tabWidgetMain.removeTab(batch_index)
+                self.ui.tabWidgetMain.addTab(batch_tab, batch_text)
 
     @staticmethod
     def _integer_control(
@@ -360,35 +433,224 @@ class LowFrequencyGradientMixin:
     def _append_low_frequency_log(self, message: str) -> None:
         self.ui.plainTextEditLowFrequencyLog.appendPlainText(str(message))
 
-    def _set_low_frequency_paths_from_input(self, directory: Path) -> None:
-        self.ui.lineEditLowFrequencyInputDirectory.setText(str(directory))
-        if not self.ui.lineEditLowFrequencyOutputDirectory.text().strip():
-            self.ui.lineEditLowFrequencyOutputDirectory.setText(str(directory / "lowfreq_output"))
+    def _low_frequency_default_directory(self) -> Path:
+        if self._low_frequency_frames:
+            default_directory = self._low_frequency_frames[-1].image_path.parent
+        else:
+            default_directory = project_root() / "testimages"
+            if not default_directory.exists():
+                default_directory = project_root()
+        import_directory = getattr(self, "_import_dialog_directory", None)
+        if callable(import_directory):
+            return Path(import_directory(default_directory))
+        return default_directory
 
-    def _browse_low_frequency_input(self) -> None:
-        selected = QFileDialog.getExistingDirectory(
+    def _import_low_frequency_images(self) -> None:
+        file_paths, _selected_filter = get_multiple_open_file_names(
             self,
-            "选择 TIFF 与 model.json 所在目录",
-            self.ui.lineEditLowFrequencyInputDirectory.text().strip(),
+            "导入梯度校正图像",
+            str(self._low_frequency_default_directory()),
+            _LOW_FREQUENCY_TIFF_FILTER,
         )
-        if selected:
-            self._set_low_frequency_paths_from_input(Path(selected))
+        if not file_paths:
+            return
+        remember_path = getattr(self, "_remember_import_path", None)
+        if callable(remember_path):
+            remember_path(file_paths)
+        imported_count, issues = self._add_low_frequency_image_paths(file_paths)
+        self._refresh_low_frequency_image_table()
+        if issues:
+            QMessageBox.warning(
+                self,
+                "部分图像已过滤",
+                "\n".join(issues[:16]) + ("\n…" if len(issues) > 16 else ""),
+            )
+        self.ui.labelLowFrequencyStatus.setText(
+            f"已导入 {len(self._low_frequency_frames)} 帧"
+        )
+        self._append_low_frequency_log(
+            f"本次导入 {imported_count} 张；列表共 {len(self._low_frequency_frames)} 张。"
+        )
 
-    def _browse_low_frequency_output(self) -> None:
-        selected = QFileDialog.getExistingDirectory(
+    def _add_low_frequency_image_paths(
+        self,
+        file_paths: list[str] | tuple[str, ...],
+    ) -> tuple[int, list[str]]:
+        existing = {
+            frame.image_path.expanduser().resolve()
+            for frame in self._low_frequency_frames
+        }
+        expected_size = (
+            None
+            if not self._low_frequency_frames
+            else (
+                self._low_frequency_frames[0].width_px,
+                self._low_frequency_frames[0].height_px,
+            )
+        )
+        imported_count = 0
+        issues: list[str] = []
+        for file_path in file_paths:
+            image_path = Path(file_path).expanduser().resolve()
+            if image_path in existing:
+                continue
+            if is_reserved_mask_path(image_path):
+                issues.append(f"{image_path.name}：蒙版不能作为原图导入")
+                continue
+            try:
+                frame = photometric_frame_from_image(
+                    image_path,
+                    index=len(self._low_frequency_frames),
+                )
+                try:
+                    validate_photometric_frame(
+                        frame,
+                        expected_size=expected_size,
+                    )
+                except Exception as exc:
+                    if frame.mask_path is None:
+                        raise
+                    mask_name = frame.mask_path.name
+                    frame = replace(frame, mask_path=None)
+                    validate_photometric_frame(
+                        frame,
+                        expected_size=expected_size,
+                    )
+                    issues.append(
+                        f"{image_path.name}：自动蒙版 {mask_name} 无效，已忽略（{exc}）"
+                    )
+            except Exception as exc:  # noqa: BLE001 - 单张异常需要过滤，其余图像继续导入。
+                issues.append(f"{image_path.name}：{exc}")
+                continue
+            self._low_frequency_frames.append(frame)
+            existing.add(image_path)
+            if expected_size is None:
+                expected_size = (frame.width_px, frame.height_px)
+            imported_count += 1
+        self._renumber_low_frequency_frames()
+        return imported_count, issues
+
+    def _renumber_low_frequency_frames(self) -> None:
+        self._low_frequency_frames = [
+            replace(frame, index=index)
+            for index, frame in enumerate(self._low_frequency_frames)
+        ]
+
+    def _refresh_low_frequency_image_table(self) -> None:
+        table = self.ui.tableWidgetLowFrequencyImages
+        table.setRowCount(len(self._low_frequency_frames))
+        for row, frame in enumerate(self._low_frequency_frames):
+            index_item = QTableWidgetItem(str(row + 1))
+            name_item = QTableWidgetItem(frame.image_path.name)
+            mask_text = frame.mask_path.name if frame.mask_path is not None else "无"
+            mask_item = QTableWidgetItem(mask_text)
+            for item in (index_item, name_item, mask_item):
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+            name_item.setToolTip(str(frame.image_path))
+            mask_item.setToolTip(
+                "" if frame.mask_path is None else str(frame.mask_path)
+            )
+            table.setItem(row, 0, index_item)
+            table.setItem(row, 1, name_item)
+            table.setItem(row, 2, mask_item)
+        self._update_low_frequency_image_controls()
+
+    def _selected_low_frequency_rows(self) -> list[int]:
+        selection_model = self.ui.tableWidgetLowFrequencyImages.selectionModel()
+        if selection_model is None:
+            return []
+        return sorted({index.row() for index in selection_model.selectedRows()})
+
+    def _remove_selected_low_frequency_images(self) -> None:
+        selected_rows = self._selected_low_frequency_rows()
+        for row in reversed(selected_rows):
+            if 0 <= row < len(self._low_frequency_frames):
+                del self._low_frequency_frames[row]
+        self._renumber_low_frequency_frames()
+        self._refresh_low_frequency_image_table()
+
+    def _clear_low_frequency_images(self) -> None:
+        self._low_frequency_frames = []
+        self._refresh_low_frequency_image_table()
+        self.ui.labelLowFrequencyStatus.setText("待处理")
+
+    def _update_low_frequency_image_controls(self) -> None:
+        has_frames = bool(self._low_frequency_frames)
+        has_enough_frames = len(self._low_frequency_frames) >= 2
+        running = self._low_frequency_thread is not None
+        self.ui.pushButtonValidateLowFrequencyInputs.setEnabled(
+            has_enough_frames and not running
+        )
+        self.ui.pushButtonStartLowFrequencyCorrection.setEnabled(
+            has_enough_frames and not running
+        )
+        self.ui.pushButtonRemoveLowFrequencyImages.setEnabled(
+            has_frames and not running
+        )
+        self.ui.pushButtonClearLowFrequencyImages.setEnabled(
+            has_frames and not running
+        )
+
+    def _show_low_frequency_image_context_menu(self, position) -> None:  # type: ignore[no-untyped-def]
+        table = self.ui.tableWidgetLowFrequencyImages
+        clicked_index = table.indexAt(position)
+        if clicked_index.isValid() and clicked_index.row() not in self._selected_low_frequency_rows():
+            table.clearSelection()
+            table.selectRow(clicked_index.row())
+        selected_rows = self._selected_low_frequency_rows()
+        if not selected_rows:
+            return
+        menu = QMenu(table)
+        select_mask_action = menu.addAction("选择蒙版文件")
+        clear_mask_action = menu.addAction("清除蒙版")
+        selected_action = menu.exec_(table.viewport().mapToGlobal(position))
+        if selected_action is select_mask_action:
+            self._select_low_frequency_mask_for_rows(selected_rows)
+        elif selected_action is clear_mask_action:
+            for row in selected_rows:
+                self._low_frequency_frames[row] = replace(
+                    self._low_frequency_frames[row],
+                    mask_path=None,
+                )
+            self._refresh_low_frequency_image_table()
+
+    def _select_low_frequency_mask_for_rows(self, rows: list[int]) -> None:
+        first_frame = self._low_frequency_frames[rows[0]]
+        file_path, _selected_filter = get_open_file_name(
             self,
-            "选择空的输出目录",
-            self.ui.lineEditLowFrequencyOutputDirectory.text().strip(),
+            "选择天空区域蒙版",
+            str(first_frame.image_path.parent),
+            IMAGE_FILE_FILTER,
         )
-        if selected:
-            self.ui.lineEditLowFrequencyOutputDirectory.setText(selected)
-
-    def _low_frequency_paths(self) -> tuple[Path, Path]:
-        input_text = self.ui.lineEditLowFrequencyInputDirectory.text().strip()
-        output_text = self.ui.lineEditLowFrequencyOutputDirectory.text().strip()
-        if not input_text or not output_text:
-            raise ValueError("请完整选择源图目录和输出目录。")
-        return Path(input_text), Path(output_text)
+        if not file_path:
+            return
+        mask_path = Path(file_path).expanduser().resolve()
+        remember_path = getattr(self, "_remember_import_path", None)
+        if callable(remember_path):
+            remember_path(file_path)
+        try:
+            mask = read_binary_mask(mask_path)
+            expected_shape = (first_frame.height_px, first_frame.width_px)
+            if mask.shape != expected_shape:
+                raise ValueError(
+                    f"蒙版尺寸 {mask.shape[1]}×{mask.shape[0]}，"
+                    f"原图尺寸 {expected_shape[1]}×{expected_shape[0]}"
+                )
+            if not bool(mask.any()):
+                raise ValueError("蒙版中没有非零有效区域")
+            for row in rows:
+                frame = self._low_frequency_frames[row]
+                if (frame.height_px, frame.width_px) != expected_shape:
+                    raise ValueError("所选图像尺寸不一致，不能共用该蒙版。")
+        except Exception as exc:  # noqa: BLE001 - 蒙版错误应以对话框反馈。
+            QMessageBox.warning(self, "蒙版不可用", str(exc))
+            return
+        for row in rows:
+            self._low_frequency_frames[row] = replace(
+                self._low_frequency_frames[row],
+                mask_path=mask_path,
+            )
+        self._refresh_low_frequency_image_table()
 
     def _show_low_frequency_tuning_guide(self) -> None:
         if self._low_frequency_guide_dialog is None:
@@ -399,8 +661,9 @@ class LowFrequencyGradientMixin:
 
     def _validate_low_frequency_inputs(self) -> None:
         try:
-            input_directory, _output_directory = self._low_frequency_paths()
-            frames = validate_low_frequency_inputs(input_directory)
+            frames = validate_low_frequency_inputs(
+                tuple(self._low_frequency_frames)
+            )
         except Exception as exc:  # noqa: BLE001 - 输入检查结果直接展示在 debug 日志。
             self._append_low_frequency_log(f"[输入错误] {exc}")
             self.ui.labelLowFrequencyStatus.setText("输入检查失败")
@@ -446,7 +709,7 @@ class LowFrequencyGradientMixin:
             ),
             robust_loss="huber" if self.ui.checkBoxLowFrequencyHuber.isChecked() else "none",
             irls_iterations=4 if self.ui.checkBoxLowFrequencyHuber.isChecked() else 1,
-            apply_correction=not self.ui.checkBoxLowFrequencySolveOnly.isChecked(),
+            apply_correction=self.ui.checkBoxLowFrequencyExportCorrected.isChecked(),
         ).validated()
 
     def _update_low_frequency_advanced_controls(self) -> None:
@@ -465,7 +728,9 @@ class LowFrequencyGradientMixin:
         if self._low_frequency_thread is not None:
             return
         try:
-            input_directory, output_directory = self._low_frequency_paths()
+            frames = validate_low_frequency_inputs(
+                tuple(self._low_frequency_frames)
+            )
             config = self._low_frequency_config()
         except Exception as exc:  # noqa: BLE001 - 参数错误应留在页面日志。
             self._append_low_frequency_log(f"[参数错误] {exc}")
@@ -473,15 +738,15 @@ class LowFrequencyGradientMixin:
         self._append_low_frequency_log("=" * 72)
         self._append_low_frequency_log(
             f"开始：model={config.correction_model}, "
-            f"V4={'on' if config.enable_frame_plane else 'off'}, "
-            f"V5={'on' if config.enable_brightness_nonlinearity else 'off'}, "
+            f"frame_plane={'on' if config.enable_frame_plane else 'off'}, "
+            "brightness_layers="
+            f"{'on' if config.enable_brightness_nonlinearity else 'off'}, "
             f"grid={config.grid_columns}×{config.grid_rows}, "
             f"sample={config.sample_long_side_px}, downsample=1/{config.downsample_factor}, "
             f"patch={config.patch_size_px}"
         )
         worker = LowFrequencyCorrectionWorker(
-            input_directory=input_directory,
-            output_directory=output_directory,
+            frames=frames,
             config=config,
         )
         thread = QThread(self)
@@ -503,9 +768,10 @@ class LowFrequencyGradientMixin:
         thread.start()
 
     def _set_low_frequency_running(self, running: bool) -> None:
-        self.ui.pushButtonStartLowFrequencyCorrection.setEnabled(not running)
-        self.ui.pushButtonValidateLowFrequencyInputs.setEnabled(not running)
         self.ui.pushButtonCancelLowFrequencyCorrection.setEnabled(running)
+        self.ui.pushButtonImportLowFrequencyImages.setEnabled(not running)
+        self.ui.tableWidgetLowFrequencyImages.setEnabled(not running)
+        self._update_low_frequency_image_controls()
         if running:
             self.ui.labelLowFrequencyStatus.setText("处理中…")
 

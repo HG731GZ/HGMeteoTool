@@ -111,7 +111,7 @@ class SolverConfig:
     irls_iterations: int = 4
     saturation_fraction: float = 0.995
     star_sigma: float = 5.0
-    apply_correction: bool = True
+    apply_correction: bool = False
     output_block_rows: int = 256
 
     def validated(self) -> "SolverConfig":
@@ -136,9 +136,9 @@ class SolverConfig:
         if self.frame_plane_lambda < 0:
             raise ValueError("帧内平面正则强度不能为负数。")
         if self.enable_brightness_nonlinearity and not 3 <= self.brightness_knot_count <= 12:
-            raise ValueError("V5 亮度节点数必须位于 3～12。")
+            raise ValueError("亮度节点数必须位于 3～12。")
         if self.brightness_smooth_lambda < 0:
-            raise ValueError("V5 亮度平滑正则不能为负数。")
+            raise ValueError("亮度平滑正则不能为负数。")
         if self.robust_loss not in {"none", "huber"}:
             raise ValueError("robust_loss 只支持 none 或 huber。")
         if self.irls_iterations < 1:
@@ -210,12 +210,12 @@ class PhotometricSolution:
             raise ValueError("frame_gradients_rgb 尺寸必须是 frame_count × 3 × 2。")
         layer_count = coefficient_shape[1] if len(coefficient_shape) == 3 else 1
         if layer_count > 1 and not self.solver_config.enable_brightness_nonlinearity:
-            raise ValueError("多亮度层系数要求启用 V5。")
+            raise ValueError("多亮度层系数要求启用自适应亮度分段。")
         if (
             self.solver_config.enable_brightness_nonlinearity
             and layer_count != self.solver_config.brightness_knot_count
         ):
-            raise ValueError("V5 系数层数与 brightness_knot_count 不一致。")
+            raise ValueError("亮度层系数数量与 brightness_knot_count 不一致。")
         knots = self.brightness_knots
         if knots is not None and np.asarray(knots).shape != (layer_count,):
             raise ValueError("brightness_knots 数量必须与系数亮度层数一致。")

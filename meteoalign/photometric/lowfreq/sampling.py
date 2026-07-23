@@ -162,7 +162,7 @@ def build_model_coverage_sample_grid(
     *,
     long_side_px: int,
 ) -> TargetSampleGrid:
-    """Build V6 samples directly from the union of source-model sky footprints.
+    """Build samples directly from the union of source-model sky footprints.
 
     Each frame contributes a source-pixel grid. The per-frame density is scaled
     by ``sqrt(frame_count)`` so that ``long_side_px`` continues to control the
@@ -172,13 +172,13 @@ def build_model_coverage_sample_grid(
     """
 
     if len(frames) < 2:
-        raise ValueError("V6 模型覆盖采样至少需要两帧。")
+        raise ValueError("模型覆盖采样至少需要两帧。")
     if long_side_px < 2:
-        raise ValueError("V6 采样长边至少需要 2 px。")
+        raise ValueError("采样长边至少需要 2 px。")
 
     reference_size = (frames[0].width_px, frames[0].height_px)
     if any((frame.width_px, frame.height_px) != reference_size for frame in frames):
-        raise ValueError("V6 当前要求所有源图模型具有相同尺寸。")
+        raise ValueError("模型覆盖采样要求所有源图模型具有相同尺寸。")
 
     per_frame_long_side = max(
         8,
@@ -211,7 +211,7 @@ def build_model_coverage_sample_grid(
             vector_parts.append(vectors[valid])
             point_parts.append(source_points[valid])
     if not vector_parts:
-        raise ValueError("V6 无法从任何 model.json 生成有效 ICRS 方向。")
+        raise ValueError("无法从任何 model.json 生成有效 ICRS 方向。")
 
     candidate_vectors = np.concatenate(vector_parts, axis=0)
     candidate_points = np.concatenate(point_parts, axis=0)
@@ -231,7 +231,7 @@ def build_model_coverage_sample_grid(
         sample_height=sample_height,
         output_width_px=reference_size[0],
         output_height_px=reference_size[1],
-        sampling_mode="model_icrs_coverage_v6",
+        sampling_mode="model_icrs_coverage",
         source_frame_count=len(frames),
         candidate_count=int(candidate_vectors.shape[0]),
     )

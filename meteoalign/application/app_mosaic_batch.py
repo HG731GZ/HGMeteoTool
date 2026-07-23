@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Event
 from time import monotonic
@@ -11,12 +11,17 @@ from PyQt5.QtGui import QBrush, QColor, QImage, QPainter, QPen
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QCheckBox,
     QFileDialog,
     QGraphicsScene,
+    QGroupBox,
     QHeaderView,
+    QLabel,
     QMessageBox,
     QProgressDialog,
+    QPushButton,
     QTableWidgetItem,
+    QVBoxLayout,
 )
 
 from .app_constants import SOURCE_MODEL_JSON_FILTER
@@ -38,12 +43,18 @@ from ..mosaic.export.target_transform import target_icrs_to_pixel_transform_payl
 from ..mosaic.framing import MOSAIC_FRAMING_SCHEMA
 from ..mosaic.model_io import MosaicSourceModel, _load_mosaic_source_model
 from ..meteor_selection import MeteorBox, load_meteor_selection, meteor_json_path
+from ..photometric.lowfreq.apply import apply_solution_to_array
+from ..photometric.lowfreq.solution_io import read_solution
+from ..photometric.lowfreq.types import PhotometricFrame, PhotometricSolution
 from ..qt_tasks import start_qt_worker_task
 from ..simulator import CameraSettings, ObserverSettings, RECTILINEAR_LENS_MODEL, ViewSettings
 from ..sky_scene_service import SkySceneData
 
 
 MOSAIC_BATCH_FRAMING_JSON_FILTER = "自由投影取景 JSON (*.json);;JSON 文件 (*.json)"
+MOSAIC_BATCH_GRADIENT_SOLUTION_FILTER = (
+    "梯度校正文件 (photometric_solution.json *.json);;JSON 文件 (*.json)"
+)
 MOSAIC_BATCH_MODE_SKY_INDEX = 0
 MOSAIC_BATCH_IMAGE_NAME_COLUMN = 0
 MOSAIC_BATCH_METEOR_COLUMN = 1
@@ -87,6 +98,8 @@ class MosaicBatchExportTask:
     exact_remap_repair: bool
     tiff_lzw_compression: bool
     source_pixel_regions: tuple[tuple[int, int, int, int], ...] | None
+    gradient_solution: PhotometricSolution | None = None
+    gradient_frame_index: int | None = None
 
 
 def _write_mosaic_batch_export_task(
@@ -109,6 +122,25 @@ def _write_mosaic_batch_export_task(
                 f"原图 {source_image.width_px} x {source_image.height_px} px，"
                 f"模型 {source_model.image_width_px} x {source_model.image_height_px} px。"
             )
+        if task.gradient_solution is not None:
+            if task.gradient_frame_index is None:
+                raise ValueError("梯度校正方案中找不到当前源图。")
+            gradient_frame = PhotometricFrame(
+                index=int(task.gradient_frame_index),
+                model_path=source_model.json_path,
+                image_path=source_model.source_image_path,
+                mask_path=None,
+                model=source_model.model,
+                source_payload={},
+            )
+            corrected_rgb = apply_solution_to_array(
+                source_image.rgb,
+                gradient_frame,
+                task.gradient_solution,
+                block_rows=task.block_rows,
+                progress_callback=update_export_progress,
+            )
+            source_image = replace(source_image, rgb=corrected_rgb)
         if task.framing is None and task.base_model is None:
             raise ValueError("当前批处理模式缺少目标取景或底图模型。")
         write_mosaic_reprojection_tiff(
@@ -245,6 +277,8 @@ class MosaicBatchMixin:
             return
         self._mosaic_batch_framing: MosaicBatchFraming | None = None
         self._mosaic_batch_base_model: MosaicSourceModel | None = None
+        self._mosaic_batch_gradient_solution_path: Path | None = None
+        self._mosaic_batch_gradient_solution: PhotometricSolution | None = None
         self._mosaic_batch_items: list[MosaicBatchImageItem] = []
         self._mosaic_batch_thread: object | None = None
         self._mosaic_batch_worker: MosaicBatchExportWorker | None = None
@@ -253,6 +287,7 @@ class MosaicBatchMixin:
         self._mosaic_batch_terminal_handled = False
         self._mosaic_batch_base_preview_path: Path | None = None
         self._mosaic_batch_base_preview_image: QImage | None = None
+        self._ensure_mosaic_batch_gradient_controls()
         self._init_mosaic_batch_preview()
         self.ui.comboBoxMosaicBatchMode.setCurrentIndex(MOSAIC_BATCH_MODE_SKY_INDEX)
         if hasattr(self.ui, "doubleSpinBoxMosaicBatchMapTileSize"):
@@ -265,6 +300,30 @@ class MosaicBatchMixin:
             if hasattr(self.ui, label_name):
                 getattr(self.ui, label_name).installEventFilter(self)
         self._update_mosaic_batch_controls()
+
+    def _ensure_mosaic_batch_gradient_controls(self) -> None:
+        if hasattr(self.ui, "pushButtonImportMosaicBatchGradientSolution"):
+            return
+        parent = self.ui.widgetMosaicBatchSidePanel
+        group = QGroupBox("梯度校正", parent)
+        layout = QVBoxLayout(group)
+        button = QPushButton("导入梯度校正文件", group)
+        status = QLabel("未导入", group)
+        status.setWordWrap(True)
+        checkbox = QCheckBox("梯度校正", group)
+        checkbox.setChecked(False)
+        checkbox.setEnabled(False)
+        layout.addWidget(button)
+        layout.addWidget(status)
+        layout.addWidget(checkbox)
+        side_layout = self.ui.verticalLayoutMosaicBatchSidePanel
+        export_group = self.ui.groupBoxMosaicBatchExportOptions
+        export_index = side_layout.indexOf(export_group)
+        side_layout.insertWidget(max(0, export_index), group)
+        self.ui.groupBoxMosaicBatchGradient = group
+        self.ui.pushButtonImportMosaicBatchGradientSolution = button
+        self.ui.labelMosaicBatchGradientSolution = status
+        self.ui.checkBoxMosaicBatchGradientCorrection = checkbox
 
     def _init_mosaic_batch_preview(self) -> None:
         """初始化批处理页的只读模拟星空预览。"""
@@ -289,10 +348,16 @@ class MosaicBatchMixin:
         self.ui.comboBoxMosaicBatchMode.currentIndexChanged.connect(self._update_mosaic_batch_controls)
         self.ui.pushButtonImportMosaicBatchFramingJson.clicked.connect(self.import_mosaic_batch_framing_json)
         self.ui.pushButtonImportMosaicBatchImageJson.clicked.connect(self.import_mosaic_batch_image_json)
+        self.ui.pushButtonImportMosaicBatchGradientSolution.clicked.connect(
+            self.import_mosaic_batch_gradient_solution
+        )
         self.ui.pushButtonClearMosaicBatchImports.clicked.connect(self.clear_mosaic_batch_imports)
         self.ui.pushButtonStartMosaicBatch.clicked.connect(self.start_mosaic_batch_processing)
         if hasattr(self.ui, "checkBoxMosaicBatchMeteorOnly"):
             self.ui.checkBoxMosaicBatchMeteorOnly.toggled.connect(self._update_mosaic_batch_controls)
+        self.ui.checkBoxMosaicBatchGradientCorrection.toggled.connect(
+            self._update_mosaic_batch_controls
+        )
 
     def _configure_mosaic_batch_table(self) -> None:
         table = self.ui.tableWidgetMosaicBatchImages
@@ -310,11 +375,17 @@ class MosaicBatchMixin:
             return True
         return self.ui.comboBoxMosaicBatchMode.currentIndex() == MOSAIC_BATCH_MODE_SKY_INDEX
 
-    def _mosaic_batch_has_imports(self) -> bool:
+    def _mosaic_batch_has_layout_imports(self) -> bool:
         return (
             self._mosaic_batch_framing is not None
             or self._mosaic_batch_base_model is not None
             or bool(self._mosaic_batch_items)
+        )
+
+    def _mosaic_batch_has_imports(self) -> bool:
+        return (
+            self._mosaic_batch_has_layout_imports()
+            or getattr(self, "_mosaic_batch_gradient_solution", None) is not None
         )
 
     def _mosaic_batch_target_geometry(self) -> MosaicExportGeometry | None:
@@ -338,9 +409,12 @@ class MosaicBatchMixin:
         if not hasattr(self.ui, "comboBoxMosaicBatchMode"):
             return
         has_imports = self._mosaic_batch_has_imports()
+        has_layout_imports = self._mosaic_batch_has_layout_imports()
         sky_mode = self._mosaic_batch_is_sky_mode()
         batch_active = getattr(self, "_mosaic_batch_thread", None) is not None
-        self.ui.comboBoxMosaicBatchMode.setEnabled(not has_imports and not batch_active)
+        self.ui.comboBoxMosaicBatchMode.setEnabled(
+            not has_layout_imports and not batch_active
+        )
         target_name = "取景" if sky_mode else "底图"
         self.ui.labelMosaicBatchFramingPathTitle.setText(target_name)
         self.ui.pushButtonImportMosaicBatchFramingJson.setText(f"导入{target_name}JSON")
@@ -349,6 +423,18 @@ class MosaicBatchMixin:
         )
         self.ui.pushButtonImportMosaicBatchFramingJson.setEnabled(not batch_active)
         self.ui.pushButtonImportMosaicBatchImageJson.setEnabled(not batch_active)
+        if hasattr(self.ui, "pushButtonImportMosaicBatchGradientSolution"):
+            self.ui.pushButtonImportMosaicBatchGradientSolution.setEnabled(
+                not batch_active
+            )
+            has_gradient_solution = (
+                getattr(self, "_mosaic_batch_gradient_solution", None) is not None
+            )
+            self.ui.checkBoxMosaicBatchGradientCorrection.setEnabled(
+                has_gradient_solution and not batch_active
+            )
+            if not has_gradient_solution:
+                self.ui.checkBoxMosaicBatchGradientCorrection.setChecked(False)
         self.ui.pushButtonClearMosaicBatchImports.setEnabled(has_imports and not batch_active)
         target_geometry = self._mosaic_batch_target_geometry()
         can_start = target_geometry is not None and bool(self._mosaic_batch_processable_rows())
@@ -377,6 +463,13 @@ class MosaicBatchMixin:
         return bool(
             hasattr(self.ui, "checkBoxMosaicBatchMeteorOnly")
             and self.ui.checkBoxMosaicBatchMeteorOnly.isChecked()
+        )
+
+    def _mosaic_batch_gradient_enabled(self) -> bool:
+        return bool(
+            hasattr(self.ui, "checkBoxMosaicBatchGradientCorrection")
+            and self.ui.checkBoxMosaicBatchGradientCorrection.isChecked()
+            and getattr(self, "_mosaic_batch_gradient_solution", None) is not None
         )
 
     def _mosaic_batch_processable_rows(self) -> list[int]:
@@ -768,6 +861,36 @@ class MosaicBatchMixin:
             )
         self.ui.statusbar.showMessage(f"已导入 {imported_count} 个批处理图像模型 JSON")
 
+    def import_mosaic_batch_gradient_solution(self) -> None:
+        default_dir = self._import_dialog_directory(self._mosaic_batch_default_dir())
+        file_path, _selected_filter = get_open_file_name(
+            self,
+            "导入梯度校正文件",
+            str(default_dir),
+            MOSAIC_BATCH_GRADIENT_SOLUTION_FILTER,
+        )
+        if not file_path:
+            return
+        self._remember_import_path(file_path)
+        solution_path = Path(file_path).expanduser().resolve()
+        try:
+            solution = read_solution(solution_path)
+            if not solution.frame_records:
+                raise ValueError("梯度校正文件没有源图记录。")
+        except Exception as exc:  # noqa: BLE001 - 导入错误需要直接反馈。
+            QMessageBox.critical(self, "导入梯度校正文件失败", str(exc))
+            self.ui.statusbar.showMessage(f"导入梯度校正文件失败: {exc}")
+            return
+        self._mosaic_batch_gradient_solution_path = solution_path
+        self._mosaic_batch_gradient_solution = solution
+        self.ui.labelMosaicBatchGradientSolution.setText(solution_path.name)
+        self.ui.labelMosaicBatchGradientSolution.setToolTip(str(solution_path))
+        self.ui.checkBoxMosaicBatchGradientCorrection.setChecked(False)
+        self._update_mosaic_batch_controls()
+        self.ui.statusbar.showMessage(
+            f"已导入梯度校正文件: {solution_path.name}"
+        )
+
     @staticmethod
     def _mosaic_batch_item_from_source_model(source_model: MosaicSourceModel) -> MosaicBatchImageItem:
         """自动读取源图同目录的流星框选 JSON；读取失败不阻断模型导入。"""
@@ -795,9 +918,15 @@ class MosaicBatchMixin:
     def clear_mosaic_batch_imports(self) -> None:
         self._mosaic_batch_framing = None
         self._mosaic_batch_base_model = None
+        self._mosaic_batch_gradient_solution_path = None
+        self._mosaic_batch_gradient_solution = None
         self._mosaic_batch_base_preview_path = None
         self._mosaic_batch_base_preview_image = None
         self._mosaic_batch_items = []
+        if hasattr(self.ui, "labelMosaicBatchGradientSolution"):
+            self.ui.labelMosaicBatchGradientSolution.setText("未导入")
+            self.ui.labelMosaicBatchGradientSolution.setToolTip("")
+            self.ui.checkBoxMosaicBatchGradientCorrection.setChecked(False)
         self.ui.tableWidgetMosaicBatchImages.setRowCount(0)
         self._update_mosaic_batch_controls()
         self.ui.statusbar.showMessage("已清除全景图批处理导入。")
@@ -844,6 +973,51 @@ class MosaicBatchMixin:
         if source_model.source_image_text:
             return source_model.source_image_text
         return source_model.json_path.name
+
+    def _mosaic_batch_gradient_frame_index(
+        self,
+        source_model: MosaicSourceModel,
+    ) -> int | None:
+        solution = getattr(self, "_mosaic_batch_gradient_solution", None)
+        image_path = source_model.source_image_path
+        if solution is None or image_path is None:
+            return None
+        resolved_image = image_path.expanduser().resolve()
+        exact_matches: list[int] = []
+        name_matches: list[int] = []
+        for index, record in enumerate(solution.frame_records):
+            source_text = record.get("source_image")
+            if not isinstance(source_text, str) or not source_text.strip():
+                continue
+            recorded_path = Path(source_text).expanduser()
+            try:
+                if recorded_path.resolve() == resolved_image:
+                    exact_matches.append(index)
+                    continue
+            except OSError:
+                pass
+            if recorded_path.name.casefold() == resolved_image.name.casefold():
+                name_matches.append(index)
+        if len(exact_matches) == 1:
+            return exact_matches[0]
+        if len(name_matches) == 1:
+            return name_matches[0]
+        return None
+
+    def _mosaic_batch_missing_gradient_rows(
+        self,
+        rows: list[int],
+    ) -> list[int]:
+        if not self._mosaic_batch_gradient_enabled():
+            return []
+        return [
+            row
+            for row in rows
+            if self._mosaic_batch_gradient_frame_index(
+                self._mosaic_batch_items[row].source_model
+            )
+            is None
+        ]
 
     def _mosaic_batch_state_from_status(self, status: str) -> str:
         if status.startswith("已完成"):
@@ -900,6 +1074,24 @@ class MosaicBatchMixin:
             message = "请先导入图像模型 JSON。" if not self._mosaic_batch_items else "当前没有可导出的流星框选。"
             QMessageBox.warning(self, "批处理失败", message)
             return
+        missing_gradient_rows = self._mosaic_batch_missing_gradient_rows(
+            processable_rows
+        )
+        if missing_gradient_rows:
+            names = [
+                self._mosaic_batch_display_name(
+                    self._mosaic_batch_items[row].source_model
+                )
+                for row in missing_gradient_rows
+            ]
+            QMessageBox.warning(
+                self,
+                "梯度校正文件不匹配",
+                "以下图像不在当前梯度校正文件中：\n"
+                + "\n".join(names[:12])
+                + ("\n…" if len(names) > 12 else ""),
+            )
+            return
         if not mosaic_export_available():
             QMessageBox.critical(self, "批处理失败", "当前环境缺少 OpenCV 或 tifffile，无法写入 TIFF。")
             return
@@ -913,12 +1105,17 @@ class MosaicBatchMixin:
         output_dir = Path(output_dir_text).expanduser()
         total_count = len(processable_rows)
         meteor_only_text = "\n仅导出已框选的流星区域，其他区域将透明。\n" if self._mosaic_batch_meteor_only_enabled() else ""
+        gradient_text = (
+            "\n将先应用梯度校正，再直接重投影。\n"
+            if self._mosaic_batch_gradient_enabled()
+            else ""
+        )
         if QMessageBox.question(
             self,
             "确认开始批处理",
             (
                 f"将处理 {total_count} 张图像。\n"
-                f"{meteor_only_text}\n"
+                f"{meteor_only_text}{gradient_text}\n"
                 f"输出目录：\n{output_dir}\n\n"
                 f"尺寸：{geometry.output_width_px} x {geometry.output_height_px} px\n"
                 f"格式：{MOSAIC_EXPORT_TIFF_FILTER}"
@@ -941,6 +1138,11 @@ class MosaicBatchMixin:
         map_tile_size_px = self._mosaic_batch_map_tile_size_px()
         exact_remap_repair = self._mosaic_batch_exact_remap_repair_enabled()
         tiff_lzw_compression = self._mosaic_tiff_lzw_compression_enabled()
+        gradient_solution = (
+            getattr(self, "_mosaic_batch_gradient_solution", None)
+            if self._mosaic_batch_gradient_enabled()
+            else None
+        )
         tasks: list[MosaicBatchExportTask] = []
         for row, item in enumerate(self._mosaic_batch_items):
             if row not in processable_rows:
@@ -965,6 +1167,12 @@ class MosaicBatchMixin:
                     exact_remap_repair=exact_remap_repair,
                     tiff_lzw_compression=tiff_lzw_compression,
                     source_pixel_regions=self._mosaic_batch_item_source_regions(item),
+                    gradient_solution=gradient_solution,
+                    gradient_frame_index=(
+                        self._mosaic_batch_gradient_frame_index(item.source_model)
+                        if gradient_solution is not None
+                        else None
+                    ),
                 )
             )
 

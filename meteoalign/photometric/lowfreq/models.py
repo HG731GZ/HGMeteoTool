@@ -27,7 +27,7 @@ def derive_brightness_knots(
     if not config.enable_brightness_nonlinearity:
         return np.array([0.0], dtype=np.float64)
     if observations.measurement_i_rgb is None or observations.measurement_j_rgb is None:
-        raise ValueError("V5 无法从缺失的原始测量中确定亮度节点。")
+        raise ValueError("无法从缺失的原始测量中确定亮度节点。")
     measurements = np.concatenate(
         (
             np.asarray(observations.measurement_i_rgb, dtype=np.float64).ravel(),
@@ -37,7 +37,7 @@ def derive_brightness_knots(
     coordinates = brightness_coordinate(measurements, config)
     coordinates = coordinates[np.isfinite(coordinates)]
     if coordinates.size < config.brightness_knot_count * 10:
-        raise ValueError("V5 有效亮度样本不足，无法建立自适应节点。")
+        raise ValueError("有效亮度样本不足，无法建立自适应节点。")
     lower, upper = np.percentile(coordinates, (1.0, 99.0))
     lower = max(0.0, float(lower) - 0.02)
     upper = min(1.0, float(upper) + 0.02)
@@ -87,7 +87,7 @@ def brightness_basis(
     config: SolverConfig,
     knots: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Piecewise-linear hat basis on the V5 log-brightness coordinate."""
+    """Piecewise-linear hat basis on the adaptive log-brightness coordinate."""
 
     knot_values = brightness_knots(config) if knots is None else np.asarray(knots, dtype=np.float64)
     lower, upper, fraction = brightness_interpolation_indices(values, config, knot_values)

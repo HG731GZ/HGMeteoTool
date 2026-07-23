@@ -141,7 +141,7 @@ def build_observation_matrix(
     channel: int = 0,
     brightness_knot_values: np.ndarray | None = None,
 ) -> tuple[sparse.csr_matrix, sparse.csr_matrix, np.ndarray]:
-    """Build one channel matrix; V5 makes its brightness weights channel-specific."""
+    """Build one channel matrix with optional channel-specific brightness weights."""
 
     layout = _layout(observations, config)
     point_i = _normalized_points(
@@ -166,7 +166,7 @@ def build_observation_matrix(
     )
     if config.enable_brightness_nonlinearity:
         if observations.measurement_i_rgb is None or observations.measurement_j_rgb is None:
-            raise ValueError("V5 需要重叠两侧的原始 RGB 测量。")
+            raise ValueError("自适应亮度分段需要重叠两侧的原始 RGB 测量。")
         knots = (
             derive_brightness_knots(observations, config)
             if brightness_knot_values is None

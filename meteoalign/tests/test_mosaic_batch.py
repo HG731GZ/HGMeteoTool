@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 from PyQt5.QtGui import QImage
 
 import meteoalign.application.app_mosaic_batch as app_mosaic_batch
@@ -13,6 +14,7 @@ from meteoalign.application.app_mosaic_batch import (
     MosaicBatchMixin,
 )
 from meteoalign.mosaic.export.geometry import MosaicExportGeometry
+from meteoalign.mosaic_export import MosaicExportSourceImage
 from meteoalign.meteor_selection import MeteorBox, save_meteor_selection
 
 
@@ -146,6 +148,21 @@ def test_mosaic_batch_detects_sibling_meteor_selection_json(tmp_path) -> None:
     assert "IMG_0001_Meteor.json" in tooltip
 
 
+def test_mosaic_batch_matches_gradient_solution_by_source_image(tmp_path) -> None:
+    source_path = tmp_path / "IMG_0001.TIF"
+    source_path.touch()
+    window = _batch_window(0)
+    window._mosaic_batch_gradient_solution = SimpleNamespace(
+        frame_records=(
+            {"source_image": str(tmp_path / "other.tif")},
+            {"source_image": str(source_path)},
+        )
+    )
+    source_model = SimpleNamespace(source_image_path=source_path)
+
+    assert window._mosaic_batch_gradient_frame_index(source_model) == 1
+
+
 def test_mosaic_batch_meteor_only_uses_detected_box_regions() -> None:
     """流星区域模式只向导出层传递框选源图矩形。"""
 
@@ -227,6 +244,69 @@ def test_mosaic_batch_worker_stops_cooperatively_after_cancel(monkeypatch, tmp_p
 
     assert started_rows == [0]
     assert completed == [(0, 0, True)]
+
+
+def test_mosaic_batch_applies_gradient_in_memory_before_reprojection(
+    monkeypatch,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    source_path = tmp_path / "source.tif"
+    source_path.touch()
+    source_rgb = np.full((8, 10, 3), 1000, dtype=np.uint16)
+    source_image = MosaicExportSourceImage(
+        path=source_path,
+        rgb=source_rgb,
+        exif_tags=(),
+        icc_profile=None,
+    )
+    source_model = SimpleNamespace(
+        json_path=tmp_path / "source_model.json",
+        source_image_path=source_path,
+        image_width_px=10,
+        image_height_px=8,
+        model=SimpleNamespace(image_width_px=10, image_height_px=8),
+    )
+    task = MosaicBatchExportTask(
+        row=0,
+        item=MosaicBatchImageItem(source_model=source_model),  # type: ignore[arg-type]
+        geometry=MosaicExportGeometry(10, 8, 0, 0, 10, 8),
+        output_path=tmp_path / "output.tif",
+        framing=None,
+        base_model=SimpleNamespace(model=object()),
+        block_rows=8,
+        map_tile_size_px=4,
+        exact_remap_repair=False,
+        tiff_lzw_compression=False,
+        source_pixel_regions=None,
+        gradient_solution=object(),  # type: ignore[arg-type]
+        gradient_frame_index=0,
+    )
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        app_mosaic_batch,
+        "load_mosaic_export_source_image",
+        lambda _path: source_image,
+    )
+
+    def fake_apply(rgb, frame, _solution, **_kwargs):  # type: ignore[no-untyped-def]
+        calls.append(f"correct:{frame.index}")
+        return rgb - 100
+
+    def fake_write(*, output_path, source_image, **_kwargs):  # type: ignore[no-untyped-def]
+        calls.append(f"reproject:{int(source_image.rgb[0, 0, 0])}")
+        Path(output_path).write_bytes(b"done")
+
+    monkeypatch.setattr(app_mosaic_batch, "apply_solution_to_array", fake_apply)
+    monkeypatch.setattr(app_mosaic_batch, "write_mosaic_reprojection_tiff", fake_write)
+
+    app_mosaic_batch._write_mosaic_batch_export_task(
+        task,
+        lambda *_args: None,
+    )
+
+    assert calls == ["correct:0", "reproject:900"]
+    assert task.output_path.read_bytes() == b"done"
 
 
 def test_mosaic_batch_controls_are_locked_while_worker_is_active() -> None:

@@ -76,7 +76,7 @@ def solution_to_payload(solution: PhotometricSolution) -> dict[str, Any]:
         },
         "frames": frame_payloads,
         "solver": {
-            "sampling_strategy": "model_icrs_coverage_v6",
+            "sampling_strategy": "model_icrs_coverage",
             "smooth_lambda": float(config.smooth_lambda),
             "frame_offset_lambda": float(config.frame_offset_lambda),
             "correction_model": config.correction_model,

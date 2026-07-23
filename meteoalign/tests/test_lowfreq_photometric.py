@@ -11,6 +11,7 @@ import numpy as np
 import tifffile
 from PyQt5.QtWidgets import QApplication, QMainWindow
 
+import meteoalign.application.app_lowfreq_gradient as app_lowfreq_gradient
 from meteoalign.application.app_lowfreq_gradient import LowFrequencyGradientMixin
 from meteoalign.photometric.lowfreq.apply import (
     apply_solution_to_frame,
@@ -365,6 +366,24 @@ def test_apply_solution_writes_uint16_rgb_without_touching_source(tmp_path: Path
     assert corrected.shape == source.shape
     assert np.all(corrected == np.array([890, 780, 670], dtype=np.uint16))
 
+    replacement_solution = PhotometricSolution(
+        grid_columns=6,
+        grid_rows=4,
+        coefficients_rgb=np.zeros((3, 24), dtype=np.float64),
+        frame_offsets_rgb=np.zeros((1, 3), dtype=np.float64),
+        frame_records=({"index": 0},),
+        solver_config=config,
+        diagnostics=_empty_diagnostics(24),
+    )
+    apply_solution_to_frame(
+        frame,
+        replacement_solution,
+        output_path,
+        block_rows=5,
+        overwrite=True,
+    )
+    assert np.array_equal(tifffile.imread(output_path), source)
+
 
 def test_v3_multiplicative_and_v5_layered_application_are_pixelwise() -> None:
     source = np.array(
@@ -566,7 +585,7 @@ def test_v6_builds_overlap_samples_directly_from_frame_models() -> None:
     )
     grid = build_model_coverage_sample_grid(frames, long_side_px=90)
 
-    assert grid.sampling_mode == "model_icrs_coverage_v6"
+    assert grid.sampling_mode == "model_icrs_coverage"
     assert grid.source_frame_count == 3
     assert grid.sample_count > 0
     assert grid.sample_count < grid.candidate_count
@@ -581,6 +600,70 @@ def test_v6_builds_overlap_samples_directly_from_frame_models() -> None:
             & (pixels[:, 1] <= frame.height_px - 1.0)
         )
     assert np.all(coverage_count >= 2)
+
+
+def test_low_frequency_image_import_filters_masks_missing_models_and_invalid_tiffs(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:  # type: ignore[no-untyped-def]
+    app = QApplication.instance() or QApplication([])
+
+    class Window(QMainWindow, LowFrequencyGradientMixin):
+        pass
+
+    window = Window()
+    window.ui = Ui_MainWindow()
+    window.ui.setupUi(window)
+    window._init_low_frequency_gradient_page()
+    paths = [
+        tmp_path / "good.tif",
+        tmp_path / "missing_model.tif",
+        tmp_path / "invalid_depth.tif",
+        tmp_path / "good_Mask.tif",
+    ]
+    for path in paths:
+        path.touch()
+
+    def fake_frame(image_path, *, index, **_kwargs):  # type: ignore[no-untyped-def]
+        path = Path(image_path)
+        if path.name == "missing_model.tif":
+            raise FileNotFoundError("未找到同路径同名模型")
+        return PhotometricFrame(
+            index=index,
+            model_path=tmp_path / f"{path.stem}_model.json",
+            image_path=path,
+            mask_path=None,
+            model=SimpleNamespace(image_width_px=10, image_height_px=8),  # type: ignore[arg-type]
+            source_payload={},
+        )
+
+    def fake_validate(frame, *, expected_size=None):  # type: ignore[no-untyped-def]
+        if frame.image_path.name == "invalid_depth.tif":
+            raise ValueError("只接受 16-bit RGB TIFF")
+
+    monkeypatch.setattr(
+        app_lowfreq_gradient,
+        "photometric_frame_from_image",
+        fake_frame,
+    )
+    monkeypatch.setattr(
+        app_lowfreq_gradient,
+        "validate_photometric_frame",
+        fake_validate,
+    )
+
+    imported_count, issues = window._add_low_frequency_image_paths(
+        [str(path) for path in paths]
+    )
+    window._refresh_low_frequency_image_table()
+
+    assert imported_count == 1
+    assert [frame.image_path.name for frame in window._low_frequency_frames] == [
+        "good.tif"
+    ]
+    assert len(issues) == 3
+    assert window.ui.tableWidgetLowFrequencyImages.item(0, 1).text() == "good.tif"
+    window.close()
 
 
 def test_low_frequency_page_has_controls_on_left_and_debug_log_on_right() -> None:
@@ -598,18 +681,31 @@ def test_low_frequency_page_has_controls_on_left_and_debug_log_on_right() -> Non
     page_index = window.ui.tabWidgetMain.indexOf(window.ui.tabLowFrequencyGradient)
     assert window.ui.tabWidgetMain.tabText(page_index) == "周边梯度优化"
     assert page_layout.itemAt(0).widget() is window.ui.scrollAreaLowFrequencyControls
-    assert page_layout.itemAt(1).widget().title() == "运行日志（Debug）"
+    assert page_layout.itemAt(1).widget() is not None
     assert window.ui.plainTextEditLowFrequencyLog.isReadOnly()
+    assert window.ui.tableWidgetLowFrequencyImages.columnCount() == 3
+    assert [
+        window.ui.tableWidgetLowFrequencyImages.horizontalHeaderItem(index).text()
+        for index in range(3)
+    ] == ["序号", "文件名", "蒙版"]
     assert window.ui.pushButtonStartLowFrequencyCorrection.text() == "开始处理"
     assert window.ui.pushButtonLowFrequencyTuningGuide.text() == "调参指南"
-    assert not hasattr(window.ui, "lineEditLowFrequencyFramingJson")
+    assert not hasattr(window.ui, "lineEditLowFrequencyInputDirectory")
+    assert not hasattr(window.ui, "lineEditLowFrequencyOutputDirectory")
+    assert not window.ui.checkBoxLowFrequencyExportCorrected.isChecked()
     assert window.ui.comboBoxLowFrequencyCorrectionModel.count() == 3
+    assert "V1" not in window.ui.comboBoxLowFrequencyCorrectionModel.itemText(0)
     assert not window.ui.doubleSpinBoxLowFrequencyFramePlaneLambda.isEnabled()
     assert not window.ui.spinBoxLowFrequencyBrightnessKnots.isEnabled()
     window._show_low_frequency_tuning_guide()
     assert window._low_frequency_guide_dialog is not None
     guide_text = window._low_frequency_guide_dialog.guideBrowser.toPlainText()
-    assert "V6" in guide_text
+    assert "V1" not in guide_text
+    assert "V5" not in guide_text
     assert "对数增益" in guide_text
     assert "correction field" in guide_text
+    assert (
+        window.ui.tabWidgetMain.widget(window.ui.tabWidgetMain.count() - 1)
+        is window.ui.tabMosaicBatch
+    )
     window.close()

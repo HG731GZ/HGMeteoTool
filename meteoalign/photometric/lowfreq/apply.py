@@ -23,7 +23,7 @@ def rasterize_solution_parameter_block(
     y_start: int,
     y_stop: int,
 ) -> np.ndarray:
-    """Evaluate V3–V5 shared field, frame offset, and optional frame plane."""
+    """Evaluate the shared field, frame offset, and optional frame plane."""
 
     config = solution.solver_config
     coefficient_layers = solution.coefficient_layers_rgb
@@ -78,9 +78,10 @@ def apply_solution_to_frame(
     block_rows: int = 256,
     progress_callback: ProgressCallback | None = None,
     cancel_callback: CancelCallback | None = None,
+    overwrite: bool = False,
 ) -> Path:
     destination = Path(output_path)
-    if destination.exists():
+    if destination.exists() and not overwrite:
         raise FileExistsError(f"为保护已有结果，不会覆盖：{destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f".{destination.name}.tmp.tif")
@@ -102,7 +103,7 @@ def apply_solution_to_frame(
     try:
         source = tifffile.memmap(frame.image_path, mode="r")
     except ValueError:
-        # 压缩 TIFF 不能直接内存映射；V1 仍允许读取后按块写出。
+        # 压缩 TIFF 不能直接内存映射，仍允许读取后按块写出。
         source = tifffile.imread(frame.image_path)
     try:
         output = tifffile.memmap(
@@ -117,7 +118,7 @@ def apply_solution_to_frame(
                 y_resolution if y_resolution is not None else 72.0,
             ),
             resolutionunit=resolution_unit,
-            software=software or "HGMeteoTool photometric correction V5",
+            software=software or "HGMeteoTool gradient correction",
         )
         try:
             for y_start in range(0, frame.height_px, max(1, int(block_rows))):
@@ -151,3 +152,51 @@ def apply_solution_to_frame(
     finally:
         del source
     return destination
+
+
+def apply_solution_to_array(
+    source_rgb: np.ndarray,
+    frame: PhotometricFrame,
+    solution: PhotometricSolution,
+    *,
+    block_rows: int = 256,
+    progress_callback: ProgressCallback | None = None,
+    cancel_callback: CancelCallback | None = None,
+) -> np.ndarray:
+    """Apply a solution in memory for direct correction + reprojection export."""
+
+    source = np.asarray(source_rgb)
+    if source.shape != (frame.height_px, frame.width_px, 3):
+        raise ValueError(
+            "梯度校正要求 H×W×3 RGB 图像："
+            f"{source.shape} vs {(frame.height_px, frame.width_px, 3)}"
+        )
+    if source.dtype != np.dtype(np.uint16):
+        raise ValueError(f"梯度校正要求 uint16 TIFF，实际为 {source.dtype}。")
+    corrected_rgb = np.empty_like(source, dtype=np.uint16)
+    safe_block_rows = max(1, int(block_rows))
+    for y_start in range(0, frame.height_px, safe_block_rows):
+        if cancel_callback is not None and cancel_callback():
+            raise InterruptedError("用户已取消梯度校正。")
+        y_stop = min(frame.height_px, y_start + safe_block_rows)
+        source_block = source[y_start:y_stop].astype(np.float32)
+        parameter = rasterize_solution_parameter_block(
+            source_block,
+            frame,
+            solution,
+            y_start=y_start,
+            y_stop=y_stop,
+        )
+        corrected = corrected_code_values(
+            source_block,
+            parameter,
+            solution.solver_config,
+        )
+        corrected_rgb[y_start:y_stop] = np.clip(
+            np.rint(corrected),
+            0,
+            65535,
+        ).astype(np.uint16)
+        if progress_callback is not None:
+            progress_callback("正在应用梯度校正…", y_stop, frame.height_px)
+    return corrected_rgb

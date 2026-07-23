@@ -25,6 +25,17 @@ def export_diagnostics(
 ) -> Path:
     directory = Path(output_directory)
     directory.mkdir(parents=True, exist_ok=True)
+    for pattern in (
+        "correction_*.tif",
+        "observability*.tif",
+        "overlap_residuals.csv",
+        "residual_before.csv",
+        "residual_after.csv",
+        "summary.json",
+    ):
+        for existing_path in directory.glob(pattern):
+            if existing_path.is_file():
+                existing_path.unlink()
     coefficient_layers = solution.coefficient_layers_rgb
     preview_layers = np.stack(
         [
