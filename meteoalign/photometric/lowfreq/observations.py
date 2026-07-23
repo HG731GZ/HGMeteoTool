@@ -61,6 +61,8 @@ def generate_observations(
     all_point_i: list[np.ndarray] = []
     all_point_j: list[np.ndarray] = []
     all_difference: list[np.ndarray] = []
+    all_measurement_i: list[np.ndarray] = []
+    all_measurement_j: list[np.ndarray] = []
     all_sample_index: list[np.ndarray] = []
 
     for current_index, frame in enumerate(frames):
@@ -97,6 +99,8 @@ def generate_observations(
             all_point_i.append(reference_pixels[overlap_indices].copy())
             all_point_j.append(source_pixels[overlap_indices].astype(np.float32))
             all_difference.append(reference_rgb[overlap_indices] - sampled_rgb[overlap_indices])
+            all_measurement_i.append(reference_rgb[overlap_indices].copy())
+            all_measurement_j.append(sampled_rgb[overlap_indices].copy())
             all_sample_index.append(overlap_indices.astype(np.int64))
 
         first_coverage = valid & (reference_frame < 0)
@@ -116,8 +120,9 @@ def generate_observations(
         frame_count=len(frames),
         image_width_px=frames[0].width_px,
         image_height_px=frames[0].height_px,
+        measurement_i_rgb=np.concatenate(all_measurement_i),
+        measurement_j_rgb=np.concatenate(all_measurement_j),
     )
     if progress_callback is not None:
         progress_callback(f"已生成 {observations.count:,} 条重叠观测。", len(frames), len(frames))
     return observations
-

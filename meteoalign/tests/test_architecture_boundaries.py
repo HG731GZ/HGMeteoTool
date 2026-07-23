@@ -15,6 +15,7 @@ CORE_PACKAGE_NAMES = (
     "alignment",
     "astrometry",
     "calibration",
+    "photometric",
 )
 FORBIDDEN_CORE_IMPORT_PREFIXES = ("PyQt5", "meteoalign.application.app_")
 

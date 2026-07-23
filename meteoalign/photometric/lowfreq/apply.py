@@ -6,12 +6,68 @@ import numpy as np
 import tifffile
 
 from .bspline import rasterize_correction
+from .models import brightness_interpolation_indices, corrected_code_values
 from .types import CancelCallback, PhotometricFrame, PhotometricSolution, ProgressCallback
 
 
 def _tag_value(page: tifffile.TiffPage, name: str):
     tag = page.tags.get(name)
     return None if tag is None else tag.value
+
+
+def rasterize_solution_parameter_block(
+    source_block: np.ndarray,
+    frame: PhotometricFrame,
+    solution: PhotometricSolution,
+    *,
+    y_start: int,
+    y_stop: int,
+) -> np.ndarray:
+    """Evaluate V3–V5 shared field, frame offset, and optional frame plane."""
+
+    config = solution.solver_config
+    coefficient_layers = solution.coefficient_layers_rgb
+    layer_count = coefficient_layers.shape[1]
+    parameter = np.zeros(source_block.shape, dtype=np.float32)
+    if layer_count == 1:
+        parameter[:] = rasterize_correction(
+            coefficient_layers[:, 0, :],
+            columns=solution.grid_columns,
+            rows=solution.grid_rows,
+            width_px=frame.width_px,
+            height_px=frame.height_px,
+            y_start_px=y_start,
+            y_stop_px=y_stop,
+        )
+    else:
+        lower, upper, fraction = brightness_interpolation_indices(
+            source_block,
+            config,
+            solution.brightness_knot_values,
+        )
+        for layer in range(layer_count):
+            field = rasterize_correction(
+                coefficient_layers[:, layer, :],
+                columns=solution.grid_columns,
+                rows=solution.grid_rows,
+                width_px=frame.width_px,
+                height_px=frame.height_px,
+                y_start_px=y_start,
+                y_stop_px=y_stop,
+            )
+            weight = (
+                (lower == layer) * (1.0 - fraction)
+                + (upper == layer) * fraction
+            )
+            parameter += (field * weight).astype(np.float32)
+    parameter += solution.frame_offsets_rgb[frame.index][None, None, :]
+    if config.enable_frame_plane:
+        gradient = solution.frame_gradient_values_rgb[frame.index].astype(np.float32)
+        x_coordinate = np.linspace(-0.5, 0.5, frame.width_px, dtype=np.float32)
+        y_all = np.linspace(-0.5, 0.5, frame.height_px, dtype=np.float32)
+        parameter += x_coordinate[None, :, None] * gradient[:, 0][None, None, :]
+        parameter += y_all[y_start:y_stop, None, None] * gradient[:, 1][None, None, :]
+    return parameter
 
 
 def apply_solution_to_frame(
@@ -61,24 +117,22 @@ def apply_solution_to_frame(
                 y_resolution if y_resolution is not None else 72.0,
             ),
             resolutionunit=resolution_unit,
-            software=software or "HGMeteoTool low-frequency correction V1",
+            software=software or "HGMeteoTool photometric correction V5",
         )
         try:
             for y_start in range(0, frame.height_px, max(1, int(block_rows))):
                 if cancel_callback is not None and cancel_callback():
                     raise InterruptedError("用户已取消周边梯度优化。")
                 y_stop = min(frame.height_px, y_start + max(1, int(block_rows)))
-                correction = rasterize_correction(
-                    solution.coefficients_rgb,
-                    columns=solution.grid_columns,
-                    rows=solution.grid_rows,
-                    width_px=frame.width_px,
-                    height_px=frame.height_px,
-                    y_start_px=y_start,
-                    y_stop_px=y_stop,
+                source_block = source[y_start:y_stop].astype(np.float32)
+                parameter = rasterize_solution_parameter_block(
+                    source_block,
+                    frame,
+                    solution,
+                    y_start=y_start,
+                    y_stop=y_stop,
                 )
-                correction += solution.frame_offsets_rgb[frame.index][None, None, :]
-                corrected = source[y_start:y_stop].astype(np.float32) - correction
+                corrected = corrected_code_values(source_block, parameter, solution.solver_config)
                 output[y_start:y_stop] = np.clip(np.rint(corrected), 0, 65535).astype(np.uint16)
                 if progress_callback is not None:
                     progress_callback(

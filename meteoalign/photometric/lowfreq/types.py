@@ -59,6 +59,8 @@ class ObservationSet:
     frame_count: int
     image_width_px: int
     image_height_px: int
+    measurement_i_rgb: np.ndarray | None = field(default=None, repr=False)
+    measurement_j_rgb: np.ndarray | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         count = int(np.asarray(self.frame_i).size)
@@ -70,6 +72,12 @@ class ObservationSet:
             "target_sample_index": np.asarray(self.target_sample_index).shape == (count,),
         }
         invalid = [name for name, valid in expected.items() if not valid]
+        for name, values in (
+            ("measurement_i_rgb", self.measurement_i_rgb),
+            ("measurement_j_rgb", self.measurement_j_rgb),
+        ):
+            if values is not None and np.asarray(values).shape != (count, 3):
+                invalid.append(name)
         if invalid:
             raise ValueError(f"ObservationSet 数组尺寸不一致：{', '.join(invalid)}")
 
@@ -88,6 +96,15 @@ class SolverConfig:
     minimum_patch_valid_fraction: float = 0.45
     smooth_lambda: float = 30.0
     frame_offset_lambda: float = 0.05
+    correction_model: str = "additive"
+    intensity_floor_code: float = 64.0
+    minimum_gain: float = 0.2
+    maximum_gain: float = 5.0
+    enable_frame_plane: bool = False
+    frame_plane_lambda: float = 5000.0
+    enable_brightness_nonlinearity: bool = False
+    brightness_knot_count: int = 6
+    brightness_smooth_lambda: float = 300.0
     gauge_weight: float = 1000.0
     robust_loss: str = "huber"
     huber_delta: float = 1.5
@@ -110,6 +127,18 @@ class SolverConfig:
             raise ValueError("Patch 最小有效比例必须位于 0.05～1.0。")
         if self.smooth_lambda < 0 or self.frame_offset_lambda < 0:
             raise ValueError("正则强度不能为负数。")
+        if self.correction_model not in {"additive", "multiplicative", "log_gain"}:
+            raise ValueError("校正模型只支持 additive、multiplicative 或 log_gain。")
+        if self.intensity_floor_code <= 0:
+            raise ValueError("亮度变换 floor 必须大于 0。")
+        if not 0 < self.minimum_gain < 1.0 < self.maximum_gain:
+            raise ValueError("安全增益范围必须满足 0 < minimum < 1 < maximum。")
+        if self.frame_plane_lambda < 0:
+            raise ValueError("帧内平面正则强度不能为负数。")
+        if self.enable_brightness_nonlinearity and not 3 <= self.brightness_knot_count <= 12:
+            raise ValueError("V5 亮度节点数必须位于 3～12。")
+        if self.brightness_smooth_lambda < 0:
+            raise ValueError("V5 亮度平滑正则不能为负数。")
         if self.robust_loss not in {"none", "huber"}:
             raise ValueError("robust_loss 只支持 none 或 huber。")
         if self.irls_iterations < 1:
@@ -135,6 +164,17 @@ class DiagnosticsResult:
     per_overlap_rms_after_rgb: dict[str, list[float]]
     residual_before_rgb: np.ndarray = field(repr=False)
     residual_after_rgb: np.ndarray = field(repr=False)
+    fit_domain: str = "code_value"
+    fit_rms_before_rgb: np.ndarray = field(default_factory=lambda: np.empty(0))
+    fit_rms_after_rgb: np.ndarray = field(default_factory=lambda: np.empty(0))
+    brightness_bin_edges_code: np.ndarray = field(default_factory=lambda: np.empty(0))
+    brightness_bin_counts_rgb: np.ndarray = field(default_factory=lambda: np.empty((0, 0)))
+    brightness_bin_rms_before_rgb: np.ndarray = field(
+        default_factory=lambda: np.empty((0, 0))
+    )
+    brightness_bin_rms_after_rgb: np.ndarray = field(
+        default_factory=lambda: np.empty((0, 0))
+    )
 
 
 @dataclass(frozen=True)
@@ -146,13 +186,63 @@ class PhotometricSolution:
     frame_records: tuple[dict[str, Any], ...]
     solver_config: SolverConfig
     diagnostics: DiagnosticsResult
+    frame_gradients_rgb: np.ndarray | None = None
+    brightness_knots: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         coefficient_count = int(self.grid_columns * self.grid_rows)
-        if np.asarray(self.coefficients_rgb).shape != (3, coefficient_count):
-            raise ValueError("coefficients_rgb 尺寸必须是 3 × (grid_columns * grid_rows)。")
+        coefficient_shape = np.asarray(self.coefficients_rgb).shape
+        valid_coefficient_shape = (
+            coefficient_shape == (3, coefficient_count)
+            or (
+                len(coefficient_shape) == 3
+                and coefficient_shape[0] == 3
+                and coefficient_shape[2] == coefficient_count
+            )
+        )
+        if not valid_coefficient_shape:
+            raise ValueError("coefficients_rgb 尺寸必须是 3×N 或 3×K×N。")
         if np.asarray(self.frame_offsets_rgb).ndim != 2 or self.frame_offsets_rgb.shape[1] != 3:
             raise ValueError("frame_offsets_rgb 尺寸必须是 frame_count × 3。")
+        frame_count = int(self.frame_offsets_rgb.shape[0])
+        gradients = self.frame_gradients_rgb
+        if gradients is not None and np.asarray(gradients).shape != (frame_count, 3, 2):
+            raise ValueError("frame_gradients_rgb 尺寸必须是 frame_count × 3 × 2。")
+        layer_count = coefficient_shape[1] if len(coefficient_shape) == 3 else 1
+        if layer_count > 1 and not self.solver_config.enable_brightness_nonlinearity:
+            raise ValueError("多亮度层系数要求启用 V5。")
+        if (
+            self.solver_config.enable_brightness_nonlinearity
+            and layer_count != self.solver_config.brightness_knot_count
+        ):
+            raise ValueError("V5 系数层数与 brightness_knot_count 不一致。")
+        knots = self.brightness_knots
+        if knots is not None and np.asarray(knots).shape != (layer_count,):
+            raise ValueError("brightness_knots 数量必须与系数亮度层数一致。")
+        if knots is not None:
+            knot_values = np.asarray(knots, dtype=np.float64)
+            if not np.all(np.isfinite(knot_values)) or (
+                knot_values.size > 1 and np.any(np.diff(knot_values) <= 0.0)
+            ):
+                raise ValueError("brightness_knots 必须有限并严格递增。")
+
+    @property
+    def coefficient_layers_rgb(self) -> np.ndarray:
+        values = np.asarray(self.coefficients_rgb, dtype=np.float64)
+        return values[:, None, :] if values.ndim == 2 else values
+
+    @property
+    def frame_gradient_values_rgb(self) -> np.ndarray:
+        if self.frame_gradients_rgb is None:
+            return np.zeros((self.frame_offsets_rgb.shape[0], 3, 2), dtype=np.float64)
+        return np.asarray(self.frame_gradients_rgb, dtype=np.float64)
+
+    @property
+    def brightness_knot_values(self) -> np.ndarray:
+        layer_count = self.coefficient_layers_rgb.shape[1]
+        if self.brightness_knots is None:
+            return np.linspace(0.0, 1.0, layer_count, dtype=np.float64)
+        return np.asarray(self.brightness_knots, dtype=np.float64)
 
 
 @dataclass(frozen=True)

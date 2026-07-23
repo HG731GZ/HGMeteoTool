@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
+from ...coordinates import radec_to_unit_vectors
 from ...domain.settings import CameraSettings
 from ...mosaic.export.target_transform import target_image_points_to_icrs_vectors
+from .types import PhotometricFrame
 
 
 @dataclass(frozen=True)
@@ -19,6 +22,13 @@ class TargetSampleGrid:
     sample_height: int
     output_width_px: int
     output_height_px: int
+    sampling_mode: str = "framing_json"
+    source_frame_count: int = 0
+    candidate_count: int = 0
+
+    @property
+    def sample_count(self) -> int:
+        return int(self.vectors_icrs.shape[0])
 
 
 def load_framing_transform(path: str | Path) -> tuple[dict[str, object], dict[str, object]]:
@@ -87,5 +97,141 @@ def build_target_sample_grid(
         sample_height=sample_height,
         output_width_px=output_width,
         output_height_px=output_height,
+        candidate_count=int(vectors.shape[0]),
     )
 
+
+def _source_sample_dimensions(
+    width_px: int,
+    height_px: int,
+    *,
+    long_side_px: int,
+) -> tuple[int, int]:
+    if width_px <= 0 or height_px <= 0:
+        raise ValueError("源图模型尺寸无效。")
+    scale = float(long_side_px) / max(width_px, height_px)
+    return (
+        max(2, int(round(width_px * scale))),
+        max(2, int(round(height_px * scale))),
+    )
+
+
+def _pixel_points_to_icrs_vectors(
+    frame: PhotometricFrame,
+    pixel_points: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    pixels = np.asarray(pixel_points, dtype=np.float64)
+    radec = np.asarray(frame.model.pixel_to_sky_points(pixels), dtype=np.float64)
+    if radec.shape != (pixels.shape[0], 2):
+        raise ValueError(
+            f"模型 Pixel→ICRS 输出尺寸异常：{frame.model_path.name} → {radec.shape}"
+        )
+    valid = np.all(np.isfinite(radec), axis=1)
+    vectors = np.full((pixels.shape[0], 3), np.nan, dtype=np.float64)
+    if np.any(valid):
+        vectors[valid] = radec_to_unit_vectors(
+            radec[valid, 0],
+            radec[valid, 1],
+        )
+    return vectors, valid
+
+
+def _model_coverage(
+    frame: PhotometricFrame,
+    vectors_icrs: np.ndarray,
+) -> np.ndarray:
+    pixels = np.asarray(
+        frame.model.icrs_vectors_to_pixel_points(vectors_icrs),
+        dtype=np.float64,
+    )
+    if pixels.shape != (vectors_icrs.shape[0], 2):
+        raise ValueError(
+            f"模型 ICRS→Pixel 输出尺寸异常：{frame.model_path.name} → {pixels.shape}"
+        )
+    return (
+        np.all(np.isfinite(pixels), axis=1)
+        & (pixels[:, 0] >= 0.0)
+        & (pixels[:, 0] <= frame.width_px - 1.0)
+        & (pixels[:, 1] >= 0.0)
+        & (pixels[:, 1] <= frame.height_px - 1.0)
+    )
+
+
+def build_model_coverage_sample_grid(
+    frames: tuple[PhotometricFrame, ...],
+    *,
+    long_side_px: int,
+) -> TargetSampleGrid:
+    """Build V6 samples directly from the union of source-model sky footprints.
+
+    Each frame contributes a source-pixel grid. The per-frame density is scaled
+    by ``sqrt(frame_count)`` so that ``long_side_px`` continues to control the
+    approximate total work rather than multiplying it by the number of frames.
+    Directions not covered by at least two models are discarded before TIFF
+    measurement starts.
+    """
+
+    if len(frames) < 2:
+        raise ValueError("V6 模型覆盖采样至少需要两帧。")
+    if long_side_px < 2:
+        raise ValueError("V6 采样长边至少需要 2 px。")
+
+    reference_size = (frames[0].width_px, frames[0].height_px)
+    if any((frame.width_px, frame.height_px) != reference_size for frame in frames):
+        raise ValueError("V6 当前要求所有源图模型具有相同尺寸。")
+
+    per_frame_long_side = max(
+        8,
+        int(round(float(long_side_px) / math.sqrt(len(frames)))),
+    )
+    sample_width, sample_height = _source_sample_dimensions(
+        *reference_size,
+        long_side_px=per_frame_long_side,
+    )
+    x_values = np.linspace(
+        0.0,
+        reference_size[0] - 1.0,
+        sample_width,
+        dtype=np.float64,
+    )
+    y_values = np.linspace(
+        0.0,
+        reference_size[1] - 1.0,
+        sample_height,
+        dtype=np.float64,
+    )
+    grid_x, grid_y = np.meshgrid(x_values, y_values)
+    source_points = np.column_stack((grid_x.ravel(), grid_y.ravel()))
+
+    vector_parts: list[np.ndarray] = []
+    point_parts: list[np.ndarray] = []
+    for frame in frames:
+        vectors, valid = _pixel_points_to_icrs_vectors(frame, source_points)
+        if np.any(valid):
+            vector_parts.append(vectors[valid])
+            point_parts.append(source_points[valid])
+    if not vector_parts:
+        raise ValueError("V6 无法从任何 model.json 生成有效 ICRS 方向。")
+
+    candidate_vectors = np.concatenate(vector_parts, axis=0)
+    candidate_points = np.concatenate(point_parts, axis=0)
+    coverage_count = np.zeros(candidate_vectors.shape[0], dtype=np.uint16)
+    for frame in frames:
+        coverage_count += _model_coverage(frame, candidate_vectors)
+    overlap = coverage_count >= 2
+    if not np.any(overlap):
+        raise ValueError("各 model.json 的 ICRS 覆盖范围之间没有有效重叠。")
+
+    vectors = candidate_vectors[overlap]
+    return TargetSampleGrid(
+        vectors_icrs=vectors,
+        output_points_xy=candidate_points[overlap],
+        valid=np.ones(vectors.shape[0], dtype=bool),
+        sample_width=sample_width,
+        sample_height=sample_height,
+        output_width_px=reference_size[0],
+        output_height_px=reference_size[1],
+        sampling_mode="model_icrs_coverage_v6",
+        source_frame_count=len(frames),
+        candidate_count=int(candidate_vectors.shape[0]),
+    )

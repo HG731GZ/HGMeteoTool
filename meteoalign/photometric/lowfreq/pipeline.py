@@ -12,7 +12,7 @@ from ...frame_astrometry import FrameAstrometricModel
 from .apply import apply_solution_to_frame
 from .diagnostics import export_diagnostics
 from .observations import generate_observations
-from .sampling import build_target_sample_grid, load_framing_transform
+from .sampling import build_model_coverage_sample_grid
 from .solution_io import write_solution
 from .solver import solve_photometric_model
 from .types import (
@@ -118,14 +118,12 @@ def discover_photometric_frames(input_directory: str | Path) -> tuple[Photometri
 
 def validate_low_frequency_inputs(
     input_directory: str | Path,
-    framing_path: str | Path,
 ) -> tuple[PhotometricFrame, ...]:
     frames = discover_photometric_frames(input_directory)
-    load_framing_transform(framing_path)
     expected_size = (frames[0].width_px, frames[0].height_px)
     for frame in frames:
         if (frame.width_px, frame.height_px) != expected_size:
-            raise ValueError("V1 要求所有源图模型具有相同尺寸。")
+            raise ValueError("周边梯度优化要求所有源图模型具有相同尺寸。")
         with tifffile.TiffFile(frame.image_path) as tiff:
             if not tiff.pages:
                 raise ValueError(f"TIFF 没有图像页面：{frame.image_path.name}")
@@ -137,7 +135,9 @@ def validate_low_frequency_inputs(
                     f"{actual_size[0]}×{actual_size[1]} vs {expected_size[0]}×{expected_size[1]}"
                 )
             if page.dtype != np.dtype(np.uint16) or page.samplesperpixel != 3:
-                raise ValueError(f"V1 只接受 16-bit RGB TIFF：{frame.image_path.name}")
+                raise ValueError(
+                    f"周边梯度优化只接受 16-bit RGB TIFF：{frame.image_path.name}"
+                )
         if frame.mask_path is not None:
             with tifffile.TiffFile(frame.mask_path) as mask_tiff:
                 mask_page = mask_tiff.pages[0]
@@ -168,7 +168,6 @@ def _frame_records(frames: tuple[PhotometricFrame, ...]) -> tuple[dict[str, obje
 def run_low_frequency_correction(
     *,
     input_directory: str | Path,
-    framing_path: str | Path,
     output_directory: str | Path,
     config: SolverConfig | None = None,
     progress_callback: ProgressCallback | None = None,
@@ -192,7 +191,7 @@ def run_low_frequency_correction(
 
     if progress_callback is not None:
         progress_callback("验证 TIFF、模型和蒙版…", 0, 1)
-    frames = validate_low_frequency_inputs(input_directory, framing_path)
+    frames = validate_low_frequency_inputs(input_directory)
     if cancel_callback is not None and cancel_callback():
         raise InterruptedError("用户已取消周边梯度优化。")
     if progress_callback is not None:
@@ -203,13 +202,16 @@ def run_low_frequency_correction(
             1,
         )
 
-    sample_grid = build_target_sample_grid(
-        framing_path,
+    sample_grid = build_model_coverage_sample_grid(
+        frames,
         long_side_px=solver_config.sample_long_side_px,
     )
     if progress_callback is not None:
         progress_callback(
-            f"公共 ICRS 网格：{sample_grid.sample_width}×{sample_grid.sample_height}。",
+            "V6 model.json 直采样："
+            f"每帧 {sample_grid.sample_width}×{sample_grid.sample_height}，"
+            f"{sample_grid.candidate_count:,} 个候选中保留 "
+            f"{sample_grid.sample_count:,} 个跨帧 ICRS 方向。",
             1,
             1,
         )
@@ -233,6 +235,23 @@ def run_low_frequency_correction(
         before = ", ".join(f"{value:.2f}" for value in solution.diagnostics.rms_before_rgb)
         after = ", ".join(f"{value:.2f}" for value in solution.diagnostics.rms_after_rgb)
         progress_callback(f"重叠残差 RMS RGB：[{before}] → [{after}]", 1, 1)
+        fit_before = ", ".join(
+            f"{value:.6g}" for value in solution.diagnostics.fit_rms_before_rgb
+        )
+        fit_after = ", ".join(
+            f"{value:.6g}" for value in solution.diagnostics.fit_rms_after_rgb
+        )
+        progress_callback(
+            f"拟合域 RMS（{solution.diagnostics.fit_domain}）："
+            f"[{fit_before}] → [{fit_after}]",
+            1,
+            1,
+        )
+        if solver_config.enable_brightness_nonlinearity:
+            knot_text = ", ".join(
+                f"{value:.4f}" for value in solution.brightness_knot_values
+            )
+            progress_callback(f"V5 自适应对数亮度节点：[{knot_text}]", 1, 1)
 
     corrected_paths: list[Path] = []
     if solver_config.apply_correction:
@@ -263,4 +282,3 @@ def run_low_frequency_correction(
         corrected_paths=tuple(corrected_paths),
         solution=solution,
     )
-
