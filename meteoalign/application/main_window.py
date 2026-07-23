@@ -71,6 +71,7 @@ from .app_rendering import RenderingMixin
 from .app_view_controls import ViewControlsMixin
 from .app_mosaic import MosaicProjectionMixin
 from .app_mosaic_batch import MosaicBatchMixin
+from .app_lowfreq_gradient import LowFrequencyGradientMixin
 from .preferences_dialog import PreferencesDialog, PreferencesLauncher
 from .about_dialog import AboutDialog
 from .image_group_assistant_dialog import ImageGroupAssistantDialog
@@ -158,6 +159,7 @@ class MainWindow(
     AutoMatchMixin,
     MosaicProjectionMixin,
     MosaicBatchMixin,
+    LowFrequencyGradientMixin,
     RenderingMixin,
     ViewControlsMixin,
 ):
@@ -173,6 +175,7 @@ class MainWindow(
     - ImageMixin: 图像与蒙版导入
     - MeteorSelectionMixin: 流星框选
     - AutoMatchMixin: 自动匹配场星
+    - LowFrequencyGradientMixin: 多帧共享低频亮度校正
     - RenderingMixin: 渲染与模拟
     - ViewControlsMixin: 视图缩放与事件处理
     """
@@ -330,6 +333,7 @@ class MainWindow(
 
         self._init_mosaic_projection_page()
         self._init_mosaic_batch_page()
+        self._init_low_frequency_gradient_page()
         self._init_meteor_selection_page()
 
         self.render_timer = QTimer(self)
@@ -624,6 +628,14 @@ class MainWindow(
         )
 
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        if getattr(self, "_low_frequency_thread", None) is not None:
+            QMessageBox.information(
+                self,
+                "正在执行周边梯度优化",
+                "低频亮度校正仍在后台运行，请先取消或等待完成后再关闭窗口。",
+            )
+            event.ignore()
+            return
         if getattr(self, "_mosaic_batch_thread", None) is not None:
             QMessageBox.information(self, "正在导出全景图", "全景图批处理仍在后台导出，请先取消或等待完成后再关闭窗口。")
             event.ignore()
