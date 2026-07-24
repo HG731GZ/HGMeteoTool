@@ -22,8 +22,9 @@ def rasterize_solution_parameter_block(
     *,
     y_start: int,
     y_stop: int,
+    include_frame_terms: bool = True,
 ) -> np.ndarray:
-    """Evaluate the shared field, frame offset, and optional frame plane."""
+    """Evaluate the shared field and, when available, the fitted per-frame terms."""
 
     config = solution.solver_config
     coefficient_layers = solution.coefficient_layers_rgb
@@ -60,13 +61,14 @@ def rasterize_solution_parameter_block(
                 + (upper == layer) * fraction
             )
             parameter += (field * weight).astype(np.float32)
-    parameter += solution.frame_offsets_rgb[frame.index][None, None, :]
-    if config.enable_frame_plane:
-        gradient = solution.frame_gradient_values_rgb[frame.index].astype(np.float32)
-        x_coordinate = np.linspace(-0.5, 0.5, frame.width_px, dtype=np.float32)
-        y_all = np.linspace(-0.5, 0.5, frame.height_px, dtype=np.float32)
-        parameter += x_coordinate[None, :, None] * gradient[:, 0][None, None, :]
-        parameter += y_all[y_start:y_stop, None, None] * gradient[:, 1][None, None, :]
+    if include_frame_terms:
+        parameter += solution.frame_offsets_rgb[frame.index][None, None, :]
+        if config.enable_frame_plane:
+            gradient = solution.frame_gradient_values_rgb[frame.index].astype(np.float32)
+            x_coordinate = np.linspace(-0.5, 0.5, frame.width_px, dtype=np.float32)
+            y_all = np.linspace(-0.5, 0.5, frame.height_px, dtype=np.float32)
+            parameter += x_coordinate[None, :, None] * gradient[:, 0][None, None, :]
+            parameter += y_all[y_start:y_stop, None, None] * gradient[:, 1][None, None, :]
     return parameter
 
 
@@ -79,6 +81,7 @@ def apply_solution_to_frame(
     progress_callback: ProgressCallback | None = None,
     cancel_callback: CancelCallback | None = None,
     overwrite: bool = False,
+    include_frame_terms: bool = True,
 ) -> Path:
     destination = Path(output_path)
     if destination.exists() and not overwrite:
@@ -132,6 +135,7 @@ def apply_solution_to_frame(
                     solution,
                     y_start=y_start,
                     y_stop=y_stop,
+                    include_frame_terms=include_frame_terms,
                 )
                 corrected = corrected_code_values(source_block, parameter, solution.solver_config)
                 output[y_start:y_stop] = np.clip(np.rint(corrected), 0, 65535).astype(np.uint16)
@@ -162,8 +166,14 @@ def apply_solution_to_array(
     block_rows: int = 256,
     progress_callback: ProgressCallback | None = None,
     cancel_callback: CancelCallback | None = None,
+    include_frame_terms: bool = True,
 ) -> np.ndarray:
-    """Apply a solution in memory for direct correction + reprojection export."""
+    """Apply a solution in memory for direct correction + reprojection export.
+
+    ``include_frame_terms=False`` applies only the reusable shared correction
+    field. This is the appropriate mode for compatible images that did not
+    participate in the solve and therefore have no fitted offset or plane.
+    """
 
     source = np.asarray(source_rgb)
     if source.shape != (frame.height_px, frame.width_px, 3):
@@ -186,6 +196,7 @@ def apply_solution_to_array(
             solution,
             y_start=y_start,
             y_stop=y_stop,
+            include_frame_terms=include_frame_terms,
         )
         corrected = corrected_code_values(
             source_block,

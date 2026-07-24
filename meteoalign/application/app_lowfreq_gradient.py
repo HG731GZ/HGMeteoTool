@@ -51,6 +51,7 @@ from .file_dialogs import get_multiple_open_file_names, get_open_file_name
 
 
 _LOW_FREQUENCY_TIFF_FILTER = "16-bit RGB TIFF (*.tif *.tiff)"
+_LOW_FREQUENCY_LOG_SEPARATOR = "=" * 72
 
 
 _LOW_FREQUENCY_TUNING_GUIDE_HTML = """
@@ -104,7 +105,9 @@ _LOW_FREQUENCY_TUNING_GUIDE_HTML = """
 <p>方案保存为原图同路径下的 photometric_solution.json，诊断保存在
 gradient_diagnostics。再次求解会覆盖这些结果。勾选“导出校正图像”后，
 原文件名图像会写入 gradient_corrected。全景图批处理也可直接导入方案，
-在内存中完成梯度校正后立即重投影。</p>
+在内存中完成梯度校正后立即重投影。未参与方案计算、但采用相同拍摄和 Camera Raw
+处理流程的同尺寸图像也可复用方案；此时只应用公共低频校正场，不应用无法估计的
+逐帧亮度偏移或弱平面。</p>
 """
 
 
@@ -221,6 +224,9 @@ class LowFrequencyGradientMixin:
             "对数增益（推荐）",
             "log_gain",
         )
+        self.ui.comboBoxLowFrequencyCorrectionModel.setCurrentIndex(
+            self.ui.comboBoxLowFrequencyCorrectionModel.findData("log_gain")
+        )
         self.ui.spinBoxLowFrequencyGridColumns = self._integer_control(4, 20, 8)
         self.ui.spinBoxLowFrequencyGridRows = self._integer_control(4, 16, 6)
         self.ui.spinBoxLowFrequencySampleLongSide = self._integer_control(64, 1200, 360, 20)
@@ -250,6 +256,7 @@ class LowFrequencyGradientMixin:
             "按有效亮度自适应分段",
             solver_group,
         )
+        self.ui.checkBoxLowFrequencyBrightnessNonlinear.setChecked(True)
         self.ui.spinBoxLowFrequencyBrightnessKnots = self._integer_control(3, 12, 6)
         self.ui.doubleSpinBoxLowFrequencyBrightnessSmooth = self._decimal_control(
             0.0,
@@ -432,6 +439,19 @@ class LowFrequencyGradientMixin:
 
     def _append_low_frequency_log(self, message: str) -> None:
         self.ui.plainTextEditLowFrequencyLog.appendPlainText(str(message))
+
+    def _append_low_frequency_result_block(
+        self,
+        status: str,
+        *details: str,
+    ) -> None:
+        """用纯文本分隔块突出一次运行的最终状态。"""
+
+        self._append_low_frequency_log(_LOW_FREQUENCY_LOG_SEPARATOR)
+        self._append_low_frequency_log(f"最终运行结果：{status}")
+        for detail in details:
+            self._append_low_frequency_log(detail)
+        self._append_low_frequency_log(_LOW_FREQUENCY_LOG_SEPARATOR)
 
     def _low_frequency_default_directory(self) -> Path:
         if self._low_frequency_frames:
@@ -735,7 +755,7 @@ class LowFrequencyGradientMixin:
         except Exception as exc:  # noqa: BLE001 - 参数错误应留在页面日志。
             self._append_low_frequency_log(f"[参数错误] {exc}")
             return
-        self._append_low_frequency_log("=" * 72)
+        self._append_low_frequency_log(_LOW_FREQUENCY_LOG_SEPARATOR)
         self._append_low_frequency_log(
             f"开始：model={config.correction_model}, "
             f"frame_plane={'on' if config.enable_frame_plane else 'off'}, "
@@ -790,17 +810,20 @@ class LowFrequencyGradientMixin:
         self.ui.progressBarLowFrequency.setRange(0, 100)
         self.ui.progressBarLowFrequency.setValue(100)
         self.ui.labelLowFrequencyStatus.setText("处理完成")
-        self._append_low_frequency_log(f"Solution：{result.solution_path}")
-        self._append_low_frequency_log(f"Diagnostics：{result.diagnostics_directory}")
-        self._append_low_frequency_log(f"校正 TIFF：{len(result.corrected_paths)} 张")
+        self._append_low_frequency_result_block(
+            "处理完成",
+            f"Solution：{result.solution_path}",
+            f"Diagnostics：{result.diagnostics_directory}",
+            f"校正 TIFF：{len(result.corrected_paths)} 张",
+        )
 
     def _handle_low_frequency_cancelled(self, message: str) -> None:
         self.ui.labelLowFrequencyStatus.setText("已取消")
-        self._append_low_frequency_log(f"[已取消] {message}")
+        self._append_low_frequency_result_block("已取消", f"原因：{message}")
 
     def _handle_low_frequency_failed(self, message: str) -> None:
         self.ui.labelLowFrequencyStatus.setText("处理失败")
-        self._append_low_frequency_log(f"[处理失败] {message}")
+        self._append_low_frequency_result_block("处理失败", f"错误：{message}")
         QMessageBox.warning(self, "周边梯度优化失败", message)
 
     def _cleanup_low_frequency_worker(self) -> None:

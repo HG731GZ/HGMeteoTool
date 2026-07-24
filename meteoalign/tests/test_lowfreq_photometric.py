@@ -385,6 +385,52 @@ def test_apply_solution_writes_uint16_rgb_without_touching_source(tmp_path: Path
     assert np.array_equal(tifffile.imread(output_path), source)
 
 
+def test_unrecorded_frame_uses_shared_field_without_fitted_frame_terms() -> None:
+    source = np.full((2, 4, 3), 1000.0, dtype=np.float32)
+    frame = PhotometricFrame(
+        index=0,
+        model_path=Path("unrecorded_model.json"),
+        image_path=Path("unrecorded.tif"),
+        mask_path=None,
+        model=SimpleNamespace(image_width_px=4, image_height_px=2),  # type: ignore[arg-type]
+        source_payload={},
+    )
+    shared_rgb = np.array([100.0, 200.0, 300.0])
+    solution = PhotometricSolution(
+        grid_columns=6,
+        grid_rows=4,
+        coefficients_rgb=np.repeat(shared_rgb[:, None], 24, axis=1),
+        frame_offsets_rgb=np.array([[1000.0, 2000.0, 3000.0]]),
+        frame_records=({"index": 0},),
+        solver_config=SolverConfig(
+            grid_columns=6,
+            grid_rows=4,
+            enable_frame_plane=True,
+        ),
+        diagnostics=_empty_diagnostics(24),
+        frame_gradients_rgb=np.full((1, 3, 2), 500.0),
+    )
+
+    shared_only = rasterize_solution_parameter_block(
+        source,
+        frame,
+        solution,
+        y_start=0,
+        y_stop=2,
+        include_frame_terms=False,
+    )
+    with_frame_terms = rasterize_solution_parameter_block(
+        source,
+        frame,
+        solution,
+        y_start=0,
+        y_stop=2,
+    )
+
+    assert np.allclose(shared_only, shared_rgb)
+    assert not np.allclose(with_frame_terms, shared_only)
+
+
 def test_v3_multiplicative_and_v5_layered_application_are_pixelwise() -> None:
     source = np.array(
         [
@@ -666,7 +712,7 @@ def test_low_frequency_image_import_filters_masks_missing_models_and_invalid_tif
     window.close()
 
 
-def test_low_frequency_page_has_controls_on_left_and_debug_log_on_right() -> None:
+def test_low_frequency_page_has_recommended_defaults_and_debug_log_on_right() -> None:
     app = QApplication.instance() or QApplication([])
 
     class Window(QMainWindow, LowFrequencyGradientMixin):
@@ -694,9 +740,23 @@ def test_low_frequency_page_has_controls_on_left_and_debug_log_on_right() -> Non
     assert not hasattr(window.ui, "lineEditLowFrequencyOutputDirectory")
     assert not window.ui.checkBoxLowFrequencyExportCorrected.isChecked()
     assert window.ui.comboBoxLowFrequencyCorrectionModel.count() == 3
+    assert window.ui.comboBoxLowFrequencyCorrectionModel.currentData() == "log_gain"
+    assert window.ui.spinBoxLowFrequencyGridColumns.value() == 8
+    assert window.ui.spinBoxLowFrequencyGridRows.value() == 6
+    assert window.ui.spinBoxLowFrequencySampleLongSide.value() == 360
+    assert window.ui.spinBoxLowFrequencyDownsample.value() == 8
+    assert window.ui.spinBoxLowFrequencyPatchSize.value() == 11
+    assert window.ui.doubleSpinBoxLowFrequencySmooth.value() == 30.0
+    assert window.ui.doubleSpinBoxLowFrequencyFrameOffset.value() == 0.05
+    assert window.ui.doubleSpinBoxLowFrequencyIntensityFloor.value() == 64.0
+    assert not window.ui.checkBoxLowFrequencyFramePlane.isChecked()
+    assert window.ui.checkBoxLowFrequencyBrightnessNonlinear.isChecked()
+    assert window.ui.spinBoxLowFrequencyBrightnessKnots.value() == 6
+    assert window.ui.doubleSpinBoxLowFrequencyBrightnessSmooth.value() == 300.0
+    assert window.ui.checkBoxLowFrequencyHuber.isChecked()
     assert "V1" not in window.ui.comboBoxLowFrequencyCorrectionModel.itemText(0)
     assert not window.ui.doubleSpinBoxLowFrequencyFramePlaneLambda.isEnabled()
-    assert not window.ui.spinBoxLowFrequencyBrightnessKnots.isEnabled()
+    assert window.ui.spinBoxLowFrequencyBrightnessKnots.isEnabled()
     window._show_low_frequency_tuning_guide()
     assert window._low_frequency_guide_dialog is not None
     guide_text = window._low_frequency_guide_dialog.guideBrowser.toPlainText()
@@ -708,4 +768,56 @@ def test_low_frequency_page_has_controls_on_left_and_debug_log_on_right() -> Non
         window.ui.tabWidgetMain.widget(window.ui.tabWidgetMain.count() - 1)
         is window.ui.tabMosaicBatch
     )
+    window.close()
+
+
+def test_low_frequency_terminal_results_use_plain_text_separator_blocks(
+    monkeypatch,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    app = QApplication.instance() or QApplication([])
+
+    class Window(QMainWindow, LowFrequencyGradientMixin):
+        pass
+
+    window = Window()
+    window.ui = Ui_MainWindow()
+    window.ui.setupUi(window)
+    window._init_low_frequency_gradient_page()
+    separator = "=" * 72
+
+    result = SimpleNamespace(
+        solution_path=tmp_path / "photometric_solution.json",
+        diagnostics_directory=tmp_path / "gradient_diagnostics",
+        corrected_paths=(tmp_path / "corrected.tif",),
+    )
+    window._handle_low_frequency_finished(result)  # type: ignore[arg-type]
+    success_lines = window.ui.plainTextEditLowFrequencyLog.toPlainText().splitlines()
+    assert success_lines == [
+        separator,
+        "最终运行结果：处理完成",
+        f"Solution：{result.solution_path}",
+        f"Diagnostics：{result.diagnostics_directory}",
+        "校正 TIFF：1 张",
+        separator,
+    ]
+
+    window.ui.plainTextEditLowFrequencyLog.clear()
+    window._handle_low_frequency_cancelled("用户停止")
+    assert window.ui.plainTextEditLowFrequencyLog.toPlainText().splitlines() == [
+        separator,
+        "最终运行结果：已取消",
+        "原因：用户停止",
+        separator,
+    ]
+
+    monkeypatch.setattr(app_lowfreq_gradient.QMessageBox, "warning", lambda *_args: None)
+    window.ui.plainTextEditLowFrequencyLog.clear()
+    window._handle_low_frequency_failed("测试错误")
+    assert window.ui.plainTextEditLowFrequencyLog.toPlainText().splitlines() == [
+        separator,
+        "最终运行结果：处理失败",
+        "错误：测试错误",
+        separator,
+    ]
     window.close()

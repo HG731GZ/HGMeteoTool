@@ -99,6 +99,8 @@ class MosaicBatchExportTask:
     tiff_lzw_compression: bool
     source_pixel_regions: tuple[tuple[int, int, int, int], ...] | None
     gradient_solution: PhotometricSolution | None = None
+    # None means that the image did not participate in the solve. It can still
+    # use the shared lens/camera field, but has no fitted per-frame terms.
     gradient_frame_index: int | None = None
 
 
@@ -123,10 +125,13 @@ def _write_mosaic_batch_export_task(
                 f"模型 {source_model.image_width_px} x {source_model.image_height_px} px。"
             )
         if task.gradient_solution is not None:
-            if task.gradient_frame_index is None:
-                raise ValueError("梯度校正方案中找不到当前源图。")
             gradient_frame = PhotometricFrame(
-                index=int(task.gradient_frame_index),
+                # The index is not read when per-frame terms are disabled.
+                index=(
+                    int(task.gradient_frame_index)
+                    if task.gradient_frame_index is not None
+                    else 0
+                ),
                 model_path=source_model.json_path,
                 image_path=source_model.source_image_path,
                 mask_path=None,
@@ -139,6 +144,7 @@ def _write_mosaic_batch_export_task(
                 task.gradient_solution,
                 block_rows=task.block_rows,
                 progress_callback=update_export_progress,
+                include_frame_terms=task.gradient_frame_index is not None,
             )
             source_image = replace(source_image, rgb=corrected_rgb)
         if task.framing is None and task.base_model is None:
@@ -885,7 +891,7 @@ class MosaicBatchMixin:
         self._mosaic_batch_gradient_solution = solution
         self.ui.labelMosaicBatchGradientSolution.setText(solution_path.name)
         self.ui.labelMosaicBatchGradientSolution.setToolTip(str(solution_path))
-        self.ui.checkBoxMosaicBatchGradientCorrection.setChecked(False)
+        self.ui.checkBoxMosaicBatchGradientCorrection.setChecked(True)
         self._update_mosaic_batch_controls()
         self.ui.statusbar.showMessage(
             f"已导入梯度校正文件: {solution_path.name}"
@@ -1004,21 +1010,6 @@ class MosaicBatchMixin:
             return name_matches[0]
         return None
 
-    def _mosaic_batch_missing_gradient_rows(
-        self,
-        rows: list[int],
-    ) -> list[int]:
-        if not self._mosaic_batch_gradient_enabled():
-            return []
-        return [
-            row
-            for row in rows
-            if self._mosaic_batch_gradient_frame_index(
-                self._mosaic_batch_items[row].source_model
-            )
-            is None
-        ]
-
     def _mosaic_batch_state_from_status(self, status: str) -> str:
         if status.startswith("已完成"):
             return "done"
@@ -1074,24 +1065,6 @@ class MosaicBatchMixin:
             message = "请先导入图像模型 JSON。" if not self._mosaic_batch_items else "当前没有可导出的流星框选。"
             QMessageBox.warning(self, "批处理失败", message)
             return
-        missing_gradient_rows = self._mosaic_batch_missing_gradient_rows(
-            processable_rows
-        )
-        if missing_gradient_rows:
-            names = [
-                self._mosaic_batch_display_name(
-                    self._mosaic_batch_items[row].source_model
-                )
-                for row in missing_gradient_rows
-            ]
-            QMessageBox.warning(
-                self,
-                "梯度校正文件不匹配",
-                "以下图像不在当前梯度校正文件中：\n"
-                + "\n".join(names[:12])
-                + ("\n…" if len(names) > 12 else ""),
-            )
-            return
         if not mosaic_export_available():
             QMessageBox.critical(self, "批处理失败", "当前环境缺少 OpenCV 或 tifffile，无法写入 TIFF。")
             return
@@ -1105,11 +1078,21 @@ class MosaicBatchMixin:
         output_dir = Path(output_dir_text).expanduser()
         total_count = len(processable_rows)
         meteor_only_text = "\n仅导出已框选的流星区域，其他区域将透明。\n" if self._mosaic_batch_meteor_only_enabled() else ""
-        gradient_text = (
-            "\n将先应用梯度校正，再直接重投影。\n"
-            if self._mosaic_batch_gradient_enabled()
-            else ""
-        )
+        gradient_text = ""
+        if self._mosaic_batch_gradient_enabled():
+            shared_only_count = sum(
+                self._mosaic_batch_gradient_frame_index(
+                    self._mosaic_batch_items[row].source_model
+                )
+                is None
+                for row in processable_rows
+            )
+            gradient_text = "\n将先应用梯度校正，再直接重投影。\n"
+            if shared_only_count:
+                gradient_text += (
+                    f"其中 {shared_only_count} 张未参与方案计算，将只应用公共低频校正场，"
+                    "不应用逐帧亮度项。\n"
+                )
         if QMessageBox.question(
             self,
             "确认开始批处理",

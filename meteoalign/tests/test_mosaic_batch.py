@@ -61,6 +61,9 @@ class _CheckBox:
     def isChecked(self) -> bool:  # noqa: N802 - Qt 控件接口命名
         return self.checked
 
+    def setChecked(self, checked: bool) -> None:  # noqa: N802 - Qt 控件接口命名
+        self.checked = bool(checked)
+
 
 def _batch_window(mode_index: int) -> MosaicBatchMixin:
     window = MosaicBatchMixin.__new__(MosaicBatchMixin)
@@ -161,6 +164,37 @@ def test_mosaic_batch_matches_gradient_solution_by_source_image(tmp_path) -> Non
     source_model = SimpleNamespace(source_image_path=source_path)
 
     assert window._mosaic_batch_gradient_frame_index(source_model) == 1
+
+
+def test_imported_gradient_solution_is_enabled_automatically(
+    monkeypatch,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    solution_path = tmp_path / "photometric_solution.json"
+    solution_path.write_text("{}", encoding="utf-8")
+    solution = SimpleNamespace(
+        frame_records=({"source_image": str(tmp_path / "IMG_0001.TIF")},)
+    )
+    window = _batch_window(0)
+    window.ui.labelMosaicBatchGradientSolution = _Control()
+    window.ui.checkBoxMosaicBatchGradientCorrection = _CheckBox(False)
+    window._import_dialog_directory = lambda path: path  # type: ignore[attr-defined]
+    window._mosaic_batch_default_dir = lambda: tmp_path  # type: ignore[method-assign]
+    window._remember_import_path = lambda _path: None  # type: ignore[attr-defined]
+    window._update_mosaic_batch_controls = lambda: None  # type: ignore[method-assign]
+
+    monkeypatch.setattr(
+        app_mosaic_batch,
+        "get_open_file_name",
+        lambda *_args: (str(solution_path), ""),
+    )
+    monkeypatch.setattr(app_mosaic_batch, "read_solution", lambda _path: solution)
+
+    window.import_mosaic_batch_gradient_solution()
+
+    assert window._mosaic_batch_gradient_solution is solution
+    assert window.ui.checkBoxMosaicBatchGradientCorrection.isChecked()
+    assert window.ui.labelMosaicBatchGradientSolution.text == solution_path.name
 
 
 def test_mosaic_batch_meteor_only_uses_detected_box_regions() -> None:
@@ -289,8 +323,8 @@ def test_mosaic_batch_applies_gradient_in_memory_before_reprojection(
         lambda _path: source_image,
     )
 
-    def fake_apply(rgb, frame, _solution, **_kwargs):  # type: ignore[no-untyped-def]
-        calls.append(f"correct:{frame.index}")
+    def fake_apply(rgb, frame, _solution, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append(f"correct:{frame.index}:{kwargs['include_frame_terms']}")
         return rgb - 100
 
     def fake_write(*, output_path, source_image, **_kwargs):  # type: ignore[no-untyped-def]
@@ -305,7 +339,72 @@ def test_mosaic_batch_applies_gradient_in_memory_before_reprojection(
         lambda *_args: None,
     )
 
-    assert calls == ["correct:0", "reproject:900"]
+    assert calls == ["correct:0:True", "reproject:900"]
+    assert task.output_path.read_bytes() == b"done"
+
+
+def test_mosaic_batch_applies_shared_gradient_to_unrecorded_source(
+    monkeypatch,
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    """未参与求解的兼容图像应使用公共校正场，而不是被批处理拒绝。"""
+
+    source_path = tmp_path / "excluded_from_solve.tif"
+    source_path.touch()
+    source_rgb = np.full((8, 10, 3), 1000, dtype=np.uint16)
+    source_image = MosaicExportSourceImage(
+        path=source_path,
+        rgb=source_rgb,
+        exif_tags=(),
+        icc_profile=None,
+    )
+    source_model = SimpleNamespace(
+        json_path=tmp_path / "excluded_from_solve_model.json",
+        source_image_path=source_path,
+        image_width_px=10,
+        image_height_px=8,
+        model=SimpleNamespace(image_width_px=10, image_height_px=8),
+    )
+    task = MosaicBatchExportTask(
+        row=0,
+        item=MosaicBatchImageItem(source_model=source_model),  # type: ignore[arg-type]
+        geometry=MosaicExportGeometry(10, 8, 0, 0, 10, 8),
+        output_path=tmp_path / "output.tif",
+        framing=None,
+        base_model=SimpleNamespace(model=object()),
+        block_rows=8,
+        map_tile_size_px=4,
+        exact_remap_repair=False,
+        tiff_lzw_compression=False,
+        source_pixel_regions=None,
+        gradient_solution=object(),  # type: ignore[arg-type]
+        gradient_frame_index=None,
+    )
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        app_mosaic_batch,
+        "load_mosaic_export_source_image",
+        lambda _path: source_image,
+    )
+
+    def fake_apply(rgb, frame, _solution, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append(f"correct:{frame.index}:{kwargs['include_frame_terms']}")
+        return rgb - 100
+
+    def fake_write(*, output_path, source_image, **_kwargs):  # type: ignore[no-untyped-def]
+        calls.append(f"reproject:{int(source_image.rgb[0, 0, 0])}")
+        Path(output_path).write_bytes(b"done")
+
+    monkeypatch.setattr(app_mosaic_batch, "apply_solution_to_array", fake_apply)
+    monkeypatch.setattr(app_mosaic_batch, "write_mosaic_reprojection_tiff", fake_write)
+
+    app_mosaic_batch._write_mosaic_batch_export_task(
+        task,
+        lambda *_args: None,
+    )
+
+    assert calls == ["correct:0:False", "reproject:900"]
     assert task.output_path.read_bytes() == b"done"
 
 
