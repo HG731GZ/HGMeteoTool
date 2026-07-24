@@ -9,10 +9,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
 import tifffile
+from PyQt5.QtCore import QPoint, QPointF, Qt
+from PyQt5.QtGui import QWheelEvent
 from PyQt5.QtWidgets import QApplication, QMainWindow
 
 import meteoalign.application.app_lowfreq_gradient as app_lowfreq_gradient
 from meteoalign.application.app_lowfreq_gradient import LowFrequencyGradientMixin
+from meteoalign.application.app_view_controls import ViewControlsMixin
+from meteoalign.application.app_widgets import AppWidgetMixin
 from meteoalign.photometric.lowfreq.apply import (
     apply_solution_to_frame,
     rasterize_solution_parameter_block,
@@ -764,6 +768,25 @@ def test_low_frequency_page_has_recommended_defaults_and_debug_log_on_right() ->
     assert "V5" not in guide_text
     assert "对数增益" in guide_text
     assert "correction field" in guide_text
+    for parameter_name in (
+        "校正模型",
+        "控制网格列",
+        "控制网格行",
+        "采样长边",
+        "图像缩小倍率",
+        "Patch 边长",
+        "二阶平滑 λ",
+        "单帧偏移 λ",
+        "暗部稳定 floor",
+        "允许每帧弱 a·x+b·y",
+        "帧内平面 λ",
+        "按有效亮度自适应分段",
+        "亮度节点",
+        "节点平滑 λ",
+        "IRLS + Huber（4 次）",
+        "导出校正图像",
+    ):
+        assert parameter_name in guide_text
     assert (
         window.ui.tabWidgetMain.widget(window.ui.tabWidgetMain.count() - 1)
         is window.ui.tabMosaicBatch
@@ -820,4 +843,56 @@ def test_low_frequency_terminal_results_use_plain_text_separator_blocks(
         "错误：测试错误",
         separator,
     ]
+    window.close()
+
+
+def test_low_frequency_dynamic_parameter_controls_ignore_wheel_events() -> None:
+    """动态创建的下拉框、整数框和小数框都必须补装全局滚轮保护。"""
+
+    app = QApplication.instance() or QApplication([])
+
+    class Window(
+        QMainWindow,
+        AppWidgetMixin,
+        LowFrequencyGradientMixin,
+        ViewControlsMixin,
+    ):
+        def eventFilter(self, watched, event) -> bool:  # type: ignore[no-untyped-def]
+            return ViewControlsMixin.eventFilter(self, watched, event)
+
+    window = Window()
+    window.ui = Ui_MainWindow()
+    window.ui.setupUi(window)
+    window._init_low_frequency_gradient_page()
+    window.resize(900, 600)
+    window.show()
+    app.processEvents()
+
+    controls = (
+        window.ui.comboBoxLowFrequencyCorrectionModel,
+        window.ui.spinBoxLowFrequencyGridColumns,
+        window.ui.doubleSpinBoxLowFrequencySmooth,
+    )
+    initial_values = (
+        controls[0].currentIndex(),
+        controls[1].value(),
+        controls[2].value(),
+    )
+    for control in controls:
+        global_pos = control.mapToGlobal(control.rect().center())
+        event = QWheelEvent(
+            QPointF(control.rect().center()),
+            QPointF(global_pos),
+            QPoint(),
+            QPoint(0, -120),
+            Qt.NoButton,
+            Qt.NoModifier,
+            Qt.ScrollUpdate,
+            False,
+        )
+        QApplication.sendEvent(control, event)
+
+    assert controls[0].currentIndex() == initial_values[0]
+    assert controls[1].value() == initial_values[1]
+    assert controls[2].value() == initial_values[2]
     window.close()

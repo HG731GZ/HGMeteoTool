@@ -61,10 +61,11 @@ _LOW_FREQUENCY_TUNING_GUIDE_HTML = """
 
 <h3>推荐起点</h3>
 <ul>
-  <li>模型：<b>对数增益（推荐）</b></li>
-  <li>网格 8×6；采样长边 360；缩小倍率 8；Patch 11</li>
-  <li>空间平滑 λ=30；单帧偏移 λ=0.05；floor=64</li>
-  <li>帧内弱平面关闭；自适应亮度分段开启（6 节点、平滑 λ=300）；Huber 开启</li>
+  <li>校正模型：<b>对数增益（推荐）</b></li>
+  <li>控制网格列 8；控制网格行 6；采样长边 360；图像缩小倍率 8；Patch 边长 11</li>
+  <li>二阶平滑 λ=30；单帧偏移 λ=0.05；暗部稳定 floor=64</li>
+  <li>“允许每帧弱 a·x+b·y”关闭；“按有效亮度自适应分段”开启；
+  亮度节点 6；节点平滑 λ=300；“IRLS + Huber（4 次）”开启</li>
   <li>默认只保存方案和诊断；确认结果自然后，再勾选“导出校正图像”</li>
 </ul>
 
@@ -72,32 +73,34 @@ _LOW_FREQUENCY_TUNING_GUIDE_HTML = """
 <ol>
   <li>导入多张 16-bit RGB TIFF；缺少同名 model.json 或格式不符的图像会被过滤。</li>
   <li>点击“检查输入与蒙版绑定”，确认 TIFF、model.json 和天空蒙版对应正确。</li>
-  <li>先跑推荐起点；若亮度分段样本不足，关闭自适应亮度分段，回退到单层对数增益。</li>
-  <li>只有少数帧仍有明确的方向性渐变时才开帧内弱平面；λ 建议 5000～10000。</li>
+  <li>先跑推荐起点；若亮度分段样本不足，关闭“按有效亮度自适应分段”，回退到单层对数增益。</li>
+  <li>只有少数帧仍有明确的方向性渐变时才开启“允许每帧弱 a·x+b·y”；
+  帧内平面 λ 建议 5000～10000。</li>
   <li>每次只改一类参数，并保留一份基线 diagnostics 便于比较。</li>
 </ol>
 
 <h3>关键参数</h3>
 <table cellspacing="6">
-  <tr><td><b>网格</b></td><td>6×4 更保守，8×6 为默认；出现波纹或斑点时降低网格。</td></tr>
+  <tr><td><b>控制网格列/行</b></td><td>6×4 更保守，8×6 为默认；出现波纹或斑点时降低网格。</td></tr>
   <tr><td><b>采样长边</b></td><td>快速试跑 96～180，正式处理 360；窄重叠可提高到 500～700。</td></tr>
-  <tr><td><b>缩小倍率</b></td><td>8 为默认；16 更快，4 适合小图或很窄的重叠。</td></tr>
-  <tr><td><b>Patch</b></td><td>11 为默认；噪声或星点影响大时用 13～17，窄重叠用 7～9。</td></tr>
-  <tr><td><b>空间平滑 λ</b></td><td>场有波纹就增大；过平且仍有平滑接缝残差时小幅减小。</td></tr>
-  <tr><td><b>floor</b></td><td>增益模型暗部不稳时从 64 提高到 128～512。</td></tr>
+  <tr><td><b>图像缩小倍率</b></td><td>8 为默认；16 更快，4 适合小图或很窄的重叠。</td></tr>
+  <tr><td><b>Patch 边长</b></td><td>11 为默认；噪声或星点影响大时用 13～17，窄重叠用 7～9。</td></tr>
+  <tr><td><b>二阶平滑 λ</b></td><td>场有波纹就增大；过平且仍有平滑接缝残差时小幅减小。</td></tr>
+  <tr><td><b>暗部稳定 floor</b></td><td>增益模型暗部不稳时从 64 提高到 128～512。</td></tr>
 </table>
 
 <h3>怎样判断结果</h3>
 <ul>
   <li>RMS 应明显下降，但不能只追求最低数值。</li>
   <li>correction field 应非常平滑，不应出现星点、银河纹理或局部云结构。</li>
-  <li>observability 大面积偏暗：降低网格、增加采样或检查蒙版。</li>
+  <li>observability 大面积偏暗：降低控制网格列/行、增加采样长边或检查蒙版。</li>
   <li>frame offsets / gradients 个别值异常大：先检查云、蒙版、曝光参数和几何模型。</li>
-  <li>自适应亮度分段仅在多数亮度区间都有样本、各层场连续且分区 RMS 普遍改善时采用。</li>
+  <li>“按有效亮度自适应分段”仅在多数亮度区间都有样本、各层场连续且分区 RMS
+  普遍改善时采用。</li>
 </ul>
 
-<p><b>常用回退：</b>8×6、关闭帧内弱平面和亮度分段、提高空间平滑 λ、
-重新检查蒙版和 model.json。
+<p><b>常用回退：</b>控制网格列/行使用 8×6、关闭“允许每帧弱 a·x+b·y”和
+“按有效亮度自适应分段”、提高二阶平滑 λ、重新检查蒙版和 model.json。
 最终请用完全相同的 PTGui 参数比较原图与校正图，重点看接缝、银河结构、星点 halo、
 星色、地景边缘和 360° 闭环。</p>
 
@@ -408,6 +411,14 @@ class LowFrequencyGradientMixin:
                 batch_text = self.ui.tabWidgetMain.tabText(batch_index)
                 self.ui.tabWidgetMain.removeTab(batch_index)
                 self.ui.tabWidgetMain.addTab(batch_tab, batch_text)
+        install_wheel_filters = getattr(
+            self,
+            "_install_value_control_wheel_filters",
+            None,
+        )
+        if callable(install_wheel_filters):
+            # 本页是运行时动态创建的，必须在控件创建后补装全局滚轮保护。
+            install_wheel_filters()
 
     @staticmethod
     def _integer_control(
